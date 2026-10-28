@@ -1,0 +1,10 @@
+/data/
+/runs/
+*.log
+__pycache__/
+*.egg-info/
+.pytest_cache/
+web/node_modules/
+web/dist/
+.venv/
+/logs/

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "runitback"
+version = "0.1.0"
+description = "Run It Back: generate sports games one play at a time and simulate matchups (SportsDataverse data)"
+requires-python = ">=3.10"
+dependencies = [
+  "torch>=2.2", "numpy", "pandas", "pyarrow", "fastapi", "uvicorn", "typer", "pydantic>=2",
+]
+
+[project.optional-dependencies]
+data = ["sportsdataverse>=0.1.4"]
+dev = ["pytest", "httpx"]
+
+[project.scripts]
+runitback = "runitback.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
