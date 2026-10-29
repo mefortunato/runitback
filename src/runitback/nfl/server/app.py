@@ -31,7 +31,7 @@ def get_sim() -> Simulator:
     if _sim is None:
         ckpt = os.environ.get("RUNITBACK_NFL_CKPT", "runs/nfl/prod/model.pt")
         if not Path(ckpt).exists():
-            raise HTTPException(503, f"model checkpoint not found: {ckpt}")
+            raise HTTPException(503, f"model checkpoint not found: {ckpt} (download one with: runitback nfl fetch-model)")
         _sim = Simulator.load(ckpt)
     return _sim
 

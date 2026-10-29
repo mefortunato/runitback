@@ -90,6 +90,13 @@ def simulate(home: str, away: str, season: int = 2026, n: int = 1000, game_type:
     typer.echo(json.dumps({k: v for k, v in d.items() if k != "margin_hist"}, indent=1))
 
 
+@nfl.command("fetch-model")
+def fetch_model(version: str = "v0.1.0", dest: Path = DEFAULT_CKPT, force: bool = False):
+    """Download a released, pre-trained model (no data download or training needed)."""
+    from .nfl.release import fetch_model as run
+    typer.echo(f"model ready: {run(dest, version, force)}")
+
+
 @nfl.command()
 def serve(ckpt: Path = DEFAULT_CKPT, host: str = "127.0.0.1", port: int = 8000):
     """Run the API + web app."""

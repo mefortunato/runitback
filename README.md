@@ -77,13 +77,27 @@ real games. Stretching the ratings (`strength_scale` 2.0) widened the predicted 
 Brier unchanged (0.232), so the remaining gap to Elo and the spread is about missing information,
 not calibration. 150 games is a small test set (Brier standard error about ±0.01).
 
-## Setup
+## Quick start (pre-trained model)
+
+You need Python 3.10+ and Node 18+. This takes about 5 minutes and needs no data download or training.
 
 ```bash
+git clone https://github.com/mefortunato/runitback && cd runitback
 python -m venv .venv && . .venv/bin/activate
 pip install torch --index-url https://download.pytorch.org/whl/cpu   # or a CUDA build
-pip install -e ".[data,dev]"
+pip install -e .
 (cd web && npm install && npm run build)
+runitback nfl fetch-model     # downloads the v0.1.0 release to runs/nfl/prod/model.pt, checks its SHA-256
+runitback nfl serve           # open http://127.0.0.1:8000
+```
+
+The released model (see [Releases](https://github.com/mefortunato/runitback/releases)) includes team
+ratings through 2026 week 7. Retrain (below) to pick up later games.
+
+## Training from scratch
+
+```bash
+pip install -e ".[data,dev]"   # adds sportsdataverse and test tools
 ```
 
 ### Pipeline
