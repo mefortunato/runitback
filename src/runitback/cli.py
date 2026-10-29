@@ -38,13 +38,14 @@ def preprocess(start: int = 1999, end: int = 2026):
 
 
 @nfl.command()
-def train(out: Path = RUNS / "prod", val_season: int = typer.Option(None, help="hold out late-season games of this season"),
+def train(out: Path = RUNS / "prod", data: Path = typer.Option(DATA / "processed", help="processed games/plays directory"),
+          val_season: int = typer.Option(None, help="hold out late-season games of this season"),
           val_week: int = 10, epochs: int = 10, d_model: int = 192, n_layers: int = 4, n_heads: int = 6,
           batch_size: int = 32, lr: float = 1e-3, threads: int = 0, max_games: int = 0):
     """Train the transformer."""
     from .nfl.train import train as run
     _log()
-    run(DATA / "processed", out, val_season=val_season, val_week=val_week, epochs=epochs, d_model=d_model,
+    run(data, out, val_season=val_season, val_week=val_week, epochs=epochs, d_model=d_model,
         n_layers=n_layers, n_heads=n_heads, batch_size=batch_size, lr=lr, threads=threads or None,
         max_games=max_games or None)
 
@@ -88,6 +89,26 @@ def simulate(home: str, away: str, season: int = 2026, n: int = 1000, game_type:
     if out and out.suffix != ".csv":
         out.write_text(json.dumps(d, indent=1))
     typer.echo(json.dumps({k: v for k, v in d.items() if k != "margin_hist"}, indent=1))
+
+
+@nfl.command("generate-season")
+def generate_season_command(schedule: Path, season: int = 2026, out: Path = DATA / "synthetic" / "season",
+                            ckpt: Path = DEFAULT_CKPT, seed: int = 0, temperature: float = 1.0,
+                            strength_mode: str = typer.Option(
+                                "checkpoint", help="team strengths: checkpoint, neutral, or randomized"),
+                            force: bool = False):
+    """Generate a season from a CSV schedule and save trainer-compatible Parquet files."""
+    import pandas as pd
+
+    from .nfl.sim.season import generate_season
+    from .nfl.sim.sampler import Simulator
+
+    _log()
+    sim = Simulator.load(ckpt)
+    metadata = generate_season(sim, pd.read_csv(schedule), season, out, seed=seed,
+                               temperature=temperature, checkpoint=str(ckpt),
+                               strength_mode=strength_mode, force=force)
+    typer.echo(json.dumps(metadata, indent=1))
 
 
 @nfl.command("fetch-model")
