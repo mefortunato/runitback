@@ -91,26 +91,6 @@ def simulate(home: str, away: str, season: int = 2026, n: int = 1000, game_type:
     typer.echo(json.dumps({k: v for k, v in d.items() if k != "margin_hist"}, indent=1))
 
 
-@nfl.command("generate-season")
-def generate_season_command(schedule: Path, season: int = 2026, out: Path = DATA / "synthetic" / "season",
-                            ckpt: Path = DEFAULT_CKPT, seed: int = 0, temperature: float = 1.0,
-                            strength_mode: str = typer.Option(
-                                "checkpoint", help="team strengths: checkpoint, neutral, or randomized"),
-                            force: bool = False):
-    """Generate a season from a CSV schedule and save trainer-compatible Parquet files."""
-    import pandas as pd
-
-    from .nfl.sim.season import generate_season
-    from .nfl.sim.sampler import Simulator
-
-    _log()
-    sim = Simulator.load(ckpt)
-    metadata = generate_season(sim, pd.read_csv(schedule), season, out, seed=seed,
-                               temperature=temperature, checkpoint=str(ckpt),
-                               strength_mode=strength_mode, force=force)
-    typer.echo(json.dumps(metadata, indent=1))
-
-
 @nfl.command("fetch-model")
 def fetch_model(version: str = "v0.1.0", dest: Path = DEFAULT_CKPT, force: bool = False):
     """Download a released, pre-trained model (no data download or training needed)."""

@@ -116,34 +116,6 @@ runitback nfl train --out runs/nfl/prod --epochs 10
 The default model (d_model 192, 4 layers, 2.6M params) trains on a 4-core CPU in about 40
 minutes. Use `--d-model/--n-layers` for larger models on a GPU.
 
-### Generate a synthetic season
-
-Provide one row per scheduled game. `home`/`away` may also be named `home_team`/`away_team`;
-`game_type` is optional and defaults to `REG`.
-
-```csv
-week,game_type,home,away
-1,REG,KC,BUF
-1,REG,PHI,DAL
-```
-
-```bash
-runitback nfl generate-season schedule.csv --season 2026 --out data/nfl/synthetic/2026 --seed 23 \
-  --strength-mode randomized
-runitback nfl train --data data/nfl/synthetic/2026 --out runs/nfl/synthetic/2026
-```
-
-The output contains trainer-compatible `games.parquet`, `plays.parquet`, and, when available from
-the checkpoint, `ratings.parquet`, plus `generation.json` with the seed, checkpoint path/hash, and
-strength mode. Each schedule row produces one complete simulated game. `checkpoint` (the default)
-uses real checkpoint ratings as of each game week; `neutral` sets every team to league-average
-ratings; `randomized` shuffles prior-season preseason rating profiles across teams for the generated
-season, preventing the current-season rating/team mapping from carrying over. The randomized
-profiles remain based on historical ratings, and team identity embeddings can still encode
-historical biases. Ratings do not update from earlier synthetic games. Synthetic data is
-model-generated, not independent historical evidence, so evaluate retrained models on held-out real
-games. Use `--force` to replace existing output files.
-
 ### Use it
 
 **Web app**
@@ -151,6 +123,20 @@ games. Use `--force` to replace existing output files.
 ```bash
 runitback nfl serve --ckpt runs/nfl/prod/model.pt   # http://127.0.0.1:8000 (serves web/dist)
 # frontend dev: (cd web && npm run dev)    # Vite on :5173, proxies /api to :8000
+```
+In the **Season** view, select a season and run. The backend generates a full schedule: home-and-away
+division games, rotating full-division conference and interconference matchups, same-finish-position
+games, and the 17th interconference matchup from 2021 onward. Division rotations follow three-year
+and four-year cycles. Same-finish positions use the previous season's processed results when
+available; otherwise checkpoint preseason Elo provides the ranking proxy, which the UI identifies.
+Each team receives a bye during the midseason window. The app runs the era-appropriate 12- or
+14-team playoffs and automatically saves trainer-format Parquet files under
+`data/nfl/synthetic/<season>/<job-id>`.
+
+Pass the returned dataset path directly to training:
+
+```bash
+runitback nfl train --data data/nfl/synthetic/2027/<job-id> --out runs/nfl/finetune
 ```
 
 **Python**

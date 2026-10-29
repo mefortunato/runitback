@@ -1,86 +1,143 @@
-import hashlib
 import json
 
 import pandas as pd
 import pytest
 
-from runitback.nfl.model.dataset import build_team_seasons, encode_games
-from runitback.nfl.sim.season import generate_season
+from runitback.nfl.engine.rules import Outcome
+from runitback.nfl.sim.season import generate_schedule, simulate_season
+from runitback.nfl.vocab import TEAMS
 
 
-def test_generate_season_writes_training_data(tmp_path, tiny_sim):
-    schedule = pd.DataFrame([{"week": 1, "home_team": "KC", "away_team": "BUF"}])
-    out = tmp_path / "synthetic"
-    checkpoint = tmp_path / "model.pt"
-    checkpoint.write_bytes(b"checkpoint")
+class FixedWinnerSimulator:
+	ratings = None
 
-    metadata = generate_season(tiny_sim, schedule, 2025, out, seed=17, checkpoint=str(checkpoint))
+	def ratings_for(self, *args, **kwargs):
+		return None
 
-    games = pd.read_parquet(out / "games.parquet")
-    plays = pd.read_parquet(out / "plays.parquet")
-    ratings = pd.read_parquet(out / "ratings.parquet")
-    assert metadata["games"] == len(games) == 1
-    assert metadata["plays"] == len(plays) > 0
-    assert metadata["ratings_included"]
-    assert metadata["generator_checkpoint_sha256"] == hashlib.sha256(b"checkpoint").hexdigest()
-    assert json.loads((out / "generation.json").read_text())["generator_checkpoint"] == str(checkpoint)
-    assert plays.game_id.nunique() == len(games)
-    assert plays.groupby("game_id").idx.apply(list).iloc[0] == list(range(len(plays)))
-    assert len(ratings) == 2
-
-    ts = build_team_seasons(games)
-    items = encode_games(plays, games, ts, tiny_sim.model.cfg.max_len, ratings)
-    assert len(items) == 1 and len(items[0]["type"]) == len(plays)
-
-    second = generate_season(tiny_sim, schedule, 2025, tmp_path / "second", seed=18)
-    second_games = pd.read_parquet(tmp_path / "second" / "games.parquet")
-    assert second["games"] == 1 and games.game_id.iloc[0] != second_games.game_id.iloc[0]
+	def rollout(self, start, n, **kwargs):
+		final = start.copy()
+		final.score = [21, 10]
+		final.over = True
+		return [final], [[(start, Outcome("kickoff", "kick_received", 75, 0))]]
 
 
-def test_generate_season_rejects_existing_output(tmp_path, tiny_sim):
-    schedule = pd.DataFrame([{"week": 1, "home": "KC", "away": "BUF"}])
-    out = tmp_path / "synthetic"
-    generate_season(tiny_sim, schedule, 2025, out, seed=2)
-
-    with pytest.raises(FileExistsError, match="force=True"):
-        generate_season(tiny_sim, schedule, 2025, out, seed=2)
-
-
-def test_generate_season_rejects_invalid_team(tiny_sim, tmp_path):
-    schedule = pd.DataFrame([{"week": 1, "home": "XXX", "away": "BUF"}])
-
-    with pytest.raises(ValueError, match="unknown team"):
-        generate_season(tiny_sim, schedule, 2025, tmp_path / "synthetic")
+def full_schedule(season=2026):
+	weeks = 16 if season <= 2020 else 17
+	rotating = list(TEAMS)
+	schedule = []
+	for week in range(weeks):
+		schedule.extend({"week": week + 1, "home": rotating[index], "away": rotating[-index - 1]}
+						for index in range(16))
+		rotating = [rotating[0], rotating[-1], *rotating[1:-1]]
+	return schedule
 
 
-def test_randomized_strengths_shuffle_preseason_profiles(tiny_sim, tmp_path):
-    schedule = pd.DataFrame([{"week": 1, "home": "KC", "away": "BUF"}])
-    out = tmp_path / "randomized"
+def test_simulate_full_season_and_playoffs_exports_training_data(tmp_path):
+	progress = []
+	dataset_dir = tmp_path / "dataset"
+	generated = generate_schedule(FixedWinnerSimulator(), 2026, games_path=tmp_path / "missing", seed=7)
 
-    metadata = generate_season(tiny_sim, schedule, 2025, out, seed=18, strength_mode="randomized")
+	result = simulate_season(FixedWinnerSimulator(), generated["games"], 2026, seed=7,
+							 progress=lambda stage, completed, total: progress.append((stage, completed, total)),
+							 dataset_dir=dataset_dir, bye_weeks=generated["bye_weeks"],
+							 position_source=generated["position_source"])
 
-    ratings = pd.read_parquet(out / "ratings.parquet").set_index("team")
-    preseason_profiles = {
-        team: tiny_sim.ratings.latest(team, 2025, week=1)
-        for team in ("KC", "BUF")
-    }
-    generated_profiles = {
-        team: {key: ratings.at[team, f"pre_{key}"] for key in ("off_epa", "def_epa", "elo")}
-        for team in ("KC", "BUF")
-    }
-    assert metadata["strength_mode"] == "randomized"
-    assert generated_profiles["KC"] == preseason_profiles["BUF"]
-    assert generated_profiles["BUF"] == preseason_profiles["KC"]
+	assert result["regular_game_count"] == 272
+	assert result["playoff_game_count"] == 13
+	assert len(result["games"]) == 285
+	assert [len(round_result["games"]) for round_result in result["playoffs"]] == [6, 4, 2, 1]
+	assert result["champion"] == result["super_bowl"]["winner"]
+	assert len(result["standings"]["AFC"]["seeds"]) == 7
+	assert len(result["standings"]["NFC"]["seeds"]) == 7
+	assert result["bye_weeks"] == generated["bye_weeks"]
+	assert all(team["bye_week"] == result["bye_weeks"][team["team"]]
+			   for conference in result["standings"].values()
+			   for division in conference["divisions"].values() for team in division)
+	assert progress[-1] == ("Super Bowl", 285, 285)
+
+	games = pd.read_parquet(dataset_dir / "games.parquet")
+	plays = pd.read_parquet(dataset_dir / "plays.parquet")
+	assert len(games) == len(plays) == 285
+	assert set(games.game_type) == {"REG", "POST"}
+	metadata = json.loads((dataset_dir / "generation.json").read_text())
+	assert metadata["synthetic"] and metadata["bye_weeks"] == generated["bye_weeks"]
 
 
-def test_neutral_strengths_remove_rating_differentials(tiny_sim, tmp_path):
-    schedule = pd.DataFrame([{"week": 1, "home": "KC", "away": "BUF"}])
-    out = tmp_path / "neutral"
+def test_simulate_season_rejects_incomplete_schedule():
+	with pytest.raises(ValueError, match="requires 17 games per team"):
+		simulate_season(FixedWinnerSimulator(), full_schedule()[:16], 2026)
 
-    metadata = generate_season(tiny_sim, schedule, 2025, out, strength_mode="neutral")
 
-    ratings = pd.read_parquet(out / "ratings.parquet")
-    assert metadata["strength_mode"] == "neutral"
-    assert (ratings.pre_off_epa == 0).all()
-    assert (ratings.pre_def_epa == 0).all()
-    assert (ratings.pre_elo == 1505).all()
+def test_pre_2020_season_uses_12_team_playoffs():
+	result = simulate_season(FixedWinnerSimulator(), full_schedule(2019), 2019, seed=7)
+
+	assert result["regular_game_count"] == 256
+	assert result["playoff_team_count"] == 12
+	assert result["playoff_game_count"] == 11
+	assert len(result["games"]) == 267
+	assert [len(round_result["games"]) for round_result in result["playoffs"]] == [4, 4, 2, 1]
+
+
+def test_generate_schedule_uses_nfl_opponent_formula(tmp_path):
+	schedule = generate_schedule(FixedWinnerSimulator(), 2026, games_path=tmp_path / "missing")
+	games = schedule["games"]
+	counts = {team: 0 for team in TEAMS}
+	home_counts = {team: 0 for team in TEAMS}
+	division_home = {team: 0 for team in TEAMS}
+	division_away = {team: 0 for team in TEAMS}
+	week_teams = {}
+	matchup_counts = {}
+	for game in games:
+		counts[game["home"]] += 1
+		counts[game["away"]] += 1
+		home_counts[game["home"]] += 1
+		week_teams.setdefault(game["week"], set())
+		assert game["home"] not in week_teams[game["week"]]
+		assert game["away"] not in week_teams[game["week"]]
+		week_teams[game["week"]].update((game["home"], game["away"]))
+		matchup_counts[game["matchup"]] = matchup_counts.get(game["matchup"], 0) + 1
+		if game["matchup"] == "division":
+			division_home[game["home"]] += 1
+			division_away[game["away"]] += 1
+
+	assert len(games) == 272
+	assert set(counts.values()) == {17}
+	assert set(home_counts.values()) <= {8, 9}
+	assert set(division_home.values()) == {3}
+	assert set(division_away.values()) == {3}
+	assert matchup_counts == {"division": 96, "conference-division": 64,
+							  "interconference-division": 64, "same-finish-conference": 32,
+							  "17th-same-finish": 16}
+	assert schedule["position_source"].startswith("checkpoint preseason Elo proxy")
+
+
+def test_sixteen_game_era_assigns_byes_in_historical_window(tmp_path):
+	schedule = generate_schedule(FixedWinnerSimulator(), 2019, games_path=tmp_path / "missing", seed=23)
+
+	assert len(schedule["games"]) == 256
+	assert len(schedule["bye_weeks"]) == 32
+	assert set(schedule["bye_weeks"].values()) <= set(range(4, 14))
+	assert all(game["week"] <= 17 for game in schedule["games"])
+	assert all(schedule["bye_weeks"][game["home"]] != game["week"]
+			   and schedule["bye_weeks"][game["away"]] != game["week"]
+			   for game in schedule["games"])
+
+
+def test_conference_division_rotation_cycles_every_three_years(tmp_path):
+	pairings = []
+	for season in range(2024, 2028):
+		schedule = generate_schedule(FixedWinnerSimulator(), season, games_path=tmp_path / "missing")
+		pairings.append(tuple(tuple(pair) for pair in schedule["division_rotation"]["AFC"]))
+
+	assert len(set(pairings[:3])) == 3
+	assert pairings[0] == pairings[3]
+
+
+def test_interconference_division_rotation_cycles_every_four_years(tmp_path):
+	rotations = []
+	for season in range(2024, 2029):
+		schedule = generate_schedule(FixedWinnerSimulator(), season, games_path=tmp_path / "missing")
+		rotations.append(tuple(schedule["interconference_rotation"].items()))
+
+	assert len(set(rotations[:4])) == 4
+	assert rotations[0] == rotations[4]
