@@ -18,10 +18,10 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT }}
-      CLOUD_RUN_REGION: ${{ vars.CLOUD_RUN_REGION }}
-      CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
-      GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY }}
+      GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT || secrets.GOOGLE_CLOUD_PROJECT }}
+      CLOUD_RUN_REGION: ${{ vars.CLOUD_RUN_REGION || secrets.CLOUD_RUN_REGION }}
+      CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE || secrets.CLOUD_RUN_SERVICE }}
+      GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY || secrets.GAR_REPOSITORY }}
       GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
       GCP_DEPLOY_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT || secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
     steps:
@@ -56,14 +56,14 @@ jobs:
 
       - name: Build and push image
         env:
-          IMAGE: ${{ vars.CLOUD_RUN_REGION }}-docker.pkg.dev/${{ vars.GOOGLE_CLOUD_PROJECT }}/${{ vars.GAR_REPOSITORY }}/runitback:${{ github.sha }}
+          IMAGE: ${{ env.CLOUD_RUN_REGION }}-docker.pkg.dev/${{ env.GOOGLE_CLOUD_PROJECT }}/${{ env.GAR_REPOSITORY }}/runitback:${{ github.sha }}
         run: |
           docker build --tag "$IMAGE" .
           docker push "$IMAGE"
 
       - name: Deploy to Cloud Run
         env:
-          IMAGE: ${{ vars.CLOUD_RUN_REGION }}-docker.pkg.dev/${{ vars.GOOGLE_CLOUD_PROJECT }}/${{ vars.GAR_REPOSITORY }}/runitback:${{ github.sha }}
+          IMAGE: ${{ env.CLOUD_RUN_REGION }}-docker.pkg.dev/${{ env.GOOGLE_CLOUD_PROJECT }}/${{ env.GAR_REPOSITORY }}/runitback:${{ github.sha }}
         run: |
           gcloud run deploy "$CLOUD_RUN_SERVICE" \
             --image "$IMAGE" \
