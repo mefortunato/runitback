@@ -1,6 +1,51 @@
+import threading
+
 from fastapi.testclient import TestClient
 
 from runitback.nfl.server import app as server
+
+
+def test_model_scheduler_prioritizes_interactive_requests():
+    scheduler = server.ModelScheduler()
+    background_inside = threading.Event()
+    release_background = threading.Event()
+    interactive_inside = threading.Event()
+    release_interactive = threading.Event()
+    background_resumed = threading.Event()
+
+    def background_work():
+        with scheduler.background():
+            background_inside.set()
+            assert release_background.wait(2)
+        with scheduler.background():
+            background_resumed.set()
+
+    def interactive_work():
+        assert background_inside.wait(2)
+        with scheduler.interactive():
+            interactive_inside.set()
+            assert release_interactive.wait(2)
+
+    background = threading.Thread(target=background_work)
+    interactive = threading.Thread(target=interactive_work)
+    background.start()
+    interactive.start()
+    try:
+        assert background_inside.wait(2)
+        with scheduler._condition:
+            assert scheduler._condition.wait_for(lambda: scheduler._interactive_waiters > 0, timeout=2)
+        release_background.set()
+        assert interactive_inside.wait(2)
+        assert not background_resumed.is_set()
+        release_interactive.set()
+        assert background_resumed.wait(2)
+    finally:
+        release_background.set()
+        release_interactive.set()
+        background.join(2)
+        interactive.join(2)
+    assert not background.is_alive()
+    assert not interactive.is_alive()
 
 
 def test_interactive_session(tiny_sim):
