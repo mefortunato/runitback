@@ -147,6 +147,55 @@ curl -X POST localhost:8000/api/simulate -H 'Content-Type: application/json' \
 Interactive endpoints: `POST /api/games`, `POST /api/games/{id}/step {play_type?, count?, temperature?}`,
 `POST /api/games/{id}/undo`, `GET /api/games/{id}`, `GET /api/games/{id}/winprob?n=200`, `GET /api/teams`.
 
+### Deploy to Google Cloud Run
+
+The repository includes a Docker image that builds the web app, installs the CPU version of PyTorch,
+and downloads the checksum-verified `v0.1.0` model during the image build. Install and authenticate
+the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install), then create and edit the deployment
+environment file:
+
+```bash
+gcloud auth login
+cp .env.example .env
+# Set GOOGLE_CLOUD_PROJECT in .env to your GCP project ID.
+./deploy-cloud-run.sh
+```
+
+The deploy helper reads `GOOGLE_CLOUD_PROJECT`, `CLOUD_RUN_REGION`, `CLOUD_RUN_SERVICE`, and
+`CLOUD_RUN_ALLOW_UNAUTHENTICATED` from `.env`. It deploys from source using Cloud Build. Authentication
+is required by default; set `CLOUD_RUN_ALLOW_UNAUTHENTICATED=true` to make the service public. Enable
+Cloud Build for the project before using this helper. It limits the service to one instance because
+interactive game sessions are held in process memory; active sessions are lost if Cloud Run restarts
+that instance.
+
+### GitHub Actions deployment
+
+`.github/workflows/deploy-cloud-run.yml` builds the Docker image on the GitHub-hosted runner, pushes
+it to Artifact Registry, and deploys it to Cloud Run when a commit is pushed to `main` (or when
+manually started with `workflow_dispatch`). It uses Workload Identity Federation rather than a
+long-lived service-account key. The deployed service remains private, and the workflow limits it to
+one instance.
+
+One-time GCP setup:
+
+1. Enable the Cloud Run, Artifact Registry, IAM Credentials, and Security Token Service APIs.
+2. Create an Artifact Registry Docker repository in the Cloud Run region.
+3. Configure Workload Identity Federation for GitHub Actions, restricted to this repository, and
+   allow its principal to impersonate a deployment service account. Grant that service account
+   `roles/artifactregistry.writer`, `roles/run.admin`, and `roles/iam.serviceAccountUser` for the
+   Cloud Run runtime service account.
+4. In the GitHub repository's **Settings → Secrets and variables → Actions → Variables**, set:
+   `GOOGLE_CLOUD_PROJECT` (project ID), `CLOUD_RUN_REGION` (for example `us-central1`),
+   `CLOUD_RUN_SERVICE` (for example `runitback`), `GAR_REPOSITORY` (Artifact Registry repository
+   name), `GCP_WORKLOAD_IDENTITY_PROVIDER` (full provider resource name), and
+   `GCP_DEPLOY_SERVICE_ACCOUNT` (deployment service-account email).
+
+The workflow's image tag is the commit SHA, so each deployment uses the exact image built for that
+commit. No Cloud Build is used by the GitHub Actions workflow.
+
+Interactive next-play inference takes priority over win-probability and forecast rollouts, which
+yield between model calls so background simulations do not hold up the game.
+
 **CLI**
 
 ```bash
