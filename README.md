@@ -191,6 +191,10 @@ One-time GCP setup:
    `GCP_DEPLOY_SERVICE_ACCOUNT` (deployment service-account email).
    The workflow accepts all six settings as Actions secrets instead. If settings are missing, the
    validation step names each missing variable or secret before authentication or deployment starts.
+   The deployment service account needs `roles/artifactregistry.writer` on the Artifact Registry
+   repository (or its project) to push images. The workflow logs Docker in with the federated
+   Google access token; if pushes still fail with an upload permission error, verify that role
+   binding and that `GAR_REPOSITORY` and `GOOGLE_CLOUD_PROJECT` identify the intended repository.
 
 The workflow's image tag is the commit SHA, so each deployment uses the exact image built for that
 commit. No Cloud Build is used by the GitHub Actions workflow.
