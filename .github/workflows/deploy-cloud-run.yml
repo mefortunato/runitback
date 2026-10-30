@@ -22,15 +22,31 @@ jobs:
       CLOUD_RUN_REGION: ${{ vars.CLOUD_RUN_REGION }}
       CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
       GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_DEPLOY_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT || secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Validate deployment configuration
+        run: |
+          missing=""
+          [ -n "$GOOGLE_CLOUD_PROJECT" ] || missing="$missing GOOGLE_CLOUD_PROJECT"
+          [ -n "$CLOUD_RUN_REGION" ] || missing="$missing CLOUD_RUN_REGION"
+          [ -n "$CLOUD_RUN_SERVICE" ] || missing="$missing CLOUD_RUN_SERVICE"
+          [ -n "$GAR_REPOSITORY" ] || missing="$missing GAR_REPOSITORY"
+          [ -n "$GCP_WORKLOAD_IDENTITY_PROVIDER" ] || missing="$missing GCP_WORKLOAD_IDENTITY_PROVIDER"
+          [ -n "$GCP_DEPLOY_SERVICE_ACCOUNT" ] || missing="$missing GCP_DEPLOY_SERVICE_ACCOUNT"
+          if [ -n "$missing" ]; then
+            printf 'Missing GitHub Actions variable or secret:%s\n' "$missing" >&2
+            exit 1
+          fi
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOY_SERVICE_ACCOUNT }}
 
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2

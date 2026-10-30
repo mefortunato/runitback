@@ -189,6 +189,10 @@ One-time GCP setup:
    `CLOUD_RUN_SERVICE` (for example `runitback`), `GAR_REPOSITORY` (Artifact Registry repository
    name), `GCP_WORKLOAD_IDENTITY_PROVIDER` (full provider resource name), and
    `GCP_DEPLOY_SERVICE_ACCOUNT` (deployment service-account email).
+   The workflow also accepts `GCP_WORKLOAD_IDENTITY_PROVIDER` and
+   `GCP_DEPLOY_SERVICE_ACCOUNT` as Actions secrets. If authentication fails because the action
+   received no provider, verify that `GCP_WORKLOAD_IDENTITY_PROVIDER` is set as either a repository
+   variable or secret, and that the workflow can access it.
 
 The workflow's image tag is the commit SHA, so each deployment uses the exact image built for that
 commit. No Cloud Build is used by the GitHub Actions workflow.
