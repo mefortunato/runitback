@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import random
 import threading
 import uuid
@@ -18,6 +19,8 @@ from pydantic import BaseModel, Field
 from ..engine.rules import GameState, Outcome, apply_outcome, legal_types, new_game
 from ..sim.api import simulate_games, summarize
 from ..sim.describe import describe
+from ..paths import checkpoint_path, data_dir
+from ..sim.season import FIRST_SEASON, LAST_SEASON, generate_schedule, playoff_game_count, simulate_season
 from ..sim.sampler import Simulator
 from ..vocab import PHASES, TEAMS
 
@@ -67,13 +70,17 @@ class ModelScheduler:
 _model_scheduler = ModelScheduler()
 SESSIONS: dict[str, "Session"] = {}
 MAX_SESSIONS = 500
+SEASON_JOBS: dict[str, dict] = {}
+_season_jobs_lock = threading.Lock()
+MAX_ACTIVE_SEASON_JOBS = 1
+MAX_SEASON_JOBS = 8
 
 
 def get_sim() -> Simulator:
     global _sim
     if _sim is None:
-        ckpt = os.environ.get("RUNITBACK_NFL_CKPT", "runs/nfl/prod/model.pt")
-        if not Path(ckpt).exists():
+        ckpt = checkpoint_path()
+        if not ckpt.exists():
             raise HTTPException(503, f"model checkpoint not found: {ckpt} (download one with: runitback nfl fetch-model)")
         _sim = Simulator.load(ckpt)
     return _sim
@@ -127,6 +134,13 @@ class SimRequest(BaseModel):
     include_scores: bool = False
     week: int | None = None  # use ratings as of this week (default: latest)
     ratings: dict[str, dict[str, float]] | None = None  # e.g. {"KC": {"off_epa": 0.05, "elo": 1600}}
+
+
+class SeasonRequest(BaseModel):
+    season: int = Field(2027, ge=FIRST_SEASON, le=LAST_SEASON)
+    seed: int = Field(0, ge=0)
+    temperature: float = Field(1.0, gt=0, le=3)
+    strength_mode: str = Field("randomized", pattern="^(checkpoint|neutral|randomized)$")
 
 
 def _check_teams(*teams: str) -> None:
@@ -247,6 +261,75 @@ def simulate(req: SimRequest):
                        seed=req.seed, temperature=req.temperature, week=req.week,
                        ratings=req.ratings, inference_context=_model_scheduler.background)
     return r.to_dict(include_scores=req.include_scores)
+
+
+def _run_season_job(job_id: str, req: SeasonRequest, schedule: list[dict], bye_weeks: dict[str, int],
+                    position_source: str) -> None:
+    job = SEASON_JOBS[job_id]
+
+    def update_progress(stage: str, completed: int, total: int) -> None:
+        with _season_jobs_lock:
+            job["progress"] = {"stage": stage, "completed": completed, "total": total}
+
+    try:
+        dataset_dir = data_dir() / "synthetic" / str(req.season) / job_id
+        result = simulate_season(
+            get_sim(), schedule, req.season, seed=req.seed, temperature=req.temperature,
+            strength_mode=req.strength_mode, progress=update_progress,
+            inference_context=_model_scheduler.background,
+            dataset_dir=dataset_dir, run_id=job_id, checkpoint=str(checkpoint_path()),
+            position_source=position_source, bye_weeks=bye_weeks,
+        )
+        with _season_jobs_lock:
+            job["status"] = "complete"
+            job["result"] = result
+    except Exception as exc:
+        logging.getLogger(__name__).exception("season simulation %s failed", job_id)
+        with _season_jobs_lock:
+            job["status"] = "failed"
+            job["error"] = str(exc)
+
+
+@app.post("/api/seasons", status_code=202)
+def start_season(req: SeasonRequest):
+    sim = get_sim()
+    if req.strength_mode == "randomized" and sim.ratings is None:
+        raise HTTPException(422, "randomized strength mode requires checkpoint ratings")
+    try:
+        generated = generate_schedule(sim, req.season, seed=req.seed)
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    schedule = generated["games"]
+    with _season_jobs_lock:
+        if sum(job["status"] == "running" for job in SEASON_JOBS.values()) >= MAX_ACTIVE_SEASON_JOBS:
+            raise HTTPException(429, "a season simulation is already running")
+        while len(SEASON_JOBS) >= MAX_SEASON_JOBS:
+            old_job = next((key for key, job in SEASON_JOBS.items() if job["status"] != "running"), None)
+            if old_job is None:
+                raise HTTPException(429, "season job history is full")
+            SEASON_JOBS.pop(old_job)
+        job_id = uuid.uuid4().hex[:12]
+        SEASON_JOBS[job_id] = {
+            "id": job_id, "status": "running",
+            "progress": {"stage": "Starting", "completed": 0,
+                         "total": len(schedule) + playoff_game_count(req.season)},
+            "result": None, "error": None, "position_source": generated["position_source"],
+            "bye_weeks": generated["bye_weeks"],
+        }
+    threading.Thread(target=_run_season_job,
+                     args=(job_id, req, schedule, generated["bye_weeks"],
+                           generated["position_source"]), daemon=True).start()
+    with _season_jobs_lock:
+        return dict(SEASON_JOBS[job_id])
+
+
+@app.get("/api/seasons/{job_id}")
+def season_status(job_id: str):
+    with _season_jobs_lock:
+        job = SEASON_JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(404, "season simulation not found")
+        return dict(job)
 
 
 @app.get("/api/meta")

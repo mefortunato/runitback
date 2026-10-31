@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, clock, qtrName, situation, type Game, type SimResult } from "./api";
 import Field from "./Field";
 import MarginChart from "./MarginChart";
+import SeasonSimulator from "./SeasonSimulator";
 import WinProbChart from "./WinProbChart";
 
 const CALLABLE: Record<string, string> = {
@@ -10,6 +11,7 @@ const CALLABLE: Record<string, string> = {
 };
 
 export default function App() {
+  const [view, setView] = useState<"game" | "season">("game");
   const [teams, setTeams] = useState<string[]>([]);
   const [seasons, setSeasons] = useState<number[]>([]);
   const [home, setHome] = useState("KC");
@@ -88,9 +90,16 @@ export default function App() {
     <div className="app">
       <header>
         <h1>Run It Back <span className="sport">NFL</span></h1>
-        <p className="muted">Simulate a game one play at a time, or replay a matchup a thousand times.</p>
+        <p className="muted">Play one game, forecast a matchup, or simulate a full season through the playoffs.</p>
       </header>
+      <nav className="view-tabs" aria-label="Simulation type">
+        <button className={view === "game" ? "selected" : ""} aria-pressed={view === "game"}
+          onClick={() => setView("game")}>Game</button>
+        <button className={view === "season" ? "selected" : ""} aria-pressed={view === "season"}
+          onClick={() => setView("season")}>Season</button>
+      </nav>
 
+      {view === "season" ? <SeasonSimulator seasons={seasons} /> : <>
       <section className="card setup">
         <label>Away<select value={away} onChange={(e) => setAway(e.target.value)}>
           {teams.map((t) => <option key={t}>{t}</option>)}</select></label>
@@ -181,6 +190,7 @@ export default function App() {
           </aside>
         </div>
       )}
+      </>}
     </div>
   );
 }
