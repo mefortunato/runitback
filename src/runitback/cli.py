@@ -8,12 +8,14 @@ from pathlib import Path
 
 import typer
 
+from .nfl.paths import data_dir, default_checkpoint, runs_dir
+
 app = typer.Typer(add_completion=False, help="Run It Back: simulate sports games one play at a time")
 nfl = typer.Typer(add_completion=False, help="NFL: data, training, evaluation, simulation and the web app")
 app.add_typer(nfl, name="nfl")
-DATA = Path("data/nfl")
-RUNS = Path("runs/nfl")
-DEFAULT_CKPT = RUNS / "prod" / "model.pt"
+DATA = data_dir()
+RUNS = runs_dir()
+DEFAULT_CKPT = default_checkpoint()
 
 
 def _log():
@@ -38,16 +40,19 @@ def preprocess(start: int = 1999, end: int = 2026):
 
 
 @nfl.command()
-def train(out: Path = RUNS / "prod", data: Path = typer.Option(DATA / "processed", help="processed games/plays directory"),
+def train(out: Path = RUNS / "prod",
+          data: list[Path] = typer.Option(None, help="games/plays directory; repeat to combine several "
+                                                      "(e.g. processed + synthetic). Default: data/nfl/processed"),
+          init: Path = typer.Option(None, help="fine-tune: start from this checkpoint's weights and architecture"),
           val_season: int = typer.Option(None, help="hold out late-season games of this season"),
           val_week: int = 10, epochs: int = 10, d_model: int = 192, n_layers: int = 4, n_heads: int = 6,
           batch_size: int = 32, lr: float = 1e-3, threads: int = 0, max_games: int = 0):
-    """Train the transformer."""
+    """Train the transformer (or fine-tune one with --init)."""
     from .nfl.train import train as run
     _log()
-    run(data, out, val_season=val_season, val_week=val_week, epochs=epochs, d_model=d_model,
-        n_layers=n_layers, n_heads=n_heads, batch_size=batch_size, lr=lr, threads=threads or None,
-        max_games=max_games or None)
+    run(data or [DATA / "processed"], out, val_season=val_season, val_week=val_week, epochs=epochs,
+        d_model=d_model, n_layers=n_layers, n_heads=n_heads, batch_size=batch_size, lr=lr,
+        threads=threads or None, max_games=max_games or None, init=init)
 
 
 @nfl.command()

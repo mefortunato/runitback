@@ -20,8 +20,10 @@ def test_season_job_endpoint(monkeypatch, tiny_sim):
     server.set_sim(tiny_sim)
     server.SEASON_JOBS.clear()
     done = threading.Event()
+    seen = {}
 
     def fake_simulate(sim, schedule, season, **kwargs):
+        seen.update(kwargs)
         kwargs["progress"]("Super Bowl", 285, 285)
         done.set()
         return {"season": season, "champion": "KC", "games": [], "playoffs": []}
@@ -43,6 +45,15 @@ def test_season_job_endpoint(monkeypatch, tiny_sim):
     assert status["status"] == "complete"
     assert status["progress"] == {"stage": "Super Bowl", "completed": 285, "total": 285}
     assert status["result"]["champion"] == "KC"
+    # Season games share the model with interactive sessions through the background scheduler queue.
+    assert seen["inference_context"] == server._model_scheduler.background
+    assert seen["dataset_dir"].parts[-3:] == ("synthetic", "2026", job_id)
+
+
+def test_season_request_rejects_pre_2002_seasons(tiny_sim):
+    server.set_sim(tiny_sim)
+    response = TestClient(server.app).post("/api/seasons", json={"season": 2001, "strength_mode": "neutral"})
+    assert response.status_code == 422
 
 
 def test_season_job_rejects_schedule_generation_failure(monkeypatch, tiny_sim):

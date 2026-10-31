@@ -19,7 +19,8 @@ from pydantic import BaseModel, Field
 from ..engine.rules import GameState, Outcome, apply_outcome, legal_types, new_game
 from ..sim.api import simulate_games, summarize
 from ..sim.describe import describe
-from ..sim.season import generate_schedule, simulate_season
+from ..paths import checkpoint_path, data_dir
+from ..sim.season import FIRST_SEASON, LAST_SEASON, generate_schedule, playoff_game_count, simulate_season
 from ..sim.sampler import Simulator
 from ..vocab import PHASES, TEAMS
 
@@ -78,8 +79,8 @@ MAX_SEASON_JOBS = 8
 def get_sim() -> Simulator:
     global _sim
     if _sim is None:
-        ckpt = os.environ.get("RUNITBACK_NFL_CKPT", "runs/nfl/prod/model.pt")
-        if not Path(ckpt).exists():
+        ckpt = checkpoint_path()
+        if not ckpt.exists():
             raise HTTPException(503, f"model checkpoint not found: {ckpt} (download one with: runitback nfl fetch-model)")
         _sim = Simulator.load(ckpt)
     return _sim
@@ -136,8 +137,8 @@ class SimRequest(BaseModel):
 
 
 class SeasonRequest(BaseModel):
-    season: int = Field(2027, ge=1999, le=2040)
-    seed: int = 0
+    season: int = Field(2027, ge=FIRST_SEASON, le=LAST_SEASON)
+    seed: int = Field(0, ge=0)
     temperature: float = Field(1.0, gt=0, le=3)
     strength_mode: str = Field("randomized", pattern="^(checkpoint|neutral|randomized)$")
 
@@ -271,12 +272,12 @@ def _run_season_job(job_id: str, req: SeasonRequest, schedule: list[dict], bye_w
             job["progress"] = {"stage": stage, "completed": completed, "total": total}
 
     try:
-        checkpoint = os.environ.get("RUNITBACK_NFL_CKPT", "runs/nfl/prod/model.pt")
-        dataset_dir = Path("data/nfl/synthetic") / str(req.season) / job_id
+        dataset_dir = data_dir() / "synthetic" / str(req.season) / job_id
         result = simulate_season(
             get_sim(), schedule, req.season, seed=req.seed, temperature=req.temperature,
-            strength_mode=req.strength_mode, progress=update_progress, inference_lock=_lock,
-            dataset_dir=dataset_dir, run_id=job_id, checkpoint=checkpoint,
+            strength_mode=req.strength_mode, progress=update_progress,
+            inference_context=_model_scheduler.background,
+            dataset_dir=dataset_dir, run_id=job_id, checkpoint=str(checkpoint_path()),
             position_source=position_source, bye_weeks=bye_weeks,
         )
         with _season_jobs_lock:
@@ -311,7 +312,7 @@ def start_season(req: SeasonRequest):
         SEASON_JOBS[job_id] = {
             "id": job_id, "status": "running",
             "progress": {"stage": "Starting", "completed": 0,
-                         "total": len(schedule) + (13 if req.season >= 2020 else 11)},
+                         "total": len(schedule) + playoff_game_count(req.season)},
             "result": None, "error": None, "position_source": generated["position_source"],
             "bye_weeks": generated["bye_weeks"],
         }
