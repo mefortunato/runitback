@@ -6,7 +6,9 @@ import logging
 import random
 import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 import torch
 from fastapi import FastAPI, HTTPException
@@ -23,7 +25,48 @@ from ..vocab import PHASES, TEAMS
 
 app = FastAPI(title="Run It Back — NFL", version="0.1.0")
 _sim: Simulator | None = None
-_lock = threading.Lock()  # torch model calls are serialized
+
+
+class ModelScheduler:
+    """Serialize model access while giving interactive requests priority."""
+
+    def __init__(self):
+        self._condition = threading.Condition()
+        self._active = False
+        self._interactive_waiters = 0
+
+    @contextmanager
+    def interactive(self) -> Iterator[None]:
+        with self._condition:
+            self._interactive_waiters += 1
+            try:
+                while self._active:
+                    self._condition.wait()
+                self._active = True
+            finally:
+                self._interactive_waiters -= 1
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._active = False
+                self._condition.notify_all()
+
+    @contextmanager
+    def background(self) -> Iterator[None]:
+        with self._condition:
+            while self._active or self._interactive_waiters:
+                self._condition.wait()
+            self._active = True
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._active = False
+                self._condition.notify_all()
+
+
+_model_scheduler = ModelScheduler()
 SESSIONS: dict[str, "Session"] = {}
 MAX_SESSIONS = 500
 SEASON_JOBS: dict[str, dict] = {}
@@ -57,10 +100,12 @@ class Session:
         self.gen = torch.Generator().manual_seed(seed)
         self.cache = None
         self.wp: list[dict] = []
+        self.lock = threading.RLock()
 
     def view(self) -> dict:
-        return {"state": self.state.to_dict(), "plays": self.log, "winprob": self.wp,
-                "legal_play_types": [] if self.state.over else legal_types(self.state)}
+        with self.lock:
+            return {"state": self.state.to_dict(), "plays": self.log.copy(), "winprob": self.wp.copy(),
+                    "legal_play_types": [] if self.state.over else legal_types(self.state)}
 
 
 class NewGame(BaseModel):
@@ -145,10 +190,10 @@ def get_game(gid: str):
 def step(gid: str, req: Step):
     s = _session(gid)
     sim = get_sim()
-    if req.play_type and req.play_type not in legal_types(s.state):
-        raise HTTPException(422, f"{req.play_type} not legal now; legal: {legal_types(s.state)}")
     new = []
-    with _lock:
+    with s.lock, _model_scheduler.interactive():
+        if req.play_type and req.play_type not in legal_types(s.state):
+            raise HTTPException(422, f"{req.play_type} not legal now; legal: {legal_types(s.state)}")
         if s.cache is None:
             s.cache = sim._prefill(s.history, s.ratings)
         for i in range(req.count):
@@ -173,11 +218,12 @@ def step(gid: str, req: Step):
 @app.post("/api/games/{gid}/undo")
 def undo(gid: str, count: int = 1):
     s = _session(gid)
-    for _ in range(min(count, len(s.history))):
-        s.state = s.history.pop()[0]
-        s.log.pop()
-    s.wp = [w for w in s.wp if w["n"] <= len(s.history)]
-    s.cache = None  # rebuilt from history on next step
+    with s.lock:
+        for _ in range(min(count, len(s.history))):
+            s.state = s.history.pop()[0]
+            s.log.pop()
+        s.wp = [w for w in s.wp if w["n"] <= len(s.history)]
+        s.cache = None  # rebuilt from history on next step
     return {"id": gid, **s.view()}
 
 
@@ -186,18 +232,23 @@ def winprob(gid: str, n: int = 200):
     s = _session(gid)
     sim = get_sim()
     n = max(10, min(n, 2000))
-    if s.state.over:
-        d = s.state.score[0] - s.state.score[1]
+    with s.lock:
+        state = s.state.copy()
+        history = s.history.copy()
+        seed = s.rng.randrange(2**31)
+        ratings = s.ratings
+    if state.over:
+        d = state.score[0] - state.score[1]
         res = {"home_win": float(d > 0), "away_win": float(d < 0), "tie": float(d == 0),
-               "home_score_mean": s.state.score[0], "away_score_mean": s.state.score[1]}
+               "home_score_mean": state.score[0], "away_score_mean": state.score[1]}
     else:
-        with _lock:
-            finals, _ = sim.rollout(s.state, n, history=s.history, seed=s.rng.randrange(2**31),
-                                    ratings=s.ratings)
+        finals, _ = sim.rollout(state, n, history=history, seed=seed, ratings=ratings,
+                                inference_context=_model_scheduler.background)
         r = summarize(finals)
         res = {k: getattr(r, k) for k in ("home_win", "away_win", "tie", "home_score_mean", "away_score_mean")}
-    point = {"n": len(s.history), "qtr": s.state.qtr, "qsec": s.state.qsec, **res}
-    s.wp = [w for w in s.wp if w["n"] != point["n"]] + [point]
+    point = {"n": len(history), "qtr": state.qtr, "qsec": state.qsec, **res}
+    with s.lock:
+        s.wp = [w for w in s.wp if w["n"] != point["n"]] + [point]
     return point
 
 
@@ -205,10 +256,9 @@ def winprob(gid: str, n: int = 200):
 def simulate(req: SimRequest):
     home, away = req.home.upper(), req.away.upper()
     _check_teams(home, away)
-    with _lock:
-        r = simulate_games(get_sim(), home, away, req.season, n=req.n, game_type=req.game_type,
-                           seed=req.seed, temperature=req.temperature, week=req.week,
-                           ratings=req.ratings)
+    r = simulate_games(get_sim(), home, away, req.season, n=req.n, game_type=req.game_type,
+                       seed=req.seed, temperature=req.temperature, week=req.week,
+                       ratings=req.ratings, inference_context=_model_scheduler.background)
     return r.to_dict(include_scores=req.include_scores)
 
 

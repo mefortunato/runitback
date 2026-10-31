@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import random
+from contextlib import nullcontext
 from pathlib import Path
+from typing import Callable, ContextManager
 
 import numpy as np
 import torch
@@ -118,16 +120,21 @@ class Simulator:
     @torch.no_grad()
     def rollout(self, start: GameState, n: int, history: list[tuple[GameState, Outcome]] | None = None,
                 seed: int | None = None, temperature: float = 1.0, batch_size: int = 200,
-                keep_plays: int = 0, ratings: tuple[dict, dict] | None | str = "auto") -> tuple[list[GameState], list[list[tuple[GameState, Outcome]]]]:
+                keep_plays: int = 0, ratings: tuple[dict, dict] | None | str = "auto",
+                inference_context: Callable[[], ContextManager[None]] | None = None
+                ) -> tuple[list[GameState], list[list[tuple[GameState, Outcome]]]]:
         """Simulate `n` continuations of a game from `start` (after `history`). Returns final states
         and, for the first `keep_plays` games, the simulated play logs. `ratings` = (home, away)
-        pre-game team ratings; "auto" uses the latest known ratings for the game's season."""
+        pre-game team ratings; "auto" uses the latest known ratings for the game's season.
+        `inference_context` can schedule each model call independently."""
         history = history or []
         if ratings == "auto":
             ratings = self.ratings_for(start.home, start.away, start.season)
         rng = random.Random(seed)
         gen = torch.Generator().manual_seed(rng.randrange(2**31))
-        base = self._prefill(history, ratings)
+        context = inference_context or nullcontext
+        with context():
+            base = self._prefill(history, ratings)
         finals, logs = [], []
         for b0 in range(0, n, batch_size):
             B = min(batch_size, n - b0)
@@ -138,7 +145,9 @@ class Simulator:
             for _ in range(MAX_PLAYS - len(history)):
                 if all(s.over for s in states) or cache.len >= self.model.cfg.max_len:
                     break
-                outs = self.sample_step(states, prevs, cache, temperature=temperature, gen=gen, ratings=ratings)
+                with context():
+                    outs = self.sample_step(states, prevs, cache, temperature=temperature, gen=gen,
+                                            ratings=ratings)
                 for i, (s, o) in enumerate(zip(states, outs)):
                     if s.over:
                         continue
