@@ -124,19 +124,30 @@ minutes. Use `--d-model/--n-layers` for larger models on a GPU.
 runitback nfl serve --ckpt runs/nfl/prod/model.pt   # http://127.0.0.1:8000 (serves web/dist)
 # frontend dev: (cd web && npm run dev)    # Vite on :5173, proxies /api to :8000
 ```
-In the **Season** view, select a season and run. The backend generates a full schedule: home-and-away
-division games, rotating full-division conference and interconference matchups, same-finish-position
-games, and the 17th interconference matchup from 2021 onward. Division rotations follow three-year
-and four-year cycles. Same-finish positions use the previous season's processed results when
-available; otherwise checkpoint preseason Elo provides the ranking proxy, which the UI identifies.
-Each team receives a bye during the midseason window. The app runs the era-appropriate 12- or
-14-team playoffs and automatically saves trainer-format Parquet files under
-`data/nfl/synthetic/<season>/<job-id>`.
+In the **Season** view, pick a season (2002–2040, the 32-team era) and run. The backend builds the
+schedule from the NFL formula: home-and-away division games; one same-conference division and one
+other-conference division in full, on the league's three- and four-year rotations; the same-place
+finishers of the other two same-conference divisions; and, from 2021, a 17th game against the
+same-place finisher of the other-conference division the team plays in full two seasons later
+(hosted by the AFC in odd years). Finish positions come from the previous season's results, read
+from `data/nfl/processed` or the raw play-by-play, but only when that season is complete; otherwise
+checkpoint preseason Elo stands in, and the UI says which source was used. Each team gets one bye in
+the midseason window and the final week is all division games. Standings use the NFL tiebreakers
+(head-to-head, division, common games, conference, strength of victory/schedule, net points, coin
+toss). The app then runs the era's 12- or 14-team playoffs and saves trainer-format Parquet files
+under `data/nfl/synthetic/<season>/<job-id>` (set `RUNITBACK_NFL_DATA` to move `data/nfl`).
 
-Pass the returned dataset path directly to training:
+Team strengths are each team's preseason rating, held fixed for the season (*checkpoint*), shuffled
+between teams (*randomized*) or league average (*neutral*). The exported `ratings.parquet` holds
+these unscaled ratings with the same columns as the processed data.
+
+To fine-tune on simulated seasons, combine them with the real data and start from a checkpoint
+(`--data` can be repeated). Synthetic seasons train the model but are kept out of the checkpoint's
+pre-game rating lookups. Fine-tuning does not carry over `strength_scale`, so re-run `calibrate`:
 
 ```bash
-runitback nfl train --data data/nfl/synthetic/2027/<job-id> --out runs/nfl/finetune
+runitback nfl train --init runs/nfl/prod/model.pt --data data/nfl/processed \
+  --data data/nfl/synthetic/2027/<job-id> --out runs/nfl/finetune --epochs 2 --lr 2e-4
 ```
 
 **Python**

@@ -1,7 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, type SeasonGame, type SeasonJob, type SeasonRequest, type Standing } from "./api";
 
 type StrengthMode = SeasonRequest["strength_mode"];
+
+// Seasons the simulator supports: the 32-team, eight-division alignment (2002 onward).
+const FIRST_SEASON = 2002;
+const LAST_SEASON = 2040;
 
 function record(standing: Standing) {
   return `${standing.wins}-${standing.losses}${standing.ties ? `-${standing.ties}` : ""}`;
@@ -40,21 +44,39 @@ function StandingsTable({ rows }: { rows: Standing[] }) {
 }
 
 export default function SeasonSimulator({ seasons }: { seasons: number[] }) {
-  const latestSeason = Math.max(2025, ...seasons);
+  const latestSeason = Math.min(LAST_SEASON - 1, Math.max(2025, ...seasons));
   const [season, setSeason] = useState(latestSeason + 1);
+  const seasonEdited = useRef(false);
   const [seed, setSeed] = useState(23);
   const [temperature, setTemperature] = useState(1);
   const [strengthMode, setStrengthMode] = useState<StrengthMode>("randomized");
   const [job, setJob] = useState<SeasonJob | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // The season list arrives after the first render: follow it until the user picks a season.
+  useEffect(() => {
+    if (!seasonEdited.current) setSeason(latestSeason + 1);
+  }, [latestSeason]);
+
   useEffect(() => {
     if (!job || job.status !== "running") return;
     const timer = window.setInterval(() => {
-      api.seasonJob(job.id).then(setJob).catch((e: Error) => setError(e.message));
+      api.seasonJob(job.id).then(setJob).catch((e: Error) => {
+        // e.g. the server restarted and lost the job: stop polling and re-enable the form.
+        window.clearInterval(timer);
+        setJob((current) => current && current.id === job.id
+          ? { ...current, status: "failed", error: e.message } : current);
+      });
     }, 1000);
     return () => window.clearInterval(timer);
   }, [job?.id, job?.status]);
+
+  const inputError =
+    !Number.isInteger(season) || season < FIRST_SEASON || season > LAST_SEASON
+      ? `Season must be a whole number from ${FIRST_SEASON} to ${LAST_SEASON}.`
+      : !Number.isInteger(seed) || seed < 0 ? "Seed must be a whole number of 0 or more."
+      : !Number.isFinite(temperature) || temperature <= 0 || temperature > 3
+        ? "Temperature must be greater than 0 and at most 3." : null;
 
   const runSeason = async () => {
     setError(null);
@@ -78,21 +100,24 @@ export default function SeasonSimulator({ seasons }: { seasons: number[] }) {
           <span className="muted">Regular season + {season < 2020 ? 12 : 14}-team playoffs</span>
         </div>
         <div className="season-form">
-          <label>Season<input type="number" min="1999" max="2040" value={season}
-            onChange={(event) => setSeason(Number(event.target.value))} /></label>
-          <label>Seed<input type="number" min="0" step="1" value={seed}
-            onChange={(event) => setSeed(Number(event.target.value))} /></label>
-          <label>Temperature<input type="number" min="0.1" max="3" step="0.1" value={temperature}
-            onChange={(event) => setTemperature(Number(event.target.value))} /></label>
+          <label>Season<input type="number" min={FIRST_SEASON} max={LAST_SEASON}
+            value={Number.isNaN(season) ? "" : season}
+            onChange={(event) => { seasonEdited.current = true; setSeason(event.target.valueAsNumber); }} /></label>
+          <label>Seed<input type="number" min="0" step="1" value={Number.isNaN(seed) ? "" : seed}
+            onChange={(event) => setSeed(event.target.valueAsNumber)} /></label>
+          <label>Temperature<input type="number" min="0.1" max="3" step="0.1"
+            value={Number.isNaN(temperature) ? "" : temperature}
+            onChange={(event) => setTemperature(event.target.valueAsNumber)} /></label>
           <label>Team strength<select value={strengthMode}
             onChange={(event) => setStrengthMode(event.target.value as StrengthMode)}>
             <option value="randomized">Randomized profiles</option>
             <option value="neutral">League average</option>
             <option value="checkpoint">Checkpoint ratings</option>
           </select></label>
-          <button className="primary run-season" disabled={job?.status === "running"}
+          <button className="primary run-season" disabled={job?.status === "running" || inputError !== null}
             onClick={runSeason}>Simulate season</button>
         </div>
+        {inputError && <p className="season-schedule-note" role="status">{inputError}</p>}
         <p className="season-schedule-note">Opponent rotations and weekly matchups are generated automatically.</p>
         {error && <div className="error" role="alert">{error}</div>}
         {job && (
@@ -118,7 +143,7 @@ export default function SeasonSimulator({ seasons }: { seasons: number[] }) {
 
           <section className="season-standings">
             <div className="section-heading"><h2>Final standings</h2><span className="muted">
-              Top {result.playoff_team_count / 2} per conference qualify · W-L, head-to-head, conference record, point differential</span></div>
+              Top {result.playoff_team_count / 2} per conference qualify · ties broken by NFL tiebreakers</span></div>
             <div className="conference-grid">
               {(["AFC", "NFC"] as const).map((conference) => (
                 <section key={conference} className="conference">
