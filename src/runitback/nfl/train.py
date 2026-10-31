@@ -6,6 +6,7 @@ import logging
 import math
 import time
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -14,7 +15,7 @@ import torch
 from .data.ratings import RatingsTable
 from .model.dataset import build_team_seasons, collate, encode_games
 from .model.features import CONT_FEATURES
-from .model.features import feature_sizes
+from .model.features import TeamSeasonVocab, feature_sizes
 from .model.transformer import ModelConfig, PlayTransformer
 
 log = logging.getLogger(__name__)
@@ -56,32 +57,82 @@ def evaluate(model: PlayTransformer, items: list[dict], batch_size: int = 32) ->
     return {k: v / n for k, v in sums.items()} | {"total": sum(sums.values()) / n}
 
 
-def train(data_dir: Path, out_dir: Path, *, val_season: int | None = 2025, val_week: int = 10,
+def _is_synthetic(data_dir: Path) -> bool:
+    meta = data_dir / "generation.json"
+    return meta.is_file() and bool(json.loads(meta.read_text()).get("synthetic"))
+
+
+def load_data(data_dirs: Path | Sequence[Path], use_ratings: bool = True
+              ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame | None, pd.DataFrame | None]:
+    """Concatenate games/plays/ratings from one or more directories (e.g. processed + synthetic).
+
+    Returns (games, plays, ratings, lookup_ratings). `ratings` covers every game and feeds the
+    model's rating features; `lookup_ratings` is what the checkpoint stores for future pre-game
+    lookups, and leaves out synthetic seasons so simulated results never stand in for real ones.
+    """
+    dirs = [Path(data_dirs)] if isinstance(data_dirs, (str, Path)) else [Path(d) for d in data_dirs]
+    if not dirs:
+        raise ValueError("no training data directories given")
+    games, plays, ratings, real_ratings = [], [], [], []
+    for d in dirs:
+        games.append(pd.read_parquet(d / "games.parquet"))
+        plays.append(pd.read_parquet(d / "plays.parquet"))
+        rpath = d / "ratings.parquet"
+        if use_ratings and rpath.exists():
+            r = pd.read_parquet(rpath)
+            ratings.append(r)
+            if not _is_synthetic(d):
+                real_ratings.append(r)
+    all_games = pd.concat(games, ignore_index=True)
+    duplicated = all_games.game_id[all_games.game_id.duplicated()]
+    if len(duplicated):
+        raise ValueError(f"game_id {duplicated.iloc[0]!r} appears in more than one training directory")
+    all_ratings = pd.concat(ratings, ignore_index=True) if ratings else None
+    lookup = pd.concat(real_ratings, ignore_index=True) if real_ratings else None
+    return all_games, pd.concat(plays, ignore_index=True), all_ratings, lookup
+
+
+def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | None = 2025, val_week: int = 10,
           epochs: int = 8, batch_size: int = 32, lr: float = 1e-3, d_model: int = 256, n_layers: int = 6,
           n_heads: int = 8, dropout: float = 0.1, min_season: int = 1999, max_games: int | None = None,
-          unk_ts_prob: float = 0.1, unk_cont_prob: float = 0.05, use_ratings: bool = True, threads: int | None = None, seed: int = 0) -> Path:
+          unk_ts_prob: float = 0.1, unk_cont_prob: float = 0.05, use_ratings: bool = True, threads: int | None = None,
+          seed: int = 0, init: Path | None = None) -> Path:
+    """Train a model on one or more data directories. With `init`, fine-tune that checkpoint: its
+    architecture and team-season vocabulary are kept (team-seasons it has not seen use the unknown
+    embedding) and d_model/n_layers/n_heads/dropout are ignored."""
     if threads:
         torch.set_num_threads(threads)
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     out_dir.mkdir(parents=True, exist_ok=True)
-    games = pd.read_parquet(data_dir / "games.parquet")
-    plays = pd.read_parquet(data_dir / "plays.parquet")
+    games, plays, ratings, lookup_ratings = load_data(data_dir, use_ratings)
     games = games[games.season >= min_season]
     train_g, val_g = split_games(games, val_season, val_week)
     if max_games:
         train_g = train_g.sample(min(max_games, len(train_g)), random_state=seed)
-    ts = build_team_seasons(train_g)
-    rpath = data_dir / "ratings.parquet"
-    ratings = pd.read_parquet(rpath) if use_ratings and rpath.exists() else None
-    cfg = ModelConfig(feature_sizes=feature_sizes(len(ts)), d_model=d_model, n_layers=n_layers,
-                      n_heads=n_heads, dropout=dropout, n_cont=len(CONT_FEATURES) if ratings is not None else 0)
+    base = torch.load(init, map_location="cpu", weights_only=False) if init else None
+    if base is not None:
+        cfg = ModelConfig(**base["config"])
+        ts = TeamSeasonVocab([])
+        ts.keys = list(base["team_seasons"])
+        ts.idx = {k: i + 1 for i, k in enumerate(ts.keys)}
+        if lookup_ratings is None and base.get("ratings"):
+            lookup_ratings = pd.DataFrame(base["ratings"])
+        log.info("fine-tuning %s (d_model=%d, n_layers=%d)", init, cfg.d_model, cfg.n_layers)
+    else:
+        ts = build_team_seasons(train_g)
+        cfg = ModelConfig(feature_sizes=feature_sizes(len(ts)), d_model=d_model, n_layers=n_layers,
+                          n_heads=n_heads, dropout=dropout, n_cont=len(CONT_FEATURES) if ratings is not None else 0)
+    if lookup_ratings is None:
+        lookup_ratings = ratings  # only synthetic data: better than no pre-game ratings at all
     train_items = encode_games(plays[plays.game_id.isin(train_g.game_id)], train_g, ts, cfg.max_len, ratings)
     val_items = encode_games(plays[plays.game_id.isin(val_g.game_id)], val_g, ts, cfg.max_len, ratings) \
         if len(val_g) else []
     log.info("train games %d, val games %d", len(train_items), len(val_items))
 
     model = PlayTransformer(cfg)
+    if base is not None:
+        model.load_state_dict(base["state_dict"])
     log.info("params: %.2fM", sum(p.numel() for p in model.parameters()) / 1e6)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.05, betas=(0.9, 0.98))
     steps_per_epoch = math.ceil(len(train_items) / batch_size)
@@ -90,7 +141,8 @@ def train(data_dir: Path, out_dir: Path, *, val_season: int | None = 2025, val_w
         opt, lambda s: min(1.0, (s + 1) / warmup) * 0.5 * (1 + math.cos(math.pi * min(s, total_steps) / total_steps)))
 
     meta = dict(config=cfg.to_dict(), team_seasons=ts.keys, val_season=val_season, val_week=val_week,
-                ratings=RatingsTable(ratings).to_records() if ratings is not None else None)
+                ratings=RatingsTable(lookup_ratings).to_records() if lookup_ratings is not None else None,
+                init_checkpoint=str(init) if init else None)
     best, ckpt = float("inf"), out_dir / "model.pt"
     history = []
     step, t0 = 0, time.time()
