@@ -209,13 +209,32 @@ One-time GCP setup:
    allow its principal to impersonate a deployment service account. Grant that service account
    `roles/artifactregistry.writer`, `roles/run.admin`, and `roles/iam.serviceAccountUser` for the
    Cloud Run runtime service account.
-4. In the GitHub repository's **Settings → Secrets and variables → Actions → Variables**, set:
+4. In the GitHub repository's **Settings → Environments**, create an environment named
+   `production`. Under **Deployment branches and tags**, restrict it to `main` (and optionally add
+   required reviewers). Add these six **environment secrets** to it:
    `GOOGLE_CLOUD_PROJECT` (project ID), `CLOUD_RUN_REGION` (for example `us-central1`),
    `CLOUD_RUN_SERVICE` (for example `runitback`), `GAR_REPOSITORY` (Artifact Registry repository
-   name), `GCP_WORKLOAD_IDENTITY_PROVIDER` (full provider resource name), and
-   `GCP_DEPLOY_SERVICE_ACCOUNT` (deployment service-account email).
-   The workflow accepts all six settings as Actions secrets instead. If settings are missing, the
-   validation step names each missing variable or secret before authentication or deployment starts.
+   name), `GCP_WORKLOAD_IDENTITY_PROVIDER` (full provider resource name,
+   `projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/<POOL>/providers/<PROVIDER>`),
+   and `GCP_DEPLOY_SERVICE_ACCOUNT` (deployment service-account email).
+   The deploy job runs in the `production` environment, so it reads these secrets from there and is
+   subject to the environment's protection rules. Repository-level secrets with the same names are
+   overridden by the environment's values, so delete any old repository-level copies. If settings are
+   missing, the validation step names each missing secret before authentication or deployment starts.
+5. Allow the GitHub principal to impersonate the deployment service account. Because the job uses
+   an environment, GitHub's OIDC token subject is `repo:mefortunato/runitback:environment:production`
+   (not `...:ref:refs/heads/main`). If the provider maps `attribute.repository=assertion.repository`,
+   grant:
+
+   ```bash
+   gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
+     --role=roles/iam.workloadIdentityUser \
+     --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL_ID}/attribute.repository/mefortunato/runitback"
+   ```
+
+   A missing or mismatched binding makes the authentication step fail with
+   `Permission 'iam.serviceAccounts.getAccessToken' denied`. If the provider has an attribute
+   condition or binds on `google.subject`, update it to match the environment subject above.
    The deployment service account needs `roles/artifactregistry.writer` on the Artifact Registry
    repository (or its project) to push images. The workflow logs Docker in with the federated
    Google access token; if pushes still fail with an upload permission error, verify that role
