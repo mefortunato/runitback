@@ -16,7 +16,7 @@ from .engine.rules import new_game
 from .model.dataset import collate, encode_games
 from .model.lineups import CoachVocab, LineupData, PlayerVocab
 from .sim.sampler import GameLineups, Simulator
-from .model.boxscore import sim_box
+from .model.boxscore import expected_play_stats, sim_box, true_play_stats
 from .train import box_sigma, evaluate as model_nll, evaluate_box, split_games
 
 log = logging.getLogger(__name__)
@@ -136,6 +136,8 @@ def run(ckpt: Path, data_dir: Path, sims_per_game: int = 200, raw_dir: Path = Pa
     sigma = torch.tensor(sim.meta["box_sigma"]) if sim.meta.get("box_sigma") else box_sigma(val_items)
     report["box_teacher_forced_rmse"] = evaluate_box(sim.model, val_items, sigma)
     log.info("teacher-forced box-score RMSE %s", report["box_teacher_forced_rmse"])
+    report["margin_residual_halves"] = residual_compensation(sim.model, val_items)
+    log.info("margin residual halves %s", report["margin_residual_halves"])
     actual_box = _actual_box(val_p)
     sources = lineup_sources if ld is not None else ("team-only",)
     if ld is not None:
@@ -169,6 +171,33 @@ def run(ckpt: Path, data_dir: Path, sims_per_game: int = 200, raw_dir: Path = Pa
 
 
 BOX_COLS = ["home_rush", "home_pass", "away_rush", "away_pass"]
+
+
+@torch.no_grad()
+def residual_compensation(model, items: list[dict], batch_size: int = 25) -> dict:
+    """Teacher-forced check that per-play predictions don't 'remember' earlier misses.
+
+    For each game, the margin residual (real minus expected points, home minus away) is summed over
+    the first and second half of its plays. A calibrated model's halves are uncorrelated; a model
+    that shades late predictions to cancel early residuals (which a loss on game totals rewards
+    under teacher forcing, because later plays see the real score) shows a clearly negative
+    correlation and a game-level error well below the irreducible sqrt(early^2 + late^2)."""
+    from .vocab import YARDS_MIN
+    model.eval()
+    early, late = [], []
+    for i in range(0, len(items), batch_size):
+        b = collate(items[i: i + batch_size])
+        f = b["feats"]
+        h = model.encode(f)
+        eo, ed = expected_play_stats(model, h, model.personnel(f), b["type_mask"], f["yl"])
+        to, td = true_play_stats(b["type"], b["result"], b["yards"] + YARDS_MIN, f["yl"])
+        res = ((to[..., 0] - eo[..., 0]) - (td - ed)) * (2 * f["is_home"].float() - 1) * b["valid"]
+        for k, n in enumerate(b["valid"].sum(1).long().tolist()):
+            early.append(float(res[k, : n // 2].sum()))
+            late.append(float(res[k, n // 2: n].sum()))
+    e, l = np.array(early), np.array(late)
+    return {"corr_early_late": float(np.corrcoef(e, l)[0, 1]), "rms_early": float(e.std()),
+            "rms_late": float(l.std()), "rms_game": float((e + l).std())}
 
 
 def _actual_box(plays: pd.DataFrame) -> pd.DataFrame:

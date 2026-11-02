@@ -97,6 +97,45 @@ players (3%, swapped for `OTHER`). So the model works with any amount of lineup 
 At inference each team defaults to **its most recent game** (who played, ranked by snaps). Users
 can replace any position group, reorder it, add a `"NEW"` player or swap the coach.
 
+### Game-level box-score loss (optional)
+
+`--box-weight w` adds a game-level term to the per-play loss:
+
+1. **Per play, expected stats.** Under teacher forcing (the real game states), the play heads give
+   P(type), P(result | type) and P(yards | type, result). Together with the engine's scoring rules,
+   they give each play's expected contribution for both teams:
+   - points: TD if yards ≥ yardline, return TD at spot 0, safety, FG / PAT / two-point good
+   - rushing yards: designed runs (nflverse labels scrambles as pass plays)
+   - passing yards: completions
+   - sacks taken and turnovers
+
+   All play types are marginalized, not just the real one. That's 8 result-head and 12 yards-head
+   evaluations per position, all differentiable.
+2. **Per game, sum.** Each batch row is one whole game (padded plays), so a game's predicted box
+   score is a masked sum over the play axis, split by which team had the ball. That gives 5 stats
+   per team plus the margin. The real box score uses the same definitions on the real outcomes; it
+   matches the real final score in about 97% of team-games (2024 sample).
+3. **Loss.** For each stat, (predicted − real) / σ, where σ is that stat's standard deviation
+   across training games (e.g. 10 points, 52 rushing yards, 76 passing yards, 14.6 margin). The
+   box term is ½·mean over games and stats of the squared values. Total loss = per-play NLL
+   (mean over plays) + w × box term.
+
+**Result: the box loss is off by default because it teaches a shortcut.** Under teacher forcing,
+later plays see the real score so far, and the game-total loss rewards using it. The model learns
+to shade late-game predictions so they cancel earlier misses: the sum looks accurate while each
+play's prediction is biased. On the 2025 held-out games (weight 1.0, after 3 epochs):
+
+| | margin RMSE, teacher-forced | corr(1st-half, 2nd-half margin residual) | next-play NLL (epoch 2) |
+|---|---|---|---|
+| no box loss (team-only and lineup models) | 11.9 | −0.02 | 5.97 |
+| box loss | 7.0 | **−0.47** | 6.10 |
+
+A calibrated model can't get below about 12 points here: each half's residual is about 8.5 points
+of genuine uncertainty. `evaluate` reports this check (`margin_residual_halves`) for every
+checkpoint. Any proper loss on teacher-forced per-play expectations reduces to a per-play loss.
+A game-level penalty that can't be gamed has to score games the model generates itself (rollouts),
+or predict the box score from pre-game information only.
+
 ### Evaluation (held-out: 2025 week 10+ and playoffs, 150 games, 200 sims each)
 
 | | v1 (team embeddings) | v2 (+ ratings) | Elo alone | Vegas spread |
@@ -111,6 +150,53 @@ passes, punts, FG attempts, turnovers and points per game are all within a few p
 real games. Stretching the ratings (`strength_scale` 2.0) widened the predicted margins but left
 Brier unchanged (0.232), so the remaining gap to Elo and the spread is about missing information,
 not calibration. 150 games is a small test set (Brier standard error about ±0.01).
+
+### Lineup experiments (same held-out split, 10 epochs each, CPU)
+
+| Model | Next-play NLL, actual lineup + on-field 22 | Next-play NLL, previous-game lineup | Brier, actual lineup | Brier, previous lineup |
+|---|---|---|---|---|
+| Team-only baseline | 5.840 | – | 0.234 | – |
+| Lineups v1 (192-wide players, light dropout) | 5.854 | 5.874 | 0.232 | 0.239 |
+| v2 (32-wide players, 0.2 lineup dropout, 20% hidden charts) | 5.840 | 5.853 | 0.238 | 0.230 |
+| v3 (v2 + 30% of team-games trained on the previous game's chart) | 5.838 | 5.853 | 0.236 | 0.232 |
+
+Paired bootstrap against the baseline (per-game, 95% intervals):
+
+- With who actually played, v2/v3 tie the baseline on next-play NLL (v3 −0.002, interval
+  −0.008..+0.004). That includes the 38 games where a team's most-used QB changed from its
+  previous game.
+- With the previous game's lineup (the realistic pre-kickoff input), lineup models are **worse**:
+  +0.013 NLL/play (+0.02 on QB-change games), significant.
+- No variant's Brier differs significantly from the baseline (all intervals include 0; 150 games
+  resolve roughly ±0.02).
+
+Ablation on v3 (next-play NLL):
+
+| v3 input | NLL |
+|---|---|
+| actual lineup + actual on-field 22 | 5.838 |
+| actual lineup + sampled 22 | 5.848 |
+| actual lineup + no 22 | 5.853 |
+| previous lineup + sampled 22 | 5.850 |
+| previous lineup + no 22 | 5.853 |
+
+**A stale depth chart costs nothing; the gap is per-play personnel.** The real on-field 22 carry
+pre-snap information (goal-line and heavy packages, special units) that the model learns to rely
+on. The simulator can only sample packages from league-wide frequencies, so at inference that
+information is missing. Lineup what-ifs also respond weakly (v3, 400 sims, ±2.5 pts): replacing the home starter with a
+`NEW` QB moves win probability by only 1–4 points in five 2026 matchups (Mahomes → Gabbert: none).
+A `NEW` QB for the visiting team moves it 5–11 points, and a new head coach 0–7. Team-season embeddings and EPA ratings were
+always fit with the same starter and soak up his value (collinearity), leaving little for the
+player embedding to carry.
+
+Next experiments, by expected value:
+1. Drop team-season and team embeddings (and possibly the EPA ratings) for most training
+   team-games whenever a lineup is known, so team strength has to flow through the players.
+2. Use per-play participation only as a *training* signal for player embeddings (no on-field 22
+   at inference), or teach the model to predict personnel itself so simulated packages are
+   team-specific.
+3. Evaluate walk-forward over several seasons (about 1,400 games) to resolve Brier differences
+   of 0.005.
 
 ## Quick start (pre-trained model)
 
@@ -314,6 +400,8 @@ legality masks match sampling-time masks, sampler termination, and the API.
 
 ## Limitations / next steps (NFL)
 
+- Lineup models don't yet beat the team-only model on held-out games, and they react too little
+  to quarterback changes (see *Lineup experiments*).
 - Lineups are what the user (or the previous game) says. The model doesn't know about injuries
   announced during the week. Per-play participation ends with 2025, so 2026 games train with depth
   charts but without on-field personnel. Player embeddings are static over a career (no aging curve).
