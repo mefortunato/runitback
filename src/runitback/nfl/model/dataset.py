@@ -11,6 +11,9 @@ from ..vocab import (
     NONE_RESULTS, SPOT_RESULTS,
 )
 from .features import CONT_FEATURES, FEATURES, TeamSeasonVocab
+from .lineups import N_COACH_CONT, N_GROUPS, N_PERS, N_SLOTS, SIDE, SLOT_GROUP, LineupData, other_token
+
+LINEUP_PLAY_KEYS = ("f_off_coach", "f_def_coach", "f_coach_cont", "pers", "pers_grp")
 
 PHASE_TYPES = np.zeros((3, len(PLAY_TYPES)), dtype=bool)
 for ph, types in TYPES_FOR_PHASE.items():
@@ -29,9 +32,51 @@ def build_team_seasons(games: pd.DataFrame) -> TeamSeasonVocab:
     return TeamSeasonVocab(keys)
 
 
+def encode_lineups(p: pd.DataFrame, pos: np.ndarray, home: np.ndarray, away: np.ndarray,
+                   ld: LineupData) -> dict[str, np.ndarray]:
+    """Per-play coach features and on-field personnel (possession side first)."""
+    n = len(p)
+    gids = p.game_id.to_numpy()
+    coach = {}
+    for gid in pd.unique(gids):
+        coach[gid] = (ld.coach(gid, "home"), ld.coach(gid, "away"))
+    hc = [coach[g][0] for g in gids]
+    ac = [coach[g][1] for g in gids]
+    is_home = pos == 0
+    off_coach = np.where(is_home, [c[0] for c in hc], [c[0] for c in ac]).astype(np.int32)
+    def_coach = np.where(is_home, [c[0] for c in ac], [c[0] for c in hc]).astype(np.int32)
+    hcv, acv = np.array([c[1] for c in hc], np.float32), np.array([c[1] for c in ac], np.float32)
+    coach_cont = np.concatenate([np.where(is_home[:, None], hcv, acv), np.where(is_home[:, None], acv, hcv)], 1)
+
+    pers = np.zeros((n, N_PERS), dtype=np.int32)
+    grp = np.zeros((n, N_PERS), dtype=np.int8)
+    slots = np.full((n, N_PERS), -2, dtype=np.int16)  # -2 = no personnel for this play
+    if "play_id" in p.columns and len(ld.personnel):
+        pe = ld.personnel.set_index(["game_id", "play_id"])
+        keys = pd.MultiIndex.from_arrays([p.game_id, p.play_id])
+        hit = pe.reindex(keys)
+        found = hit.home_ids.notna().to_numpy() & (p.play_type != "timeout").to_numpy()
+        for i in np.flatnonzero(found):
+            gid = gids[i]
+            sides = (hit.home_ids.iat[i], hit.away_ids.iat[i]) if pos[i] == 0 else \
+                (hit.away_ids.iat[i], hit.home_ids.iat[i])
+            for k, ids in enumerate(sides):
+                t, g, sl = ld.personnel_tokens(gid, list(ids))
+                m = len(t)
+                pers[i, k * SIDE: k * SIDE + m] = t
+                grp[i, k * SIDE: k * SIDE + m] = g
+                slots[i, k * SIDE: k * SIDE + m] = sl
+    return dict(f_off_coach=off_coach, f_def_coach=def_coach, f_coach_cont=coach_cont.astype(np.float32),
+                pers=pers, pers_grp=grp, pers_slot=slots)
+
+
 def encode_games(plays: pd.DataFrame, games: pd.DataFrame, ts: TeamSeasonVocab, max_len: int,
-                 ratings: pd.DataFrame | None = None):
-    """Returns a list of dicts of numpy arrays, one per game. `ratings` adds the "cont" features."""
+                 ratings: pd.DataFrame | None = None, lineups: LineupData | None = None,
+                 lineup_source: str = "game"):
+    """Returns a list of dicts of numpy arrays, one per game. `ratings` adds the "cont" features;
+    `lineups` adds depth charts, coaches and per-play personnel. lineup_source="game" uses who
+    played in the game itself (training), "previous" each team's previous game (what a user would
+    enter before kickoff) and "none" leaves depth charts unknown."""
     g = games.set_index("game_id")
     p = plays.sort_values(["game_id", "idx"]).reset_index(drop=True)
     meta = g.loc[p.game_id]
@@ -105,16 +150,35 @@ def encode_games(plays: pd.DataFrame, games: pd.DataFrame, ts: TeamSeasonVocab, 
 
     arrays = dict(**{f"f_{k}": v for k, v in feats.items()}, f_cont=cont, type=t_idx, result=r_idx, yards=y_idx,
                   elapsed=e_idx, type_mask=tmask, result_mask=rmask, y_lo=lo, y_hi=hi, el_hi=el_hi)
+    if lineups is not None:
+        arrays |= encode_lineups(p, pos, home, away, lineups)
+        if lineup_source != "game":  # per-play personnel is only known after the fact
+            arrays["pers"][:] = 0
+            arrays["pers_grp"][:] = 0
     bounds = np.flatnonzero(np.r_[first, True])
     out = []
     for a, b in zip(bounds[:-1], bounds[1:]):
         b = min(b, a + max_len)
-        out.append({k: v[a:b] for k, v in arrays.items()} | {"game_id": p.game_id.iloc[a]})
+        item = {k: v[a:b] for k, v in arrays.items()} | {"game_id": p.game_id.iloc[a]}
+        if lineups is not None:
+            gid, row = item["game_id"], g.loc[item["game_id"]]
+            if lineup_source == "game":
+                lu = [lineups.lineup(gid, row.home), lineups.lineup(gid, row.away)]
+            elif lineup_source == "previous":
+                lu = [lineups.previous_lineup(gid, t, int(row.season), int(row.week)) for t in (row.home, row.away)]
+            else:
+                lu = [np.zeros(N_SLOTS, np.int32)] * 2
+            item["lineup"] = np.stack(lu)
+        out.append(item)
     return out
 
 
 def collate(games: list[dict], unk_ts_prob: float = 0.0, rng: np.random.Generator | None = None,
-            unk_cont_prob: float = 0.0) -> dict:
+            unk_cont_prob: float = 0.0, unk_lineup_prob: float = 0.0, unk_pers_prob: float = 0.0,
+            other_player_prob: float = 0.0) -> dict:
+    """Pads games into a batch. During training the unk_* probabilities blank out team-seasons,
+    ratings, a team's whole depth chart or a game's personnel (so the model can run without them),
+    and other_player_prob swaps single players for their group's OTHER token."""
     B = len(games)
     T = max(len(g["type"]) for g in games)
 
@@ -133,6 +197,8 @@ def collate(games: list[dict], unk_ts_prob: float = 0.0, rng: np.random.Generato
     if unk_cont_prob > 0 and rng is not None:
         keep = torch.as_tensor(rng.random(B) >= unk_cont_prob, dtype=torch.float32)[:, None, None]
         feats["cont"] = feats["cont"] * keep
+    if "lineup" in games[0]:
+        feats |= _collate_lineups(games, pad, rng, unk_lineup_prob, unk_pers_prob, other_player_prob)
     valid = torch.zeros(B, T)
     for i, g in enumerate(games):
         valid[i, : len(g["type"])] = 1
@@ -147,3 +213,24 @@ def collate(games: list[dict], unk_ts_prob: float = 0.0, rng: np.random.Generato
     em[valid == 0] = True
     return dict(feats=feats, valid=valid, type=pad("type"), result=pad("result"), yards=pad("yards"),
                 elapsed=pad("elapsed"), type_mask=tm, result_mask=rm, yards_mask=ym, elapsed_mask=em)
+
+
+def _collate_lineups(games, pad, rng, unk_lineup_prob, unk_pers_prob, other_player_prob) -> dict:
+    B = len(games)
+    lineup = np.stack([g["lineup"] for g in games]).astype(np.int64)        # (B, 2, S)
+    pers = pad("pers", torch.long, (N_PERS,)).numpy()
+    grp = pad("pers_grp", torch.long, (N_PERS,)).numpy()
+    if rng is not None:
+        if unk_lineup_prob > 0:
+            lineup[rng.random((B, 2)) < unk_lineup_prob] = 0
+        if unk_pers_prob > 0:
+            pers[rng.random(B) < unk_pers_prob] = 0
+        if other_player_prob > 0:
+            swap = (rng.random(lineup.shape) < other_player_prob) & (lineup > 2 * N_GROUPS)
+            lineup = np.where(swap, other_token(0) + SLOT_GROUP[None, None, :], lineup)
+            swap = (rng.random(pers.shape) < other_player_prob) & (pers > 2 * N_GROUPS)
+            pers = np.where(swap, other_token(0) + grp - 1, pers)
+    grp = np.where(pers > 0, grp, 0)
+    return {"lineup": torch.as_tensor(lineup), "pers": torch.as_tensor(pers, dtype=torch.long),
+            "pers_grp": torch.as_tensor(grp), "off_coach": pad("f_off_coach"), "def_coach": pad("f_def_coach"),
+            "coach_cont": pad("f_coach_cont", torch.float32, (N_COACH_CONT,))}

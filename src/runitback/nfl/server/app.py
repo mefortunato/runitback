@@ -22,6 +22,7 @@ from ..sim.describe import describe
 from ..paths import checkpoint_path, data_dir
 from ..sim.season import FIRST_SEASON, LAST_SEASON, generate_schedule, playoff_game_count, simulate_season
 from ..sim.sampler import Simulator
+from ..data.players import DEPTH
 from ..vocab import PHASES, TEAMS
 
 app = FastAPI(title="Run It Back — NFL", version="0.1.0")
@@ -92,8 +93,9 @@ def set_sim(sim: Simulator) -> None:
 
 
 class Session:
-    def __init__(self, state: GameState, seed: int, ratings=None):
+    def __init__(self, state: GameState, seed: int, ratings=None, lineups=None):
         self.ratings = ratings
+        self.lineups = lineups
         self.history: list[tuple[GameState, Outcome]] = []
         self.log: list[dict] = []
         self.state = state
@@ -106,7 +108,15 @@ class Session:
     def view(self) -> dict:
         with self.lock:
             return {"state": self.state.to_dict(), "plays": self.log.copy(), "winprob": self.wp.copy(),
-                    "legal_play_types": [] if self.state.over else legal_types(self.state)}
+                    "legal_play_types": [] if self.state.over else legal_types(self.state),
+                    "lineups": self.lineups.spec if self.lineups is not None else None}
+
+
+class TeamLineup(BaseModel):
+    """A team's head coach and depth chart: {group: [player ids in depth order]}; "NEW" = new player.
+    Groups: QB RB WR TE OL DL LB DB K P LS. Groups left out keep the team's most recent game."""
+    coach: str | None = None
+    depth_chart: dict[str, list[str]] | None = None
 
 
 class NewGame(BaseModel):
@@ -115,6 +125,7 @@ class NewGame(BaseModel):
     season: int = 2026
     game_type: str = Field("REG", pattern="^(REG|POST)$")
     seed: int | None = None
+    lineups: dict[str, TeamLineup] | None = None  # keyed by team code (or "home"/"away")
 
 
 class Step(BaseModel):
@@ -134,6 +145,7 @@ class SimRequest(BaseModel):
     include_scores: bool = False
     week: int | None = None  # use ratings as of this week (default: latest)
     ratings: dict[str, dict[str, float]] | None = None  # e.g. {"KC": {"off_epa": 0.05, "elo": 1600}}
+    lineups: dict[str, TeamLineup] | None = None  # e.g. {"KC": {"depth_chart": {"QB": ["NEW"]}}}
 
 
 class SeasonRequest(BaseModel):
@@ -147,6 +159,21 @@ def _check_teams(*teams: str) -> None:
     for t in teams:
         if t not in TEAMS:
             raise HTTPException(422, f"unknown team {t}")
+
+
+def _lineups_arg(lineups: dict[str, TeamLineup] | None) -> dict | None:
+    if not lineups:
+        return None
+    return {k.upper() if k not in ("home", "away") else k: v.model_dump() for k, v in lineups.items()}
+
+
+def _resolve_lineups(sim: Simulator, home: str, away: str, season: int, lineups: dict[str, TeamLineup] | None):
+    if lineups and sim.lineups is None:
+        raise HTTPException(422, "this model was trained without lineups; retrain to use depth charts and coaches")
+    try:
+        return sim.lineups_for(home, away, season, _lineups_arg(lineups))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 def _session(gid: str) -> Session:
@@ -163,7 +190,61 @@ def health():
 @app.get("/api/teams")
 def teams():
     sim = get_sim()
-    return {"teams": TEAMS, "seasons": sim.seasons}
+    return {"teams": TEAMS, "seasons": sim.seasons, "lineups": sim.lineups is not None}
+
+
+def _lineup_resolver():
+    sim = get_sim()
+    if sim.lineups is None:
+        raise HTTPException(404, "this model was trained without lineups")
+    return sim.lineups
+
+
+@app.get("/api/teams/{team}/lineup")
+def team_lineup(team: str, season: int = 2026):
+    """A team's default lineup (its most recent game), with player and coach details, plus the
+    players to choose from: everyone whose latest team is this team, by position group."""
+    team = team.upper()
+    _check_teams(team)
+    r = _lineup_resolver()
+    d = r.default(team)
+    chart = {g: [r.describe(pid) for pid in ids] for g, ids in d["depth_chart"].items()}
+    pool: dict[str, list[dict]] = {}
+    for pid, info in r.players.items():
+        if info[3] == team and info[4] >= season - 1:
+            pool.setdefault(info[1], []).append(r.describe(pid))
+    for v in pool.values():
+        v.sort(key=lambda p: -p["career_games"])
+    coach = r.coach_summary(d["coach"], team, season) if d["coach"] else None
+    return {"team": team, "source": d.get("source"), "coach": d["coach"], "coach_info": coach,
+            "depth_chart": chart, "pool": pool, "groups": list(DEPTH), "max_depth": DEPTH}
+
+
+@app.get("/api/players")
+def players(q: str = "", group: str | None = None, limit: int = 25):
+    """Search the player directory by name (any team)."""
+    r = _lineup_resolver()
+    q = q.lower().strip()
+    out = []
+    for pid, info in r.players.items():
+        if (not q or q in info[0].lower()) and (group is None or info[1] == group):
+            out.append(r.describe(pid))
+    out.sort(key=lambda p: (-p["last_season"], -p["career_games"]))
+    return {"players": out[: max(1, min(limit, 200))]}
+
+
+@app.get("/api/coaches")
+def coaches(team: str | None = None, season: int = 2026, q: str = ""):
+    """Head coaches with their records before `season` (as seen from `team`)."""
+    r = _lineup_resolver()
+    out = []
+    for name, hist in r.history.items():
+        if q and q.lower() not in name.lower():
+            continue
+        last = max(h[0] for h in hist)
+        out.append({"name": name, "last_season": last, **r.coach_summary(name, (team or hist[-1][1]).upper(), season)})
+    out.sort(key=lambda c: (-c["last_season"], c["name"]))
+    return {"coaches": out}
 
 
 @app.post("/api/games")
@@ -173,8 +254,10 @@ def create_game(req: NewGame):
     if home == away:
         raise HTTPException(422, "home and away must differ")
     seed = req.seed if req.seed is not None else random.randrange(2**31)
+    sim = get_sim()
     s = Session(new_game(home, away, req.season, req.game_type, rng=random.Random(seed)), seed,
-                get_sim().ratings_for(home, away, req.season))
+                sim.ratings_for(home, away, req.season),
+                _resolve_lineups(sim, home, away, req.season, req.lineups))
     if len(SESSIONS) >= MAX_SESSIONS:
         SESSIONS.pop(next(iter(SESSIONS)))
     gid = uuid.uuid4().hex[:12]
@@ -196,14 +279,14 @@ def step(gid: str, req: Step):
         if req.play_type and req.play_type not in legal_types(s.state):
             raise HTTPException(422, f"{req.play_type} not legal now; legal: {legal_types(s.state)}")
         if s.cache is None:
-            s.cache = sim._prefill(s.history, s.ratings)
+            s.cache = sim._prefill(s.history, s.ratings, s.lineups)
         for i in range(req.count):
             if s.state.over or s.cache.len >= sim.model.cfg.max_len:
                 break
             forced = [{"play_type": req.play_type}] if (req.play_type and i == 0) else None
             prev = s.history[-1][1] if s.history else None
             o = sim.sample_step([s.state], [prev], s.cache, forced=forced, temperature=req.temperature, gen=s.gen,
-                                 ratings=s.ratings)[0]
+                                 ratings=s.ratings, lineups=s.lineups)[0]
             nxt = apply_outcome(s.state, o, s.rng)
             entry = {"n": len(s.history), "before": s.state.to_dict(), "outcome": o.__dict__,
                      "text": describe(s.state, o, nxt), "after": nxt.to_dict()}
@@ -238,12 +321,13 @@ def winprob(gid: str, n: int = 200):
         history = s.history.copy()
         seed = s.rng.randrange(2**31)
         ratings = s.ratings
+        lineups = s.lineups
     if state.over:
         d = state.score[0] - state.score[1]
         res = {"home_win": float(d > 0), "away_win": float(d < 0), "tie": float(d == 0),
                "home_score_mean": state.score[0], "away_score_mean": state.score[1]}
     else:
-        finals, _ = sim.rollout(state, n, history=history, seed=seed, ratings=ratings,
+        finals, _ = sim.rollout(state, n, history=history, seed=seed, ratings=ratings, lineups=lineups,
                                 inference_context=_model_scheduler.background)
         r = summarize(finals)
         res = {k: getattr(r, k) for k in ("home_win", "away_win", "tie", "home_score_mean", "away_score_mean")}
@@ -257,9 +341,12 @@ def winprob(gid: str, n: int = 200):
 def simulate(req: SimRequest):
     home, away = req.home.upper(), req.away.upper()
     _check_teams(home, away)
-    r = simulate_games(get_sim(), home, away, req.season, n=req.n, game_type=req.game_type,
+    sim = get_sim()
+    _resolve_lineups(sim, home, away, req.season, req.lineups)  # validate before simulating
+    r = simulate_games(sim, home, away, req.season, n=req.n, game_type=req.game_type,
                        seed=req.seed, temperature=req.temperature, week=req.week,
-                       ratings=req.ratings, inference_context=_model_scheduler.background)
+                       ratings=req.ratings, inference_context=_model_scheduler.background,
+                       lineups=_lineups_arg(req.lineups))
     return r.to_dict(include_scores=req.include_scores)
 
 

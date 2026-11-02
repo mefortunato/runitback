@@ -10,7 +10,26 @@ export interface Play { n: number; before: State; outcome: Outcome; text: string
 export interface WinProb { n: number; qtr: number; qsec: number; home_win: number; away_win: number; tie: number;
   home_score_mean: number; away_score_mean: number }
 export interface Game { id: string; state: State; plays: Play[]; winprob: WinProb[]; legal_play_types: string[];
-  new_plays?: Play[] }
+  new_plays?: Play[]; lineups?: Record<"home" | "away", { team: string; coach: string | null;
+    depth_chart: Record<string, string[]> }> | null }
+export type PlayerStatus = "known" | "new" | "limited history";
+export interface PlayerInfo {
+  id: string; name: string; group?: string; position?: string; team?: string;
+  last_season?: number; career_games?: number; status: PlayerStatus;
+}
+export interface CoachInfo {
+  name?: string; hc_seasons: number; team_seasons: number; career_games: number; career_win_pct: number;
+  status: "known" | "new" | "limited history" | "unknown"; teams: string[]; last_season?: number;
+}
+export interface TeamLineupView {
+  team: string; source: { game_id: string; season: number; week: number } | null;
+  coach: string | null; coach_info: CoachInfo | null; depth_chart: Record<string, PlayerInfo[]>;
+  pool: Record<string, PlayerInfo[]>; groups: string[]; max_depth: Record<string, number>;
+}
+/** A team's editable lineup: head coach and ordered depth chart per position group. */
+export interface LineupEdit { coach: string; depth_chart: Record<string, PlayerInfo[]>; edited: boolean }
+export type LineupRequest = Record<string, { coach: string | null; depth_chart: Record<string, string[]> }>;
+export const NEW_PLAYER: PlayerInfo = { id: "NEW", name: "New player", status: "new" };
 export interface SimResult {
   home: string; away: string; n: number; home_win: number; away_win: number; tie: number;
   home_score_mean: number; away_score_mean: number; margin_mean: number; total_mean: number;
@@ -58,15 +77,20 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  teams: () => call<{ teams: string[]; seasons: number[] }>("/teams"),
-  newGame: (home: string, away: string, season: number, game_type: string) =>
-    call<Game>("/games", { method: "POST", body: JSON.stringify({ home, away, season, game_type }) }),
+  teams: () => call<{ teams: string[]; seasons: number[]; lineups?: boolean }>("/teams"),
+  teamLineup: (team: string, season: number) => call<TeamLineupView>(`/teams/${team}/lineup?season=${season}`),
+  players: (q: string, group?: string) =>
+    call<{ players: PlayerInfo[] }>(`/players?q=${encodeURIComponent(q)}${group ? `&group=${group}` : ""}&limit=12`),
+  coaches: (season: number) => call<{ coaches: CoachInfo[] }>(`/coaches?season=${season}`),
+  newGame: (home: string, away: string, season: number, game_type: string, lineups?: LineupRequest | null) =>
+    call<Game>("/games", { method: "POST", body: JSON.stringify({ home, away, season, game_type, lineups }) }),
   step: (id: string, body: { play_type?: string; count?: number; temperature?: number }) =>
     call<Game>(`/games/${id}/step`, { method: "POST", body: JSON.stringify(body) }),
   undo: (id: string) => call<Game>(`/games/${id}/undo`, { method: "POST" }),
   winprob: (id: string, n = 150) => call<WinProb>(`/games/${id}/winprob?n=${n}`),
-  simulate: (home: string, away: string, season: number, game_type: string, n: number) =>
-    call<SimResult>("/simulate", { method: "POST", body: JSON.stringify({ home, away, season, game_type, n }) }),
+  simulate: (home: string, away: string, season: number, game_type: string, n: number,
+    lineups?: LineupRequest | null) =>
+    call<SimResult>("/simulate", { method: "POST", body: JSON.stringify({ home, away, season, game_type, n, lineups }) }),
   startSeason: (request: SeasonRequest) =>
     call<SeasonJob>("/seasons", { method: "POST", body: JSON.stringify(request) }),
   seasonJob: (id: string) => call<SeasonJob>(`/seasons/${id}`),

@@ -16,6 +16,10 @@ from .data.ratings import RatingsTable
 from .model.dataset import build_team_seasons, collate, encode_games
 from .model.features import CONT_FEATURES
 from .model.features import TeamSeasonVocab, feature_sizes
+from .model.lineups import (
+    CoachVocab, LineupData, PersonnelSampler, PlayerVocab, inference_meta, signature, situation_key,
+)
+from .vocab import PLAY_TYPES
 from .model.transformer import ModelConfig, PlayTransformer
 
 log = logging.getLogger(__name__)
@@ -57,6 +61,28 @@ def evaluate(model: PlayTransformer, items: list[dict], batch_size: int = 32) ->
     return {k: v / n for k, v in sums.items()} | {"total": sum(sums.values()) / n}
 
 
+def fit_personnel_sampler(items: list[dict]) -> PersonnelSampler:
+    """Count which depth-chart slots were on the field, per side and situation."""
+    from collections import Counter, defaultdict
+    samples: dict[str, Counter] = defaultdict(Counter)
+    for it in items:
+        if "pers_slot" not in it:
+            continue
+        has = np.flatnonzero((it["pers_slot"] > -2).any(1) & (it["pers"] > 0).all(1))
+        for i in has:
+            pt = PLAY_TYPES[it["type"][i]]
+            key = situation_key(pt, int(it["f_down"][i]), int(it["f_ytg"][i]), int(it["f_yl"][i]))
+            for role, sl in (("off", slice(0, 11)), ("def", slice(11, 22))):
+                sig = signature(it["pers_slot"][i, sl].tolist(), it["pers_grp"][i, sl].tolist())
+                samples[f"{role}|{key}"][sig] += 1
+                samples[f"{role}|{pt}"][sig] += 1
+    return PersonnelSampler.fit(samples)
+
+
+def _lineup_dir(dirs: Sequence[Path]) -> Path | None:
+    return next((Path(d) for d in dirs if (Path(d) / "player_games.parquet").exists()), None)
+
+
 def _is_synthetic(data_dir: Path) -> bool:
     meta = data_dir / "generation.json"
     return meta.is_file() and bool(json.loads(meta.read_text()).get("synthetic"))
@@ -96,7 +122,8 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
           epochs: int = 8, batch_size: int = 32, lr: float = 1e-3, d_model: int = 256, n_layers: int = 6,
           n_heads: int = 8, dropout: float = 0.1, min_season: int = 1999, max_games: int | None = None,
           unk_ts_prob: float = 0.1, unk_cont_prob: float = 0.05, use_ratings: bool = True, threads: int | None = None,
-          seed: int = 0, init: Path | None = None) -> Path:
+          seed: int = 0, init: Path | None = None, use_lineups: bool = True, unk_lineup_prob: float = 0.1,
+          unk_pers_prob: float = 0.15, other_player_prob: float = 0.03) -> Path:
     """Train a model on one or more data directories. With `init`, fine-tune that checkpoint: its
     architecture and team-season vocabulary are kept (team-seasons it has not seen use the unknown
     embedding) and d_model/n_layers/n_heads/dropout are ignored."""
@@ -111,6 +138,19 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
     if max_games:
         train_g = train_g.sample(min(max_games, len(train_g)), random_state=seed)
     base = torch.load(init, map_location="cpu", weights_only=False) if init else None
+    dirs = [Path(data_dir)] if isinstance(data_dir, (str, Path)) else [Path(d) for d in data_dir]
+    ld = None
+    if use_lineups and (base is None or base.get("lineup_meta")):
+        ldir = _lineup_dir(dirs)
+        if ldir is None:
+            log.warning("no player data found (runitback nfl preprocess builds it); training without lineups")
+        elif base is not None:
+            lm = base["lineup_meta"]
+            ld = LineupData.load(ldir, [], PlayerVocab(lm["player_vocab"]), CoachVocab(lm["coach_vocab"]))
+        else:
+            ld = LineupData.load(ldir, train_g.game_id)
+        if ld is not None:
+            log.info("lineups: %d players with embeddings, %d coaches", len(ld.pvocab.ids), len(ld.cvocab.names))
     if base is not None:
         cfg = ModelConfig(**base["config"])
         ts = TeamSeasonVocab([])
@@ -122,11 +162,12 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
     else:
         ts = build_team_seasons(train_g)
         cfg = ModelConfig(feature_sizes=feature_sizes(len(ts)), d_model=d_model, n_layers=n_layers,
-                          n_heads=n_heads, dropout=dropout, n_cont=len(CONT_FEATURES) if ratings is not None else 0)
+                          n_heads=n_heads, dropout=dropout, n_cont=len(CONT_FEATURES) if ratings is not None else 0,
+                          n_players=len(ld.pvocab) if ld else 0, n_coaches=len(ld.cvocab) if ld else 0)
     if lookup_ratings is None:
         lookup_ratings = ratings  # only synthetic data: better than no pre-game ratings at all
-    train_items = encode_games(plays[plays.game_id.isin(train_g.game_id)], train_g, ts, cfg.max_len, ratings)
-    val_items = encode_games(plays[plays.game_id.isin(val_g.game_id)], val_g, ts, cfg.max_len, ratings) \
+    train_items = encode_games(plays[plays.game_id.isin(train_g.game_id)], train_g, ts, cfg.max_len, ratings, ld)
+    val_items = encode_games(plays[plays.game_id.isin(val_g.game_id)], val_g, ts, cfg.max_len, ratings, ld) \
         if len(val_g) else []
     log.info("train games %d, val games %d", len(train_items), len(val_items))
 
@@ -143,12 +184,18 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
     meta = dict(config=cfg.to_dict(), team_seasons=ts.keys, val_season=val_season, val_week=val_week,
                 ratings=RatingsTable(lookup_ratings).to_records() if lookup_ratings is not None else None,
                 init_checkpoint=str(init) if init else None)
+    if ld is not None:
+        lm = inference_meta(ld, pd.read_parquet(_lineup_dir(dirs) / "coach_games.parquet"))
+        lm["personnel_sampler"] = fit_personnel_sampler(train_items).to_dict()
+        meta["lineup_meta"] = lm
+        log.info("personnel sampler: %d situations", len(lm["personnel_sampler"]))
     best, ckpt = float("inf"), out_dir / "model.pt"
     history = []
     step, t0 = 0, time.time()
     for epoch in range(epochs):
         for b in batches(train_items, batch_size, rng):
-            batch = collate([train_items[i] for i in b], unk_ts_prob, rng, unk_cont_prob)
+            batch = collate([train_items[i] for i in b], unk_ts_prob, rng, unk_cont_prob,
+                            unk_lineup_prob, unk_pers_prob, other_player_prob)
             loss, logs = model.loss(batch)
             opt.zero_grad(set_to_none=True)
             loss.backward()

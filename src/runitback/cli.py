@@ -23,12 +23,16 @@ def _log():
 
 
 @nfl.command()
-def download(start: int = 1999, end: int = 2026, force: bool = False):
-    """Download play-by-play via SportsDataverse."""
+def download(start: int = 1999, end: int = 2026, force: bool = False,
+             players: bool = typer.Option(True, help="also download snap counts, participation, players and coaches")):
+    """Download play-by-play via SportsDataverse, plus player and coach data from nflverse."""
     from .nfl.data.download import download_season
     _log()
     for s in range(start, end + 1):
         typer.echo(download_season(s, DATA / "raw", force))
+    if players:
+        from .nfl.data.players import download_players
+        download_players(list(range(start, end + 1)), DATA / "raw", force)
 
 
 @nfl.command()
@@ -46,13 +50,14 @@ def train(out: Path = RUNS / "prod",
           init: Path = typer.Option(None, help="fine-tune: start from this checkpoint's weights and architecture"),
           val_season: int = typer.Option(None, help="hold out late-season games of this season"),
           val_week: int = 10, epochs: int = 10, d_model: int = 192, n_layers: int = 4, n_heads: int = 6,
-          batch_size: int = 32, lr: float = 1e-3, threads: int = 0, max_games: int = 0):
+          batch_size: int = 32, lr: float = 1e-3, threads: int = 0, max_games: int = 0,
+          lineups: bool = typer.Option(True, help="player-level depth charts, per-play personnel and coaches")):
     """Train the transformer (or fine-tune one with --init)."""
     from .nfl.train import train as run
     _log()
     run(data or [DATA / "processed"], out, val_season=val_season, val_week=val_week, epochs=epochs,
         d_model=d_model, n_layers=n_layers, n_heads=n_heads, batch_size=batch_size, lr=lr,
-        threads=threads or None, max_games=max_games or None, init=init)
+        threads=threads or None, max_games=max_games or None, init=init, use_lineups=lineups)
 
 
 @nfl.command()

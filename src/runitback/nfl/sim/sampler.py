@@ -14,10 +14,26 @@ from ..engine.rules import GameState, Outcome, apply_outcome
 from ..model.features import (
     FEATURES, TeamSeasonVocab, elapsed_mask, encode_state, result_mask, type_mask, yards_mask,
 )
+from ..model.lineups import N_COACH_CONT, N_SLOTS, SIDE, LineupResolver
 from ..model.transformer import ModelConfig, PlayTransformer
 from ..vocab import PLAY_TYPES, PT, RESULTS, RS, idx_to_yards, yards_to_idx
 
 MAX_PLAYS = 330  # safety cap on plays per game (real games: 130-240)
+
+
+class GameLineups:
+    """Resolved model inputs for both teams: depth-chart slot tokens and coach token/features."""
+
+    def __init__(self, home_tokens, away_tokens, home_coach=(0, None), away_coach=(0, None), spec=None):
+        self.tokens = np.stack([home_tokens, away_tokens]).astype(np.int64)      # (2, S)
+        zero = [0.0] * (N_COACH_CONT // 2)
+        self.coach = [(home_coach[0], home_coach[1] or zero), (away_coach[0], away_coach[1] or zero)]
+        self.spec = spec  # the user-facing {"home": {...}, "away": {...}} it was built from
+
+    def row(self, pos: int) -> tuple[int, int, list[float]]:
+        """(offense coach, defense coach, coach features) from the possession side's view."""
+        o, d = self.coach[pos], self.coach[1 - pos]
+        return o[0], d[0], list(o[1]) + list(d[1])
 
 
 class Simulator:
@@ -28,6 +44,33 @@ class Simulator:
         self.meta = meta or {}
         self.ratings = ratings
         self.strength_scale = float(self.meta.get("strength_scale", 1.0))
+        lm = self.meta.get("lineup_meta")
+        self.lineups = LineupResolver(lm) if (lm and model.lineup is not None) else None
+
+    def lineup_spec(self, home: str, away: str, override: dict | None = None) -> dict:
+        """User-facing lineups for both teams: each team's most recent game, with `override`
+        ({team or "home"/"away": {"coach": str, "depth_chart": {group: [player ids]}}}) applied.
+        Depth-chart groups given in the override replace that group entirely."""
+        out = {}
+        for side, team in (("home", home), ("away", away)):
+            d = self.lineups.default(team) if self.lineups else {"coach": None, "depth_chart": {}}
+            o = (override or {}).get(team) or (override or {}).get(side) or {}
+            if o.get("coach") is not None:
+                d["coach"] = o["coach"] or None
+            if o.get("depth_chart"):
+                d["depth_chart"] = d["depth_chart"] | {g: list(v) for g, v in o["depth_chart"].items()}
+            out[side] = {"team": team, **d}
+        return out
+
+    def lineups_for(self, home: str, away: str, season: int, override: dict | None = None) -> GameLineups | None:
+        """Model inputs for a game's lineups (None for team-level models)."""
+        if self.lineups is None:
+            return None
+        spec = self.lineup_spec(home, away, override)
+        r = self.lineups
+        return GameLineups(r.tokens(spec["home"]["depth_chart"]), r.tokens(spec["away"]["depth_chart"]),
+                           r.coach_inputs(spec["home"]["coach"], home, season),
+                           r.coach_inputs(spec["away"]["coach"], away, season), spec)
 
     def ratings_for(self, home: str, away: str, season: int, week: int | None = None,
                     override: dict | None = None, strength_scale: float | None = None) -> tuple[dict, dict] | None:
@@ -61,13 +104,44 @@ class Simulator:
     def seasons(self) -> list[int]:
         return sorted({int(k.split("_")[1]) for k in self.ts.keys})
 
-    def _feats(self, states: list[GameState], prevs: list[Outcome | None], ratings=None) -> dict[str, torch.Tensor]:
+    def _feats(self, states: list[GameState], prevs: list[Outcome | None], ratings=None,
+               lineups: GameLineups | None = None) -> dict[str, torch.Tensor]:
         rows = [encode_state(s, p, self.ts, ratings) for s, p in zip(states, prevs)]
         feats = {f: torch.tensor([[r[f]] for r in rows], dtype=torch.long) for f in FEATURES}
         feats["cont"] = torch.tensor([[r["cont"]] for r in rows], dtype=torch.float32)
-        return feats
+        return feats | self._lineup_feats([[s] for s in states], lineups)
 
-    def _prefill(self, history: list[tuple[GameState, Outcome]], ratings=None):
+    def _lineup_feats(self, states: list[list[GameState]], lineups: GameLineups | None) -> dict:
+        """Lineup/coach inputs for a (B, T) grid of states; unknown lineups when None."""
+        if self.model.lineup is None:
+            return {}
+        B = len(states)
+        if lineups is None:
+            lineups = GameLineups(np.zeros(N_SLOTS), np.zeros(N_SLOTS))
+        rows = [[lineups.row(s.pos) for s in seq] for seq in states]
+        return {"lineup": torch.as_tensor(lineups.tokens).expand(B, -1, -1),
+                "off_coach": torch.tensor([[r[0] for r in seq] for seq in rows], dtype=torch.long),
+                "def_coach": torch.tensor([[r[1] for r in seq] for seq in rows], dtype=torch.long),
+                "coach_cont": torch.tensor([[r[2] for r in seq] for seq in rows], dtype=torch.float32)}
+
+    def _personnel(self, states: list[GameState], names: list[str], lineups: GameLineups | None,
+                   gen: torch.Generator):
+        """Sample the 22 players on the field for each row's play (after its play type is drawn)."""
+        if self.model.lineup is None:
+            return 0
+        B = len(states)
+        pers = np.zeros((B, 1, 2 * SIDE), dtype=np.int64)
+        grp = np.zeros((B, 1, 2 * SIDE), dtype=np.int64)
+        if lineups is not None and self.lineups is not None:
+            rng = np.random.default_rng(int(torch.randint(2**31, (1,), generator=gen)))
+            for i, (s, n) in enumerate(zip(states, names)):
+                for k, (role, side) in enumerate((("off", s.pos), ("def", 1 - s.pos))):
+                    t, g = self.lineups.sampler.sample(role, n, s.down, s.ytg, s.yl, lineups.tokens[side], rng)
+                    pers[i, 0, k * SIDE:(k + 1) * SIDE] = t
+                    grp[i, 0, k * SIDE:(k + 1) * SIDE] = g
+        return self.model.lineup.personnel(torch.as_tensor(pers), torch.as_tensor(grp))[:, 0]
+
+    def _prefill(self, history: list[tuple[GameState, Outcome]], ratings=None, lineups: GameLineups | None = None):
         """Run the model over an existing play history (batch 1) and return the cache."""
         cache = self.model.new_cache(1)
         if history:
@@ -76,6 +150,7 @@ class Simulator:
             rows = [encode_state(s, p, self.ts, ratings) for s, p in zip(states, prevs)]
             feats = {f: torch.tensor([[r[f] for r in rows]], dtype=torch.long) for f in FEATURES}
             feats["cont"] = torch.tensor([[r["cont"] for r in rows]], dtype=torch.float32)
+            feats |= self._lineup_feats([states], lineups)
             self.model.encode(feats, cache)
         return cache
 
@@ -87,10 +162,11 @@ class Simulator:
     @torch.no_grad()
     def sample_step(self, states: list[GameState], prevs: list[Outcome | None], cache,
                     forced: list[dict | None] | None = None, temperature: float = 1.0,
-                    gen: torch.Generator | None = None, ratings=None) -> list[Outcome]:
+                    gen: torch.Generator | None = None, ratings=None,
+                    lineups: GameLineups | None = None) -> list[Outcome]:
         gen = gen or torch.Generator().manual_seed(random.randrange(2**31))
         forced = forced or [None] * len(states)
-        h = self.model.encode(self._feats(states, prevs, ratings), cache)[:, 0]
+        h = self.model.encode(self._feats(states, prevs, ratings, lineups), cache)[:, 0]
         m = self.model
 
         tm = np.stack([type_mask(s) for s in states])
@@ -101,40 +177,45 @@ class Simulator:
         t = self._sample(m.type_logits(h), tm, temperature, gen)
         tt = torch.as_tensor(t)
         names = [PLAY_TYPES[k] for k in t]
+        p = self._personnel(states, names, lineups, gen)
 
         rm = np.stack([result_mask(s, n) for s, n in zip(states, names)])
         for i, f in enumerate(forced):
             if f and f.get("result") in RS and rm[i, RS[f["result"]]]:
                 rm[i] = False
                 rm[i, RS[f["result"]]] = True
-        r = self._sample(m.result_logits(h, tt), rm, temperature, gen)
+        r = self._sample(m.result_logits(h, tt, p), rm, temperature, gen)
         rt = torch.as_tensor(r)
         rnames = [RESULTS[k] for k in r]
 
         ym = np.stack([yards_mask(s, n, rn) for s, n, rn in zip(states, names, rnames)])
-        y = self._sample(m.yards_logits(h, tt, rt), ym, temperature, gen)
+        y = self._sample(m.yards_logits(h, tt, rt, p), ym, temperature, gen)
         em = np.stack([elapsed_mask(s) for s in states])
-        e = self._sample(m.elapsed_logits(h, tt, rt, torch.as_tensor(y)), em, temperature, gen)
+        e = self._sample(m.elapsed_logits(h, tt, rt, torch.as_tensor(y), p), em, temperature, gen)
         return [Outcome(n, rn, idx_to_yards(yy), int(ee)) for n, rn, yy, ee in zip(names, rnames, y, e)]
 
     @torch.no_grad()
     def rollout(self, start: GameState, n: int, history: list[tuple[GameState, Outcome]] | None = None,
                 seed: int | None = None, temperature: float = 1.0, batch_size: int = 200,
                 keep_plays: int = 0, ratings: tuple[dict, dict] | None | str = "auto",
-                inference_context: Callable[[], ContextManager[None]] | None = None
+                inference_context: Callable[[], ContextManager[None]] | None = None,
+                lineups: GameLineups | None | str = "auto"
                 ) -> tuple[list[GameState], list[list[tuple[GameState, Outcome]]]]:
         """Simulate `n` continuations of a game from `start` (after `history`). Returns final states
         and, for the first `keep_plays` games, the simulated play logs. `ratings` = (home, away)
         pre-game team ratings; "auto" uses the latest known ratings for the game's season.
+        `lineups` (see lineups_for); "auto" uses each team's most recent depth chart and coach.
         `inference_context` can schedule each model call independently."""
         history = history or []
         if ratings == "auto":
             ratings = self.ratings_for(start.home, start.away, start.season)
+        if isinstance(lineups, str):
+            lineups = self.lineups_for(start.home, start.away, start.season)
         rng = random.Random(seed)
         gen = torch.Generator().manual_seed(rng.randrange(2**31))
         context = inference_context or nullcontext
         with context():
-            base = self._prefill(history, ratings)
+            base = self._prefill(history, ratings, lineups)
         finals, logs = [], []
         for b0 in range(0, n, batch_size):
             B = min(batch_size, n - b0)
@@ -147,7 +228,7 @@ class Simulator:
                     break
                 with context():
                     outs = self.sample_step(states, prevs, cache, temperature=temperature, gen=gen,
-                                            ratings=ratings)
+                                            ratings=ratings, lineups=lineups)
                 for i, (s, o) in enumerate(zip(states, outs)):
                     if s.over:
                         continue
