@@ -172,7 +172,11 @@ a { color: var(--accent); }
 .site-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
   padding: 4px 0 12px; margin-bottom: 14px; border-bottom: 1px solid var(--border); }
 .brand { font-size: 19px; font-weight: 800; color: var(--text); text-decoration: none; letter-spacing: -.01em; }
+.header-actions { display: flex; align-items: center; gap: 8px; }
 .site-header nav { display: flex; gap: 2px; }
+.theme-toggle { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0;
+  color: var(--text-2); }
+.theme-toggle:hover { color: var(--text); }
 .site-header nav a { color: var(--text-2); text-decoration: none; padding: 6px 12px; border-radius: 7px; font-weight: 550; }
 .site-header nav a:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .site-header nav a.selected { color: var(--text); background: color-mix(in srgb, var(--accent) 13%, transparent); }
