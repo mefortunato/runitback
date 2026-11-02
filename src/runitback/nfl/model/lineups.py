@@ -279,8 +279,9 @@ def inference_meta(ld: LineupData, schedule_coaches: pd.DataFrame, recent_season
     agg = pg[pg.player_id.isin(keep)].sort_values(["season", "week"]).groupby("player_id").agg(
         name=("name", "last"), group=("group", "last"), position=("position", "last"),
         team=("team", "last"), last_season=("season", "last"), games=("career_games", "last"))
-    players = {pid: [r.name, r.group, r.position, r.team, int(r.last_season), int(r.games) + 1]
-               for pid, r in agg.iterrows()}
+    players = {pid: [name, group, pos, team, int(last), int(games) + 1] for pid, name, group, pos, team, last, games
+               in zip(agg.index, agg["name"], agg["group"], agg["position"], agg["team"], agg["last_season"],
+                      agg["games"])}
     # coach histories: (season, team, wins, losses, ties) per coach-season
     sc = schedule_coaches.dropna(subset=["result"]) if "result" in schedule_coaches else schedule_coaches
     hist: dict[str, list] = defaultdict(list)

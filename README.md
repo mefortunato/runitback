@@ -30,6 +30,7 @@ which reads the nflverse/nflfastR play-by-play releases), 1999–present.
 | Preprocessing | `src/runitback/nfl/data/preprocess.py` | nflverse rows → (state, outcome); outcomes are derived from the *next* play's state |
 | Shared trunk | `src/runitback/core/transformer.py` | causal block with a preallocated KV cache (sport-agnostic) |
 | Model | `src/runitback/nfl/model/transformer.py` | one position per play; heads factorized as type → result → yards → clock |
+| Players, lineups, coaches | `src/runitback/nfl/data/players.py`, `src/runitback/nfl/model/lineups.py` | depth charts, per-play personnel, NEW PLAYER rule, coach records, personnel sampler |
 | Sampler | `src/runitback/nfl/sim/sampler.py` | batched rollouts with a KV cache and legal-outcome masks |
 | API / server | `src/runitback/nfl/sim/api.py`, `src/runitback/nfl/server/app.py` | `simulate_games`, FastAPI |
 | Web | `web/` | Vite + React + TypeScript |
@@ -61,6 +62,40 @@ The model sees them from the possession team's side: its offense and defense, th
 offense and defense, and the Elo difference. For future games the simulator uses each team's
 latest ratings; `ratings={"KC": {...}}` overrides them for what-ifs. `strength_scale` stretches
 the rating gaps; production uses 1.5, which roughly matches the market's dispersion.
+
+### Players, lineups and coaches
+
+Team-season embeddings and ratings move slowly, so they miss a missing starter. The model also sees
+**who plays**:
+
+- **Depth charts (game level).** Each team's lineup is built from that game's snap counts (PFR via
+  nflverse, 2012+): players are ranked by snaps within 11 position groups (QB, RB, WR, TE, OL, DL,
+  LB, DB, K, P, LS), up to 9 deep. Each group is pooled separately with learned per-slot weights, so
+  QB1 has a channel of its own. The possession team's lineup enters every play as the offense and the
+  opponent's as the defense. This shapes play calling as well as outcomes.
+- **On-field personnel (play level).** For 2016–2025 the 22 players on the field for each play
+  (nflverse participation) are pooled per side and position group, then added to the result, yards
+  and clock heads *after* the play type is drawn. On-field players change how a play turns out, but
+  don't decide what is called (a punt unit on the field would otherwise make the 4th-down call for the
+  model). When simulating, a **personnel sampler** picks which depth-chart slots take the field (WR3
+  vs WR4, DL rotation, special-teams units) given the play type, down, distance and field position.
+  It learned these frequencies from the participation data, then fills the slots from the depth chart.
+- **New players.** A player's first 3 career games, and any id the model has never seen, use a
+  position-specific `NEW <group>` token (a new QB carries different uncertainty than a new long
+  snapper). Veterans with too little history for their own embedding use `OTHER <group>`. Players
+  who debuted before 2012 count as veterans.
+- **Head coaches** (schedules, 1999+): an offense-coach and a defense-coach embedding (`NEW COACH`
+  for a head coach's first 4 games or an unknown name, `OTHER COACH` for too little history), plus
+  his record before the game: seasons as head coach, seasons with this team, career games and a
+  win% shrunk toward .500. Careers of coaches already in charge in 1999 are truncated.
+  Coordinators are not in the nflverse data.
+
+Seasons without lineup data (before 2012) and synthetic seasons train with unknown depth charts,
+and training randomly hides depth charts (10% of team-games), personnel (15% of games) and single
+players (3%, swapped for `OTHER`). So the model works with any amount of lineup information.
+
+At inference each team defaults to **its most recent game** (who played, ranked by snaps). Users
+can replace any position group, reorder it, add a `"NEW"` player or swap the coach.
 
 ### Evaluation (held-out: 2025 week 10+ and playoffs, 150 games, 200 sims each)
 
@@ -103,8 +138,9 @@ pip install -e ".[data,dev]"   # adds sportsdataverse and test tools
 ### Pipeline
 
 ```bash
-runitback nfl download --start 1999 --end 2026     # raw parquet → data/nfl/raw/
+runitback nfl download --start 1999 --end 2026     # raw parquet → data/nfl/raw/ (+ players/: snaps, participation, coaches)
 runitback nfl preprocess --start 1999 --end 2026   # → data/nfl/processed/{games,plays,ratings}.parquet, prints engine agreement
+                                                   #   + {player_games,personnel,coaches,coach_games,players}.parquet
 # held-out evaluation run (validation = 2025 week 10+ and playoffs)
 runitback nfl train --out runs/nfl/eval --val-season 2025 --epochs 10
 runitback nfl evaluate --ckpt runs/nfl/eval/model.pt --sims 200
@@ -112,6 +148,10 @@ runitback nfl calibrate --ckpt runs/nfl/eval/model.pt --season 2024   # grid-sea
 # production model on all data
 runitback nfl train --out runs/nfl/prod --epochs 10
 ```
+
+Training uses lineups whenever the processed player tables exist; `--no-lineups` trains the
+team-only model. `evaluate` scores a lineup model three ways: with who actually played,
+with each team's previous-game lineup (what the app defaults to), and with no depth charts.
 
 The default model (d_model 192, 4 layers, 2.6M params) trains on a 4-core CPU in about 40
 minutes. Use `--d-model/--n-layers` for larger models on a GPU.
@@ -158,6 +198,11 @@ sim = Simulator.load("runs/nfl/prod/model.pt")
 r = simulate_games(sim, home="KC", away="BUF", season=2026, n=1000, seed=0)
 print(r.home_win, r.home_score_mean, r.away_score_mean, r.margin_quantiles)
 r.scores   # [(home, away), ...] for every simulated game
+
+# lineup what-ifs (lineup models): groups you pass replace the team's most recent game
+sim.lineup_spec("KC", "BUF")["home"]["depth_chart"]["QB"]      # ['00-0033873'] (Patrick Mahomes)
+r = simulate_games(sim, home="KC", away="BUF", season=2026, n=1000, seed=0,
+                   lineups={"KC": {"depth_chart": {"QB": ["NEW"]}, "coach": "Andy Reid"}})
 ```
 
 To continue a game in progress, call `sim.rollout(state, n, history=[(state, outcome), ...])`.
@@ -168,6 +213,11 @@ To continue a game in progress, call `sim.rollout(state, n, history=[(state, out
 curl -X POST localhost:8000/api/simulate -H 'Content-Type: application/json' \
   -d '{"home":"KC","away":"BUF","season":2026,"n":1000}'
 ```
+
+`/api/simulate` and `POST /api/games` take `"lineups": {"KC": {"coach": "...", "depth_chart": {"QB": [ids or "NEW"], ...}}}`.
+`GET /api/teams/{team}/lineup` returns the default depth chart with player details and coach record, plus
+the team's players to pick from; `GET /api/players?q=&group=` searches the league; `GET /api/coaches` lists coaches.
+In the web app, **Depth charts & coaches** opens the editor for both teams.
 
 Interactive endpoints: `POST /api/games`, `POST /api/games/{id}/step {play_type?, count?, temperature?}`,
 `POST /api/games/{id}/undo`, `GET /api/games/{id}`, `GET /api/games/{id}/winprob?n=200`, `GET /api/teams`.
@@ -264,8 +314,9 @@ legality masks match sampling-time masks, sampler termination, and the API.
 
 ## Limitations / next steps (NFL)
 
-- Team-level only, with no players or injuries. A starting-QB change is the biggest signal this
-  misses, and team ratings take several games to catch up to one.
+- Lineups are what the user (or the previous game) says. The model doesn't know about injuries
+  announced during the week. Per-play participation ends with 2025, so 2026 games train with depth
+  charts but without on-field personnel. Player embeddings are static over a career (no aging curve).
 - Win-probability accuracy is still below Elo alone and the Vegas spread. Next steps: a
   walk-forward evaluation over full seasons (2021–2025, about 1,400 games), then a starting-QB
   rating feature (nflverse depth charts, weekly rosters and injuries are all available before

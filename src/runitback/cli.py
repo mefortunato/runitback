@@ -51,13 +51,17 @@ def train(out: Path = RUNS / "prod",
           val_season: int = typer.Option(None, help="hold out late-season games of this season"),
           val_week: int = 10, epochs: int = 10, d_model: int = 192, n_layers: int = 4, n_heads: int = 6,
           batch_size: int = 32, lr: float = 1e-3, threads: int = 0, max_games: int = 0,
-          lineups: bool = typer.Option(True, help="player-level depth charts, per-play personnel and coaches")):
+          lineups: bool = typer.Option(True, help="player-level depth charts, per-play personnel and coaches"),
+          player_dim: int = typer.Option(32, help="player/coach embedding width (0 = d_model)"),
+          lineup_dropout: float = 0.2, unk_lineup_prob: float = 0.2, other_player_prob: float = 0.05):
     """Train the transformer (or fine-tune one with --init)."""
     from .nfl.train import train as run
     _log()
     run(data or [DATA / "processed"], out, val_season=val_season, val_week=val_week, epochs=epochs,
         d_model=d_model, n_layers=n_layers, n_heads=n_heads, batch_size=batch_size, lr=lr,
-        threads=threads or None, max_games=max_games or None, init=init, use_lineups=lineups)
+        threads=threads or None, max_games=max_games or None, init=init, use_lineups=lineups,
+        player_dim=player_dim, lineup_dropout=lineup_dropout, unk_lineup_prob=unk_lineup_prob,
+        other_player_prob=other_player_prob)
 
 
 @nfl.command()

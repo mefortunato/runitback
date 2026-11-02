@@ -26,6 +26,8 @@ class ModelConfig:
     n_cont: int = 0  # continuous team-strength inputs (0 = model without ratings)
     n_players: int = 0  # player tokens (0 = team-level model without lineups, coaches or personnel)
     n_coaches: int = 0
+    player_dim: int = 0  # player/coach embedding width, projected to d_model (0 = d_model)
+    lineup_dropout: float = 0.0  # dropout on the lineup/coach context and the personnel vector
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -41,9 +43,12 @@ class LineupEncoder(nn.Module):
     the number of WRs, TEs, DBs... on the field is visible), or a learned UNKNOWN vector.
     """
 
-    def __init__(self, n_players: int, d: int):
+    def __init__(self, n_players: int, d: int, player_dim: int = 0):
         super().__init__()
-        self.player = nn.Embedding(n_players, d, padding_idx=0)
+        pd_ = player_dim or d
+        emb = nn.Embedding(n_players, pd_, padding_idx=0)
+        # a narrow table with a shared projection limits how much each player can memorize
+        self.player = emb if pd_ == d else nn.Sequential(emb, nn.Linear(pd_, d, bias=False))
         self.slot = nn.Embedding(N_SLOTS, d)
         self.slot_w = nn.Parameter(torch.zeros(N_SLOTS))
         self.missing = nn.Parameter(torch.zeros(N_GROUPS, d))
@@ -86,11 +91,14 @@ class PlayTransformer(nn.Module):
         self.cfg = cfg
         d = cfg.d_model
         self.emb = nn.ModuleDict({f: nn.Embedding(cfg.feature_sizes[f], d) for f in FEATURES})
-        self.lineup = LineupEncoder(cfg.n_players, d) if cfg.n_players else None
+        self.lineup = LineupEncoder(cfg.n_players, d, cfg.player_dim) if cfg.n_players else None
         if cfg.n_players:
-            self.off_coach = nn.Embedding(max(cfg.n_coaches, 3), d)
-            self.def_coach = nn.Embedding(max(cfg.n_coaches, 3), d)
+            cd = cfg.player_dim or d
+            coach = lambda: nn.Embedding(max(cfg.n_coaches, 3), d) if cd == d else nn.Sequential(
+                nn.Embedding(max(cfg.n_coaches, 3), cd), nn.Linear(cd, d, bias=False))
+            self.off_coach, self.def_coach = coach(), coach()
             self.coach_cont = nn.Linear(N_COACH_CONT, d)
+            self.lineup_drop = nn.Dropout(cfg.lineup_dropout)
         self.pos = nn.Embedding(cfg.max_len, d)
         self.cont = nn.Linear(cfg.n_cont, d) if cfg.n_cont else None
         self.in_ln = nn.LayerNorm(d)
@@ -127,14 +135,14 @@ class PlayTransformer(nn.Module):
         home = feats["is_home"].bool()[..., None]                       # (B, T, 1)
         off = torch.where(home, teams[:, :1], teams[:, 1:])
         dfn = torch.where(home, teams[:, 1:], teams[:, :1])
-        return (self.lineup.as_off(off) + self.lineup.as_def(dfn) + self.off_coach(feats["off_coach"])
-                + self.def_coach(feats["def_coach"]) + self.coach_cont(feats["coach_cont"]))
+        return self.lineup_drop(self.lineup.as_off(off) + self.lineup.as_def(dfn) + self.off_coach(feats["off_coach"])
+                                + self.def_coach(feats["def_coach"]) + self.coach_cont(feats["coach_cont"]))
 
     def personnel(self, feats: dict[str, torch.Tensor]) -> torch.Tensor | int:
         """Per-play on-field vector added to the result/yards/clock heads (0 without lineups)."""
         if self.lineup is None or "pers" not in feats:
             return 0
-        return self.lineup.personnel(feats["pers"], feats["pers_grp"])
+        return self.lineup_drop(self.lineup.personnel(feats["pers"], feats["pers_grp"]))
 
     def new_cache(self, batch: int) -> KVCache:
         c = self.cfg

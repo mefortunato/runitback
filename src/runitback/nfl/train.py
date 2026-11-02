@@ -123,7 +123,8 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
           n_heads: int = 8, dropout: float = 0.1, min_season: int = 1999, max_games: int | None = None,
           unk_ts_prob: float = 0.1, unk_cont_prob: float = 0.05, use_ratings: bool = True, threads: int | None = None,
           seed: int = 0, init: Path | None = None, use_lineups: bool = True, unk_lineup_prob: float = 0.1,
-          unk_pers_prob: float = 0.15, other_player_prob: float = 0.03) -> Path:
+          unk_pers_prob: float = 0.15, other_player_prob: float = 0.03, player_dim: int = 0,
+          lineup_dropout: float = 0.0) -> Path:
     """Train a model on one or more data directories. With `init`, fine-tune that checkpoint: its
     architecture and team-season vocabulary are kept (team-seasons it has not seen use the unknown
     embedding) and d_model/n_layers/n_heads/dropout are ignored."""
@@ -163,7 +164,8 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
         ts = build_team_seasons(train_g)
         cfg = ModelConfig(feature_sizes=feature_sizes(len(ts)), d_model=d_model, n_layers=n_layers,
                           n_heads=n_heads, dropout=dropout, n_cont=len(CONT_FEATURES) if ratings is not None else 0,
-                          n_players=len(ld.pvocab) if ld else 0, n_coaches=len(ld.cvocab) if ld else 0)
+                          n_players=len(ld.pvocab) if ld else 0, n_coaches=len(ld.cvocab) if ld else 0,
+                          player_dim=player_dim, lineup_dropout=lineup_dropout)
     if lookup_ratings is None:
         lookup_ratings = ratings  # only synthetic data: better than no pre-game ratings at all
     train_items = encode_games(plays[plays.game_id.isin(train_g.game_id)], train_g, ts, cfg.max_len, ratings, ld)

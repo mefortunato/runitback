@@ -148,6 +148,8 @@ def run(ckpt: Path, data_dir: Path, sims_per_game: int = 200, raw_dir: Path = Pa
     for src in sources:
         df, stats = _simulate_val(sim, val_g, ratings, scale, sims_per_game, ld, src)
         report["game_by_lineup"][src] = _game_metrics(df)
+        report.setdefault("per_game", {})[src] = df[["game_id", "p_home", "pred_margin", "actual_margin",
+                                                      "spread"]].round(4).to_dict("records")
         if ld is not None:
             sub = df[df.game_id.isin(report["qb_change_games"])]
             if len(sub):
