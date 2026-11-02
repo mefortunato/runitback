@@ -1,4 +1,5 @@
-"""Command-line interface: runitback <sport> download | preprocess | train | evaluate | calibrate | simulate | serve."""
+"""Command-line interface: runitback serve, and runitback <nfl|nba> download | preprocess | train |
+evaluate | calibrate | simulate | serve."""
 from __future__ import annotations
 
 import csv
@@ -8,14 +9,20 @@ from pathlib import Path
 
 import typer
 
+from .nba import paths as nba_paths
 from .nfl.paths import data_dir, default_checkpoint, runs_dir
 
 app = typer.Typer(add_completion=False, help="Run It Back: simulate sports games one play at a time")
 nfl = typer.Typer(add_completion=False, help="NFL: data, training, evaluation, simulation and the web app")
+nba = typer.Typer(add_completion=False, help="NBA: data, training, evaluation, simulation and the web app")
 app.add_typer(nfl, name="nfl")
+app.add_typer(nba, name="nba")
 DATA = data_dir()
 RUNS = runs_dir()
 DEFAULT_CKPT = default_checkpoint()
+NBA_DATA = nba_paths.data_dir()
+NBA_RUNS = nba_paths.runs_dir()
+NBA_CKPT = nba_paths.default_checkpoint()
 
 
 def _log():
@@ -83,6 +90,118 @@ def simulate(home: str, away: str, season: int = 2026, n: int = 1000, game_type:
     from .nfl.sim.sampler import Simulator
     sim = Simulator.load(ckpt)
     res = simulate_games(sim, home.upper(), away.upper(), season, n=n, game_type=game_type, seed=seed)
+    _write_result(res, out, scores)
+
+
+@nfl.command("fetch-model")
+def fetch_model(version: str = "v0.1.0", dest: Path = DEFAULT_CKPT, force: bool = False):
+    """Download a released, pre-trained model (no data download or training needed)."""
+    from .nfl.release import fetch_model as run
+    typer.echo(f"model ready: {run(dest, version, force)}")
+
+
+def _serve(host: str, port: int, nfl_ckpt: Path | None = None, nba_ckpt: Path | None = None) -> None:
+    import os
+
+    import uvicorn
+    if nfl_ckpt is not None:
+        os.environ["RUNITBACK_NFL_CKPT"] = str(nfl_ckpt)
+    if nba_ckpt is not None:
+        os.environ["RUNITBACK_NBA_CKPT"] = str(nba_ckpt)
+    uvicorn.run("runitback.server:app", host=host, port=port)
+
+
+@app.command("serve")
+def serve_all(nfl_ckpt: Path = DEFAULT_CKPT, nba_ckpt: Path = NBA_CKPT, host: str = "127.0.0.1", port: int = 8000):
+    """Run the API + web app for every sport (a sport without a checkpoint shows how to get one)."""
+    _serve(host, port, nfl_ckpt, nba_ckpt)
+
+
+@nfl.command()
+def serve(ckpt: Path = DEFAULT_CKPT, host: str = "127.0.0.1", port: int = 8000):
+    """Run the API + web app (NFL checkpoint from --ckpt; NBA from RUNITBACK_NBA_CKPT)."""
+    _serve(host, port, nfl_ckpt=ckpt)
+
+
+# ---------------------------------------------------------------- NBA
+
+@nba.command("download")
+def nba_download(start: int = typer.Option(2015, help="first season (the year it ends: 2015 = 2014-15)"),
+                 end: int = 2027, force: bool = False):
+    """Download ESPN play-by-play via SportsDataverse."""
+    from .nba.data.download import download_season
+    _log()
+    for s in range(start, end + 1):
+        typer.echo(download_season(s, NBA_DATA / "raw", force))
+
+
+@nba.command("preprocess")
+def nba_preprocess(start: int = 2015, end: int = 2027):
+    """Convert raw play-by-play to engine/model events and report engine replay agreement."""
+    from .nba.data.preprocess import preprocess as run
+    _log()
+    run(list(range(start, end + 1)), NBA_DATA / "raw", NBA_DATA / "processed")
+
+
+@nba.command("train")
+def nba_train(out: Path = NBA_RUNS / "prod",
+              data: list[Path] = typer.Option(None, help="games/plays directory; repeat to combine several. "
+                                                          "Default: data/nba/processed"),
+              init: Path = typer.Option(None, help="fine-tune: start from this checkpoint"),
+              val_season: int = typer.Option(None, help="hold out the end of this season"),
+              val_fraction: float = 0.4, epochs: int = 6, d_model: int = 192, n_layers: int = 4,
+              n_heads: int = 6, batch_size: int = 32, lr: float = 1e-3, threads: int = 0, max_games: int = 0,
+              min_season: int = 2002):
+    """Train the NBA event transformer (or fine-tune one with --init)."""
+    from .nba.train import train as run
+    _log()
+    run(data or [NBA_DATA / "processed"], out, val_season=val_season, val_fraction=val_fraction, epochs=epochs,
+        d_model=d_model, n_layers=n_layers, n_heads=n_heads, batch_size=batch_size, lr=lr,
+        threads=threads or None, max_games=max_games or None, init=init, min_season=min_season)
+
+
+@nba.command("evaluate")
+def nba_evaluate(ckpt: Path = NBA_RUNS / "eval" / "model.pt", sims: int = 100, games: int = 150,
+                 out: Path = NBA_RUNS / "eval" / "report.json",
+                 strength_scale: float = typer.Option(None, help="override the checkpoint's calibrated scale")):
+    """Next-event NLL and full-game simulation metrics (vs Elo and the spread) on held-out games."""
+    from .nba.evaluate import run
+    _log()
+    report = run(ckpt, NBA_DATA / "processed", sims_per_game=sims, max_games=games, strength_scale=strength_scale)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=1))
+    typer.echo(json.dumps(report, indent=1))
+
+
+@nba.command("calibrate")
+def nba_calibrate(ckpt: Path = NBA_RUNS / "eval" / "model.pt", season: int = 2025, games: int = 100,
+                  sims: int = 100, write: bool = typer.Option(False, help="store the best scale in the checkpoint")):
+    """Fit the team-strength scale (stretches rating gaps) by Brier score on one season."""
+    from .nba.evaluate import calibrate as run
+    _log()
+    typer.echo(json.dumps(run(ckpt, NBA_DATA / "processed", season, games, sims, write=write), indent=1))
+
+
+@nba.command("simulate")
+def nba_simulate(home: str, away: str, season: int = 2027, n: int = 1000, game_type: str = "REG",
+                 seed: int = None, ckpt: Path = NBA_CKPT, out: Path = None, scores: bool = False):
+    """Sample N full games and print / save the outcome distribution (.json or .csv)."""
+    from .nba.sim.api import simulate_games
+    from .nba.sim.sampler import Simulator
+    from .nba.vocab import canon_team
+    sim = Simulator.load(ckpt)
+    res = simulate_games(sim, canon_team(home.upper()), canon_team(away.upper()), season, n=n,
+                         game_type=game_type, seed=seed)
+    _write_result(res, out, scores)
+
+
+@nba.command("serve")
+def nba_serve(ckpt: Path = NBA_CKPT, host: str = "127.0.0.1", port: int = 8000):
+    """Run the API + web app (NBA checkpoint from --ckpt; NFL from RUNITBACK_NFL_CKPT)."""
+    _serve(host, port, nba_ckpt=ckpt)
+
+
+def _write_result(res, out: Path | None, scores: bool) -> None:
     if out and out.suffix == ".csv":
         with out.open("w", newline="") as f:
             w = csv.writer(f)
@@ -94,23 +213,6 @@ def simulate(home: str, away: str, season: int = 2026, n: int = 1000, game_type:
     if out and out.suffix != ".csv":
         out.write_text(json.dumps(d, indent=1))
     typer.echo(json.dumps({k: v for k, v in d.items() if k != "margin_hist"}, indent=1))
-
-
-@nfl.command("fetch-model")
-def fetch_model(version: str = "v0.1.0", dest: Path = DEFAULT_CKPT, force: bool = False):
-    """Download a released, pre-trained model (no data download or training needed)."""
-    from .nfl.release import fetch_model as run
-    typer.echo(f"model ready: {run(dest, version, force)}")
-
-
-@nfl.command()
-def serve(ckpt: Path = DEFAULT_CKPT, host: str = "127.0.0.1", port: int = 8000):
-    """Run the API + web app."""
-    import os
-
-    import uvicorn
-    os.environ["RUNITBACK_NFL_CKPT"] = str(ckpt)
-    uvicorn.run("runitback.nfl.server.app:app", host=host, port=port)
 
 
 if __name__ == "__main__":

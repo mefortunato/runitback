@@ -1,15 +1,16 @@
 import { useState } from "react";
-import type { WinProb } from "./api";
-import { clock, qtrName } from "./api";
+import { clock, qtrName, type WinProb } from "../format";
 
-// Single series: home win probability by play number, 50% reference line.
-export default function WinProbChart({ data, home, away, total }: {
+// Single series: home win probability by play/event number, 50% reference line.
+export default function WinProbChart({ data, home, away, total, minN = 160, unit = "play" }: {
   data: WinProb[]; home: string; away: string; total: number;
+  minN?: number;   // x-axis length before the game gets longer than a typical one
+  unit?: string;   // what one step is called: "play" (NFL) or "event" (NBA)
 }) {
   const [hover, setHover] = useState<WinProb | null>(null);
   const W = 640, H = 180, L = 40, R = 12, T = 12, B = 24;
   const pts = [...data].sort((a, b) => a.n - b.n);
-  const maxN = Math.max(total, 160, ...pts.map((p) => p.n));
+  const maxN = Math.max(total, minN, ...pts.map((p) => p.n));
   const sx = (n: number) => L + (n / maxN) * (W - L - R);
   const sy = (p: number) => T + (1 - p) * (H - T - B);
   const pHome = (w: WinProb) => w.home_win + w.tie / 2;
@@ -21,6 +22,7 @@ export default function WinProbChart({ data, home, away, total }: {
     for (const p of pts) if (!best || Math.abs(p.n - n) < Math.abs(best.n - n)) best = p;
     setHover(best);
   };
+  const Unit = unit[0].toUpperCase() + unit.slice(1);
   return (
     <figure className="wp">
       <figcaption>
@@ -38,7 +40,7 @@ export default function WinProbChart({ data, home, away, total }: {
           ))}
           <text x={L + 4} y={T + 10} className="axis">{home}</text>
           <text x={L + 4} y={H - B - 4} className="axis">{away}</text>
-          <text x={W - R} y={H - 6} className="axis" textAnchor="end">play #</text>
+          <text x={W - R} y={H - 6} className="axis" textAnchor="end">{unit} #</text>
           {path && <path d={path} className="wp-line" />}
           {pts.length > 0 && (
             <circle cx={sx(pts[pts.length - 1].n)} cy={sy(pHome(pts[pts.length - 1]))} r="4" className="wp-dot" />
@@ -53,7 +55,7 @@ export default function WinProbChart({ data, home, away, total }: {
         {hover && (
           <div className="tip" style={{ left: `${(sx(hover.n) / W) * 100}%` }}>
             <strong>{Math.round(pHome(hover) * 100)}%</strong> {home} win
-            <div className="muted">Play {hover.n} · {qtrName(hover.qtr)} {clock(hover.qsec)}</div>
+            <div className="muted">{Unit} {hover.n} · {qtrName(hover.qtr)} {clock(hover.qsec)}</div>
             <div className="muted">Proj. {hover.home_score_mean.toFixed(1)}–{hover.away_score_mean.toFixed(1)}</div>
           </div>
         )}

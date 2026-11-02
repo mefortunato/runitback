@@ -1,4 +1,4 @@
-from conftest import toy_games
+from .conftest import toy_games
 
 from runitback.nfl.data.ratings import ALPHA, CARRY, ELO_MEAN, RatingsTable, compute_ratings
 
