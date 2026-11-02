@@ -2,9 +2,14 @@
 
 Simulate sports games one play at a time, or replay a matchup a thousand times.
 
-Run It Back is built to cover several sports. Each sport has its own package with its rules,
-data and vocabulary (`runitback.nfl`). Shared pieces live in `runitback.core`: the transformer
-building blocks and the score-distribution summaries. **NFL** is the first sport.
+Run It Back covers several sports. Each sport has its own package with its rules, data and
+vocabulary (`runitback.nfl`, `runitback.nba`). Shared pieces live in `runitback.core`: the
+transformer building blocks, the score-distribution summaries, the model scheduler and training
+helpers. One server (`runitback.server`) serves every sport's API and the web app:
+
+- `/`: a landing page that explains the model and links to each sport
+- `/nfl`: the NFL game, forecast and season simulators
+- `/nba`: the NBA game and forecast simulators
 
 ## NFL
 
@@ -31,7 +36,7 @@ which reads the nflverse/nflfastR play-by-play releases), 1999–present.
 | Shared trunk | `src/runitback/core/transformer.py` | causal block with a preallocated KV cache (sport-agnostic) |
 | Model | `src/runitback/nfl/model/transformer.py` | one position per play; heads factorized as type → result → yards → clock |
 | Sampler | `src/runitback/nfl/sim/sampler.py` | batched rollouts with a KV cache and legal-outcome masks |
-| API / server | `src/runitback/nfl/sim/api.py`, `src/runitback/nfl/server/app.py` | `simulate_games`, FastAPI |
+| API / server | `src/runitback/nfl/sim/api.py`, `src/runitback/nfl/server/app.py` | `simulate_games`, FastAPI routes under `/api/nfl` |
 | Web | `web/` | Vite + React + TypeScript |
 
 **Outcome per play** (each field is sampled conditioned on the ones before it):
@@ -88,8 +93,11 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu   # or a CUDA
 pip install -e .
 (cd web && npm install && npm run build)
 runitback nfl fetch-model     # downloads the v0.1.0 release to runs/nfl/prod/model.pt, checks its SHA-256
-runitback nfl serve           # open http://127.0.0.1:8000
+runitback serve               # open http://127.0.0.1:8000
 ```
+
+No NBA model is released yet. Until you train one (see [NBA](#nba)), the NBA page shows the
+commands to do so and the rest of the app works as usual.
 
 The released model (see [Releases](https://github.com/mefortunato/runitback/releases)) includes team
 ratings through 2026 week 7. Retrain (below) to pick up later games.
@@ -121,7 +129,7 @@ minutes. Use `--d-model/--n-layers` for larger models on a GPU.
 **Web app**
 
 ```bash
-runitback nfl serve --ckpt runs/nfl/prod/model.pt   # http://127.0.0.1:8000 (serves web/dist)
+runitback serve --nfl-ckpt runs/nfl/prod/model.pt --nba-ckpt runs/nba/prod/model.pt   # http://127.0.0.1:8000 (serves web/dist)
 # frontend dev: (cd web && npm run dev)    # Vite on :5173, proxies /api to :8000
 ```
 In the **Season** view, pick a season (2002–2040, the 32-team era) and run. The backend builds the
@@ -165,17 +173,21 @@ To continue a game in progress, call `sim.rollout(state, n, history=[(state, out
 **HTTP**
 
 ```bash
-curl -X POST localhost:8000/api/simulate -H 'Content-Type: application/json' \
+curl -X POST localhost:8000/api/nfl/simulate -H 'Content-Type: application/json' \
   -d '{"home":"KC","away":"BUF","season":2026,"n":1000}'
 ```
 
-Interactive endpoints: `POST /api/games`, `POST /api/games/{id}/step {play_type?, count?, temperature?}`,
-`POST /api/games/{id}/undo`, `GET /api/games/{id}`, `GET /api/games/{id}/winprob?n=200`, `GET /api/teams`.
+Interactive endpoints (all under `/api/nfl`): `POST /games`, `POST /games/{id}/step {play_type?, count?, temperature?}`,
+`POST /games/{id}/undo`, `GET /games/{id}`, `GET /games/{id}/winprob?n=200`, `GET /teams`,
+`POST /seasons`, `GET /seasons/{id}`. The same NFL routes are still served without the `/nfl`
+prefix (`/api/simulate`, ...) for clients written before the NBA was added.
 
 ### Deploy to Google Cloud Run
 
 The repository includes a Docker image that builds the web app, installs the CPU version of PyTorch,
-and downloads the checksum-verified `v0.1.0` model during the image build. Install and authenticate
+and downloads the checksum-verified `v0.1.0` NFL model during the image build. It runs the combined
+server (`runitback.server:app`); the NBA page loads `RUNITBACK_NBA_CKPT`
+(`/app/runs/nba/prod/model.pt`) if the image contains one. Install and authenticate
 the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install), then create and edit the deployment
 environment file:
 
@@ -273,7 +285,7 @@ legality masks match sampling-time masks, sampler termination, and the API.
 - Some rare situations are simplified: untimed downs, penalty-forced re-kicks, defensive two-point
   returns, the 2024+ dynamic kickoff spot (the model learns the landing spots, but the field view
   shows the old 35-yard tee), and playoff OT coin tosses.
-- **Adding a sport** (e.g. `runitback.cfb` via cfbfastR, `runitback.nba` via hoopR) means writing
-  that sport's vocabulary, rules engine, preprocessing and outcome heads. The transformer trunk and
-  the summaries in `runitback.core` are reused. The NFL sampler and server are the template; the
-  next refactor is to move their sport-independent parts into `core` as the second sport lands.
+- **Adding a sport** (e.g. `runitback.cfb` via cfbfastR) means writing that sport's vocabulary,
+  rules engine, preprocessing and outcome heads, as `runitback.nba` does. The transformer trunk,
+  summaries, scheduler and batching in `runitback.core` are reused; the NFL and NBA samplers and
+  servers are near-identical templates and are the next candidates to move into `core`.

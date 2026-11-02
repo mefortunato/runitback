@@ -15,7 +15,7 @@ from runitback.nfl.sim.season import (
 from runitback.nfl.train import train
 from runitback.nfl.vocab import TEAMS
 
-from conftest import toy_games
+from .conftest import toy_games
 
 
 class FixedWinnerSimulator:

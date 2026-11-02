@@ -1,3 +1,7 @@
+import { call as http } from "../http";
+import type { SimResult, WinProb } from "../format";
+
+export type { SimResult, WinProb };
 export interface State {
   season: number; game_type: string; home: string; away: string;
   qtr: number; qsec: number; phase: "kickoff" | "pat" | "scrimmage";
@@ -7,16 +11,8 @@ export interface State {
 }
 export interface Outcome { play_type: string; result: string; yards: number; elapsed: number }
 export interface Play { n: number; before: State; outcome: Outcome; text: string; after: State }
-export interface WinProb { n: number; qtr: number; qsec: number; home_win: number; away_win: number; tie: number;
-  home_score_mean: number; away_score_mean: number }
 export interface Game { id: string; state: State; plays: Play[]; winprob: WinProb[]; legal_play_types: string[];
   new_plays?: Play[] }
-export interface SimResult {
-  home: string; away: string; n: number; home_win: number; away_win: number; tie: number;
-  home_score_mean: number; away_score_mean: number; margin_mean: number; total_mean: number;
-  margin_quantiles: Record<string, number>; total_quantiles: Record<string, number>;
-  margin_hist: Record<string, number>;
-}
 export interface SeasonGame {
   game_id: string; season: number; week: number; game_type: string; stage: string; round: string;
   home: string; away: string; home_score: number; away_score: number; winner: string | null;
@@ -49,13 +45,7 @@ export interface SeasonRequest {
   temperature: number; strength_mode: "checkpoint" | "neutral" | "randomized";
 }
 
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(`/api${path}`, {
-    ...init, headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-  });
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
-  return r.json();
-}
+const call = <T,>(path: string, init?: RequestInit) => http<T>(`/api/nfl${path}`, init);
 
 export const api = {
   teams: () => call<{ teams: string[]; seasons: number[] }>("/teams"),
@@ -72,8 +62,7 @@ export const api = {
   seasonJob: (id: string) => call<SeasonJob>(`/seasons/${id}`),
 };
 
-export const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-export const qtrName = (q: number) => (q <= 4 ? `Q${q}` : q === 5 ? "OT" : `OT${q - 4}`);
+export { clock, qtrName } from "../format";
 export const ordinal = (d: number) => ["", "1st", "2nd", "3rd", "4th"][d] || "";
 export function spot(s: State): string {
   const opp = s.pos === s.home ? s.away : s.home;

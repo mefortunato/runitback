@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from ..core.training import batches
 from .data.ratings import RatingsTable
 from .model.dataset import build_team_seasons, collate, encode_games
 from .model.features import CONT_FEATURES
@@ -27,19 +28,6 @@ def split_games(games: pd.DataFrame, val_season: int | None, val_week: int) -> t
         return games, games.iloc[:0]
     is_val = (games.season > val_season) | ((games.season == val_season) & (games.week >= val_week))
     return games[~is_val], games[(games.season == val_season) & (games.week >= val_week)]
-
-
-def batches(items: list[dict], batch_size: int, rng: np.random.Generator, shuffle: bool = True):
-    order = rng.permutation(len(items)) if shuffle else np.arange(len(items))
-    # bucket by length to reduce padding
-    chunks = [order[i: i + batch_size * 20] for i in range(0, len(order), batch_size * 20)]
-    out = []
-    for c in chunks:
-        c = sorted(c, key=lambda i: len(items[i]["type"]))
-        out += [c[i: i + batch_size] for i in range(0, len(c), batch_size)]
-    if shuffle:
-        rng.shuffle(out)
-    return out
 
 
 @torch.no_grad()

@@ -11,6 +11,7 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     RUNITBACK_NFL_CKPT=/app/runs/nfl/prod/model.pt \
+    RUNITBACK_NBA_CKPT=/app/runs/nba/prod/model.pt \
     RUNITBACK_WEB=/app/web/dist
 
 WORKDIR /app
@@ -22,6 +23,8 @@ RUN pip install --no-cache-dir --upgrade pip \
     && runitback nfl fetch-model --dest "$RUNITBACK_NFL_CKPT"
 
 COPY --from=web-build /app/web/dist ./web/dist
+# No NBA model is released yet: the NBA page explains how to train one. To ship one, copy a
+# checkpoint to runs/nba/prod/model.pt in the image (e.g. COPY runs/nba/prod/model.pt ...).
 
 EXPOSE 8080
-CMD ["sh", "-c", "uvicorn runitback.nfl.server.app:app --host 0.0.0.0 --port ${PORT:-8080}"]
+CMD ["sh", "-c", "uvicorn runitback.server:app --host 0.0.0.0 --port ${PORT:-8080}"]
