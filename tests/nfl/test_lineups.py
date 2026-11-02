@@ -185,3 +185,31 @@ def test_real_lineups_and_personnel_encode():
         assert has.mean() > 0.8                                      # most plays have all 22 players
     batch = collate(items)
     assert batch["feats"]["pers"].shape[-1] == 22 and batch["feats"]["lineup"].shape[1:] == (2, N_SLOTS)
+
+
+def test_box_score_loss_is_differentiable_and_exact_for_real_outcomes(lineup_sim):
+    from runitback.nfl.model.boxscore import GAME_STATS, game_box, true_play_stats
+    from runitback.nfl.vocab import PT, RS
+    # one game, 3 plays: home 12-yard TD run from the 12, away 30-yard completion, away interception
+    t = torch.tensor([[PT["run"], PT["pass"], PT["pass"]]])
+    r = torch.tensor([[RS["run"], RS["complete"], RS["interception"]]])
+    y = torch.tensor([[12, 30, 0]])           # interception returned for a TD (spot 0)
+    yl = torch.tensor([[12, 70, 40]])
+    off, dfn = true_play_stats(t, r, y, yl)
+    g = dict(zip(GAME_STATS, game_box(off, dfn, torch.tensor([[1, 0, 0]]), torch.ones(1, 3))[0].tolist()))
+    assert g["home_points"] == 12 and g["home_rush_yds"] == 12 and g["away_pass_yds"] == 30
+    assert g["away_turnovers"] == 1 and g["margin"] == 12
+    # the model's expected box score carries gradients back to the play heads
+    from runitback.nfl.model.boxscore import batch_box, box_loss
+    m = lineup_sim.model.train()
+    B, T = 1, 3
+    feats = {f: torch.zeros(B, T, dtype=torch.long) for f in m.emb}
+    feats |= {"cont": torch.zeros(B, T, 5), "yl": yl, "is_home": torch.tensor([[1, 0, 0]]), "phase": torch.full((B, T), 2)}
+    feats |= lineup_sim._lineup_feats([[new_game("KC", "BUF", 2025)] * T], lineup_sim.lineups_for("KC", "BUF", 2025))
+    batch = {"feats": feats, "valid": torch.ones(B, T), "type": t, "result": r, "yards": y + 99,
+             "type_mask": torch.ones(B, T, 11, dtype=torch.bool)}
+    pred, real = batch_box(m, m.encode(feats), m.personnel(feats), batch)
+    loss, logs = box_loss(pred, real, torch.ones(len(GAME_STATS)) * 10)
+    loss.backward()
+    assert m.yards_head[-1].weight.grad.abs().sum() > 0 and m.type_head[-1].weight.grad.abs().sum() > 0
+    m.eval()

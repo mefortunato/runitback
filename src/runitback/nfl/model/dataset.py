@@ -164,6 +164,7 @@ def encode_games(plays: pd.DataFrame, games: pd.DataFrame, ts: TeamSeasonVocab, 
             gid, row = item["game_id"], g.loc[item["game_id"]]
             if lineup_source == "game":
                 lu = [lineups.lineup(gid, row.home), lineups.lineup(gid, row.away)]
+                item["lineup_prev"] = np.stack([lineups.previous_lineup(gid, t) for t in (row.home, row.away)])
             elif lineup_source == "previous":
                 lu = [lineups.previous_lineup(gid, t, int(row.season), int(row.week)) for t in (row.home, row.away)]
             else:
@@ -175,10 +176,11 @@ def encode_games(plays: pd.DataFrame, games: pd.DataFrame, ts: TeamSeasonVocab, 
 
 def collate(games: list[dict], unk_ts_prob: float = 0.0, rng: np.random.Generator | None = None,
             unk_cont_prob: float = 0.0, unk_lineup_prob: float = 0.0, unk_pers_prob: float = 0.0,
-            other_player_prob: float = 0.0) -> dict:
+            other_player_prob: float = 0.0, prev_lineup_prob: float = 0.0) -> dict:
     """Pads games into a batch. During training the unk_* probabilities blank out team-seasons,
     ratings, a team's whole depth chart or a game's personnel (so the model can run without them),
-    and other_player_prob swaps single players for their group's OTHER token."""
+    other_player_prob swaps single players for their group's OTHER token, and prev_lineup_prob shows
+    a team's previous-game depth chart instead (what a user starts from before kickoff)."""
     B = len(games)
     T = max(len(g["type"]) for g in games)
 
@@ -198,7 +200,8 @@ def collate(games: list[dict], unk_ts_prob: float = 0.0, rng: np.random.Generato
         keep = torch.as_tensor(rng.random(B) >= unk_cont_prob, dtype=torch.float32)[:, None, None]
         feats["cont"] = feats["cont"] * keep
     if "lineup" in games[0]:
-        feats |= _collate_lineups(games, pad, rng, unk_lineup_prob, unk_pers_prob, other_player_prob)
+        feats |= _collate_lineups(games, pad, rng, unk_lineup_prob, unk_pers_prob, other_player_prob,
+                                  prev_lineup_prob)
     valid = torch.zeros(B, T)
     for i, g in enumerate(games):
         valid[i, : len(g["type"])] = 1
@@ -215,9 +218,14 @@ def collate(games: list[dict], unk_ts_prob: float = 0.0, rng: np.random.Generato
                 elapsed=pad("elapsed"), type_mask=tm, result_mask=rm, yards_mask=ym, elapsed_mask=em)
 
 
-def _collate_lineups(games, pad, rng, unk_lineup_prob, unk_pers_prob, other_player_prob) -> dict:
+def _collate_lineups(games, pad, rng, unk_lineup_prob, unk_pers_prob, other_player_prob,
+                     prev_lineup_prob=0.0) -> dict:
     B = len(games)
     lineup = np.stack([g["lineup"] for g in games]).astype(np.int64)        # (B, 2, S)
+    if rng is not None and prev_lineup_prob > 0 and "lineup_prev" in games[0]:
+        prev = np.stack([g["lineup_prev"] for g in games]).astype(np.int64)
+        use = (rng.random((B, 2)) < prev_lineup_prob) & prev.any(-1) & lineup.any(-1)
+        lineup[use] = prev[use]
     pers = pad("pers", torch.long, (N_PERS,)).numpy()
     grp = pad("pers_grp", torch.long, (N_PERS,)).numpy()
     if rng is not None:

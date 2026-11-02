@@ -164,7 +164,10 @@ class PlayTransformer(nn.Module):
     def elapsed_logits(self, h, t, r, y, p=0):
         return self.el_head(h + self.e_type(t) + self.e_res(r) + self.e_yards(y) + p)
 
-    def loss(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, dict[str, float]]:
+    def loss(self, batch: dict[str, torch.Tensor], box_weight: float = 0.0,
+             box_sigma: torch.Tensor | None = None) -> tuple[torch.Tensor, dict[str, float]]:
+        """Per-play NLL (mean over plays). With box_weight > 0, adds the game-level box-score loss:
+        each game's expected box score, summed from the per-play predictions, against the real one."""
         h = self.encode(batch["feats"])
         p = self.personnel(batch["feats"])
         valid = batch["valid"]
@@ -183,4 +186,10 @@ class PlayTransformer(nn.Module):
             l = (nll * valid).sum() / n
             total = total + l
             logs[name] = l.item()
+        if box_weight > 0:
+            from .boxscore import batch_box, box_loss
+            pred, real = batch_box(self, h, p, batch)
+            bl, blogs = box_loss(pred, real, box_sigma)
+            total = total + box_weight * bl
+            logs |= {"box": bl.item()} | blogs
         return total, logs

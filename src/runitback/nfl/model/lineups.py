@@ -120,10 +120,20 @@ class LineupData:
                             zip(allpg.game_id, allpg.player_id, allpg.tok, allpg.group, allpg.slot)}
         self.dir_group = dict(zip(players.player_id, players.group))
         self._lineups: dict[tuple[str, str], np.ndarray] = {}
+        self._carried: dict[tuple[str, str], np.ndarray] = {}  # same players, one career game later
+        tok_next = [pvocab.token(p, g, c + 1) for p, g, c in zip(pg.player_id, pg.group, pg.career_games)]
+        self.pg_tokens["tok_next"] = tok_next
         for (gid, team), d in self.pg_tokens.groupby(["game_id", "team"]):
             arr = np.zeros(N_SLOTS, dtype=np.int32)
             arr[d.slot.to_numpy()] = d.tok.to_numpy()
             self._lineups[(gid, team)] = arr
+            nxt = np.zeros(N_SLOTS, dtype=np.int32)
+            nxt[d.slot.to_numpy()] = d.tok_next.to_numpy()
+            self._carried[(gid, team)] = nxt
+        order = self.pg_tokens[["game_id", "team", "season", "week"]].drop_duplicates(["game_id", "team"])
+        order = order.sort_values(["team", "season", "week"])
+        prev = order.groupby("team").game_id.shift()
+        self._prev_game = {(g, t): p for g, t, p in zip(order.game_id, order.team, prev) if isinstance(p, str)}
         self.coach_rows = {(r.game_id, r.side): r for r in coaches.itertuples(index=False)}
 
     @classmethod
@@ -145,19 +155,17 @@ class LineupData:
         """Slot tokens of a team's depth chart in a game (all zeros = unknown lineup)."""
         return self._lineups.get((game_id, team), np.zeros(N_SLOTS, dtype=np.int32))
 
-    def previous_lineup(self, game_id: str, team: str, season: int, week: int) -> np.ndarray:
+    def previous_lineup(self, game_id: str, team: str, season: int | None = None, week: int | None = None
+                        ) -> np.ndarray:
         """The team's lineup in its most recent earlier game (what the UI defaults to)."""
-        d = self.pg_tokens
-        prev = d[(d.team == team) & ((d.season < season) | ((d.season == season) & (d.week < week)))]
-        if prev.empty:
+        prev = self._prev_game.get((game_id, team))
+        if prev is None and season is not None and (game_id, team) not in self._lineups:
+            d = self.pg_tokens  # a game without its own lineup (e.g. not played yet): search by date
+            d = d[(d.team == team) & ((d.season < season) | ((d.season == season) & (d.week < week)))]
+            prev = d.sort_values(["season", "week"]).game_id.iloc[-1] if len(d) else None
+        if prev is None:
             return np.zeros(N_SLOTS, dtype=np.int32)
-        last = prev.sort_values(["season", "week"]).game_id.iloc[-1]
-        rows = prev[prev.game_id == last]
-        arr = np.zeros(N_SLOTS, dtype=np.int32)
-        # one more career game has passed since that game
-        arr[rows.slot.to_numpy()] = [self.pvocab.token(p, g, c + 1) for p, g, c in
-                                     zip(rows.player_id, rows.group, rows.career_games)]
-        return arr
+        return self._carried[(prev, team)]
 
     def coach(self, game_id: str, side: str) -> tuple[int, list[float]]:
         r = self.coach_rows.get((game_id, side))

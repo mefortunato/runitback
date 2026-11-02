@@ -79,6 +79,33 @@ def fit_personnel_sampler(items: list[dict]) -> PersonnelSampler:
     return PersonnelSampler.fit(samples)
 
 
+def box_sigma(items: list[dict], batch_size: int = 64) -> torch.Tensor:
+    """Spread of each real box-score stat across training games (scales the box-score loss)."""
+    from .model.boxscore import game_box, true_play_stats
+    from .vocab import YARDS_MIN
+    rows = []
+    for i in range(0, len(items), batch_size):
+        b = collate(items[i: i + batch_size])
+        o, d = true_play_stats(b["type"], b["result"], b["yards"] + YARDS_MIN, b["feats"]["yl"])
+        rows.append(game_box(o, d, b["feats"]["is_home"], b["valid"]))
+    return torch.cat(rows).float().std(0).clamp(min=1e-3)
+
+
+@torch.no_grad()
+def evaluate_box(model: PlayTransformer, items: list[dict], sigma: torch.Tensor, batch_size: int = 32) -> dict:
+    """Teacher-forced box-score error on held-out games: RMSE of each stat (in its own units)."""
+    from .model.boxscore import GAME_STATS, batch_box
+    model.eval()
+    sq, n = 0.0, 0
+    for b in batches(items, batch_size, np.random.default_rng(0), shuffle=False):
+        batch = collate([items[i] for i in b])
+        h = model.encode(batch["feats"])
+        pred, real = batch_box(model, h, model.personnel(batch["feats"]), batch)
+        sq, n = sq + ((pred - real) ** 2).sum(0), n + len(b)
+    model.train()
+    return {k: float(v) for k, v in zip(GAME_STATS, (sq / n) ** 0.5)}
+
+
 def _lineup_dir(dirs: Sequence[Path]) -> Path | None:
     return next((Path(d) for d in dirs if (Path(d) / "player_games.parquet").exists()), None)
 
@@ -124,7 +151,7 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
           unk_ts_prob: float = 0.1, unk_cont_prob: float = 0.05, use_ratings: bool = True, threads: int | None = None,
           seed: int = 0, init: Path | None = None, use_lineups: bool = True, unk_lineup_prob: float = 0.1,
           unk_pers_prob: float = 0.15, other_player_prob: float = 0.03, player_dim: int = 0,
-          lineup_dropout: float = 0.0) -> Path:
+          lineup_dropout: float = 0.0, prev_lineup_prob: float = 0.0, box_weight: float = 0.0) -> Path:
     """Train a model on one or more data directories. With `init`, fine-tune that checkpoint: its
     architecture and team-season vocabulary are kept (team-seasons it has not seen use the unknown
     embedding) and d_model/n_layers/n_heads/dropout are ignored."""
@@ -183,9 +210,11 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min(1.0, (s + 1) / warmup) * 0.5 * (1 + math.cos(math.pi * min(s, total_steps) / total_steps)))
 
+    sigma = box_sigma(train_items)
+    log.info("box-score scales: %s", [round(float(x), 1) for x in sigma])
     meta = dict(config=cfg.to_dict(), team_seasons=ts.keys, val_season=val_season, val_week=val_week,
                 ratings=RatingsTable(lookup_ratings).to_records() if lookup_ratings is not None else None,
-                init_checkpoint=str(init) if init else None)
+                init_checkpoint=str(init) if init else None, box_weight=box_weight, box_sigma=sigma.tolist())
     if ld is not None:
         lm = inference_meta(ld, pd.read_parquet(_lineup_dir(dirs) / "coach_games.parquet"))
         lm["personnel_sampler"] = fit_personnel_sampler(train_items).to_dict()
@@ -197,8 +226,8 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
     for epoch in range(epochs):
         for b in batches(train_items, batch_size, rng):
             batch = collate([train_items[i] for i in b], unk_ts_prob, rng, unk_cont_prob,
-                            unk_lineup_prob, unk_pers_prob, other_player_prob)
-            loss, logs = model.loss(batch)
+                            unk_lineup_prob, unk_pers_prob, other_player_prob, prev_lineup_prob)
+            loss, logs = model.loss(batch, box_weight, sigma)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -207,10 +236,15 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
             step += 1
             if step % 50 == 0:
                 log.info("ep %d step %d/%d loss %.4f %s (%.0fs)", epoch, step, total_steps, loss.item(),
-                         " ".join(f"{k}={v:.3f}" for k, v in logs.items()), time.time() - t0)
+                         " ".join(f"{k}={v:.3f}" for k, v in logs.items() if not k.startswith("box_")),
+                         time.time() - t0)
         val = evaluate(model, val_items) if val_items else {}
-        history.append({"epoch": epoch, **{f"val_{k}": v for k, v in val.items()}})
+        vbox = evaluate_box(model, val_items, sigma) if val_items else {}
+        history.append({"epoch": epoch, **{f"val_{k}": v for k, v in val.items()},
+                        **{f"val_box_rmse_{k}": v for k, v in vbox.items()}})
         log.info("epoch %d val %s", epoch, json.dumps({k: round(v, 4) for k, v in val.items()}))
+        if vbox:
+            log.info("epoch %d val box-score RMSE %s", epoch, json.dumps({k: round(v, 2) for k, v in vbox.items()}))
         score = val.get("total", -epoch)
         if score < best or not val_items:
             best = score

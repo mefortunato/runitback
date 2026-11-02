@@ -53,7 +53,10 @@ def train(out: Path = RUNS / "prod",
           batch_size: int = 32, lr: float = 1e-3, threads: int = 0, max_games: int = 0,
           lineups: bool = typer.Option(True, help="player-level depth charts, per-play personnel and coaches"),
           player_dim: int = typer.Option(32, help="player/coach embedding width (0 = d_model)"),
-          lineup_dropout: float = 0.2, unk_lineup_prob: float = 0.2, other_player_prob: float = 0.05):
+          lineup_dropout: float = 0.2, unk_lineup_prob: float = 0.2, other_player_prob: float = 0.05,
+          prev_lineup_prob: float = typer.Option(0.0, help="share of team-games trained on the previous game's "
+                                                            "depth chart (what users start from)"),
+          box_weight: float = typer.Option(0.0, help="weight of the game-level box-score loss (0 = off)")):
     """Train the transformer (or fine-tune one with --init)."""
     from .nfl.train import train as run
     _log()
@@ -61,7 +64,7 @@ def train(out: Path = RUNS / "prod",
         d_model=d_model, n_layers=n_layers, n_heads=n_heads, batch_size=batch_size, lr=lr,
         threads=threads or None, max_games=max_games or None, init=init, use_lineups=lineups,
         player_dim=player_dim, lineup_dropout=lineup_dropout, unk_lineup_prob=unk_lineup_prob,
-        other_player_prob=other_player_prob)
+        other_player_prob=other_player_prob, prev_lineup_prob=prev_lineup_prob, box_weight=box_weight)
 
 
 @nfl.command()

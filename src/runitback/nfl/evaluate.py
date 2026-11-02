@@ -16,7 +16,8 @@ from .engine.rules import new_game
 from .model.dataset import collate, encode_games
 from .model.lineups import CoachVocab, LineupData, PlayerVocab
 from .sim.sampler import GameLineups, Simulator
-from .train import evaluate as model_nll, split_games
+from .model.boxscore import sim_box
+from .train import box_sigma, evaluate as model_nll, evaluate_box, split_games
 
 log = logging.getLogger(__name__)
 
@@ -132,6 +133,10 @@ def run(ckpt: Path, data_dir: Path, sims_per_game: int = 200, raw_dir: Path = Pa
     report["next_play_nll_baseline"] = _baseline_nll(train_items, val_items)
     log.info("NLL model %s", report["next_play_nll_model"])
     log.info("NLL baseline %s", report["next_play_nll_baseline"])
+    sigma = torch.tensor(sim.meta["box_sigma"]) if sim.meta.get("box_sigma") else box_sigma(val_items)
+    report["box_teacher_forced_rmse"] = evaluate_box(sim.model, val_items, sigma)
+    log.info("teacher-forced box-score RMSE %s", report["box_teacher_forced_rmse"])
+    actual_box = _actual_box(val_p)
     sources = lineup_sources if ld is not None else ("team-only",)
     if ld is not None:
         report["next_play_nll_by_lineup"] = {"game (with per-play personnel)": report["next_play_nll_model"]}
@@ -147,9 +152,12 @@ def run(ckpt: Path, data_dir: Path, sims_per_game: int = 200, raw_dir: Path = Pa
     report["game_by_lineup"] = {}
     for src in sources:
         df, stats = _simulate_val(sim, val_g, ratings, scale, sims_per_game, ld, src)
+        df = df.merge(actual_box, on="game_id", how="left")
         report["game_by_lineup"][src] = _game_metrics(df)
         report.setdefault("per_game", {})[src] = df[["game_id", "p_home", "pred_margin", "actual_margin",
                                                       "spread"]].round(4).to_dict("records")
+        report["game_by_lineup"][src]["box_mae"] = {
+            k: float((df[f"sim_{k}"] - df[f"act_{k}"]).abs().mean()) for k in BOX_COLS}
         if ld is not None:
             sub = df[df.game_id.isin(report["qb_change_games"])]
             if len(sub):
@@ -158,6 +166,19 @@ def run(ckpt: Path, data_dir: Path, sims_per_game: int = 200, raw_dir: Path = Pa
     report["game"] = report["game_by_lineup"][sources[0]]
     report["realism"] = _realism(plays, val_g, stats)
     return report
+
+
+BOX_COLS = ["home_rush", "home_pass", "away_rush", "away_pass"]
+
+
+def _actual_box(plays: pd.DataFrame) -> pd.DataFrame:
+    """Real rushing (designed runs) and passing (completions) yards per team, as the engine counts them."""
+    p = plays.assign(rush=np.where((plays.play_type == "run") & (plays.result == "run"), plays.yards, 0),
+                     pas=np.where((plays.play_type == "pass") & (plays.result == "complete"), plays.yards, 0))
+    g = p.groupby(["game_id", "pos"])[["rush", "pas"]].sum().unstack(fill_value=0)
+    return pd.DataFrame({"game_id": g.index, "act_home_rush": g[("rush", 0)].values,
+                         "act_home_pass": g[("pas", 0)].values, "act_away_rush": g[("rush", 1)].values,
+                         "act_away_pass": g[("pas", 1)].values})
 
 
 def _simulate_val(sim, val_g, ratings, scale, sims_per_game, ld, source):
@@ -179,7 +200,9 @@ def _simulate_val(sim, val_g, ratings, scale, sims_per_game, ld, source):
                          actual_total=g.home_final + g.away_final, spread=g.spread_line,
                          p_home=float((h > a).mean() + 0.5 * (h == a).mean()), pred_margin=float((h - a).mean()),
                          pred_total=float((h + a).mean()),
-                         elo_diff=(raw_pre[0]["elo"] - raw_pre[1]["elo"]) if pre else np.nan))
+                         elo_diff=(raw_pre[0]["elo"] - raw_pre[1]["elo"]) if pre else np.nan,
+                         **dict(zip([f"sim_{k}" for k in BOX_COLS],
+                                    np.mean([sim_box(lg) for lg in logs], 0) if logs else [np.nan] * 4))))
         for lg, s in zip(logs, finals):
             types = [o.play_type for _, o in lg]
             stats["plays"].append(len(lg))
