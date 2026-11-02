@@ -25,7 +25,9 @@ export default function NbaApp() {
   const [speed, setSpeed] = useState(500);
   const [liveWp, setLiveWp] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [forecasting, setForecasting] = useState(false);
   const wpBusy = useRef(false);
+  const wpPending = useRef<Game | null>(null);
   const sinceWp = useRef(0);
 
   useEffect(() => {
@@ -35,14 +37,20 @@ export default function NbaApp() {
     }).catch((e) => setError(errorText(e)));
   }, []);
 
+  // One win-probability rollout at a time; a request made meanwhile runs next, for the latest state.
   const refreshWp = useCallback(async (g: Game) => {
-    if (wpBusy.current) return;
+    if (wpBusy.current) { wpPending.current = g; return; }
     wpBusy.current = true;
     try {
-      const wp = await api.winprob(g.id);
+      const wp = await api.winprob(g.id, 100);
       setGame((cur) => cur && cur.id === g.id
         ? { ...cur, winprob: [...cur.winprob.filter((w) => w.n !== wp.n), wp] } : cur);
-    } catch { /* non-fatal */ } finally { wpBusy.current = false; }
+    } catch { /* non-fatal */ } finally {
+      wpBusy.current = false;
+      const next = wpPending.current;
+      wpPending.current = null;
+      if (next) refreshWp(next);
+    }
   }, []);
 
   // Win probability is refreshed every `wpEvery` events (rollouts are the expensive part).
@@ -66,7 +74,7 @@ export default function NbaApp() {
     }
   };
 
-  const start = () => { setAuto(false); run(() => api.newGame(home, away, season, gameType)); };
+  const start = () => { setAuto(false); wpPending.current = null; run(() => api.newGame(home, away, season, gameType)); };
   const step = (body: StepBody, wpEvery = 1) => game && run(() => api.step(game.id, body), wpEvery);
 
   useEffect(() => {
@@ -78,10 +86,11 @@ export default function NbaApp() {
 
   const doForecast = async () => {
     setBusy(true);
+    setForecasting(true);
     setError(null);
     try { setForecast(await api.simulate(home, away, season, gameType, 1000)); }
     catch (e) { setError(errorText(e)); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setForecasting(false); }
   };
 
   const ready = meta?.model_loaded ?? false;
@@ -118,7 +127,8 @@ runitback serve`}</code></pre>
         <label>Type<select value={gameType} onChange={(e) => setGameType(e.target.value)}>
           <option value="REG">Regular season</option><option value="POST">Playoffs</option></select></label>
         <button className="primary" disabled={!ready || busy || home === away} onClick={start}>New game</button>
-        <button disabled={!ready || busy || home === away} onClick={doForecast}>Forecast 1,000 games</button>
+        <button disabled={!ready || busy || home === away} onClick={doForecast} aria-busy={forecasting}>
+          {forecasting ? "Simulating 1,000 games…" : "Forecast 1,000 games"}</button>
       </section>
       {error && <div className="error" role="alert">{error}</div>}
 
