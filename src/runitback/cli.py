@@ -53,13 +53,16 @@ def train(out: Path = RUNS / "prod",
           init: Path = typer.Option(None, help="fine-tune: start from this checkpoint's weights and architecture"),
           val_season: int = typer.Option(None, help="hold out late-season games of this season"),
           val_week: int = 10, epochs: int = 10, d_model: int = 192, n_layers: int = 4, n_heads: int = 6,
-          batch_size: int = 32, lr: float = 1e-3, threads: int = 0, max_games: int = 0):
+          batch_size: int = 32, lr: float = 1e-3, threads: int = 0, max_games: int = 0,
+          device: str = typer.Option("auto", help="auto (CUDA GPU, then Apple MPS, then CPU), cpu, cuda, cuda:N or mps"),
+          amp: bool = typer.Option(True, help="bf16 mixed precision on CUDA GPUs that support it"),
+          ):
     """Train the transformer (or fine-tune one with --init)."""
     from .nfl.train import train as run
     _log()
     run(data or [DATA / "processed"], out, val_season=val_season, val_week=val_week, epochs=epochs,
         d_model=d_model, n_layers=n_layers, n_heads=n_heads, batch_size=batch_size, lr=lr,
-        threads=threads or None, max_games=max_games or None, init=init)
+        threads=threads or None, max_games=max_games or None, init=init, device=device, amp=amp)
 
 
 @nfl.command()
@@ -151,13 +154,16 @@ def nba_train(out: Path = NBA_RUNS / "prod",
               val_season: int = typer.Option(None, help="hold out the end of this season"),
               val_fraction: float = 0.4, epochs: int = 6, d_model: int = 192, n_layers: int = 4,
               n_heads: int = 6, batch_size: int = 32, lr: float = 1e-3, threads: int = 0, max_games: int = 0,
-              min_season: int = 2002):
+              min_season: int = 2002,
+              device: str = typer.Option("auto", help="auto (CUDA GPU, then Apple MPS, then CPU), cpu, cuda, cuda:N or mps"),
+              amp: bool = typer.Option(True, help="bf16 mixed precision on CUDA GPUs that support it"),
+              ):
     """Train the NBA event transformer (or fine-tune one with --init)."""
     from .nba.train import train as run
     _log()
     run(data or [NBA_DATA / "processed"], out, val_season=val_season, val_fraction=val_fraction, epochs=epochs,
         d_model=d_model, n_layers=n_layers, n_heads=n_heads, batch_size=batch_size, lr=lr,
-        threads=threads or None, max_games=max_games or None, init=init, min_season=min_season)
+        threads=threads or None, max_games=max_games or None, init=init, min_season=min_season, device=device, amp=amp)
 
 
 @nba.command("evaluate")

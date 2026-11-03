@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from ..core.training import batches
+from ..core.training import autocast, batches, cpu_state_dict, resolve_device, to_device
 from .data.ratings import RatingsTable
 from .model.dataset import build_team_seasons, collate, encode_games
 from .model.features import CONT_FEATURES, TeamSeasonVocab, feature_sizes
@@ -36,12 +36,14 @@ def split_games(games: pd.DataFrame, val_season: int | None, val_fraction: float
 
 
 @torch.no_grad()
-def evaluate(model: EventTransformer, items: list[dict], batch_size: int = 32) -> dict[str, float]:
+def evaluate(model: EventTransformer, items: list[dict], batch_size: int = 32, amp: bool = False) -> dict[str, float]:
     model.eval()
+    device = next(model.parameters()).device
     sums, n = {}, 0.0
     for b in batches(items, batch_size, np.random.default_rng(0), shuffle=False):
-        batch = collate([items[i] for i in b])
-        _, logs = model.loss(batch)
+        batch = to_device(collate([items[i] for i in b]), device)
+        with autocast(device, amp):
+            _, logs = model.loss(batch)
         w = batch["valid"].sum().item()
         for k, v in logs.items():
             sums[k] = sums.get(k, 0.0) + v * w
@@ -70,11 +72,17 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
           d_model: int = 192, n_layers: int = 4, n_heads: int = 6, dropout: float = 0.1,
           min_season: int = 2002, max_games: int | None = None, unk_ts_prob: float = 0.1,
           unk_cont_prob: float = 0.05, use_ratings: bool = True, threads: int | None = None,
-          seed: int = 0, init: Path | None = None) -> Path:
+          seed: int = 0, init: Path | None = None, device: str | None = "auto", amp: bool = True) -> Path:
     """Train a model (or fine-tune the checkpoint `init`, keeping its architecture and vocabulary)."""
     if threads:
         torch.set_num_threads(threads)
     torch.manual_seed(seed)
+    dev = resolve_device(device)
+    amp = amp and dev.type == "cuda" and torch.cuda.is_bf16_supported()
+    log.info("training on %s%s", dev, " with bf16 autocast" if amp else "")
+    if dev.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     rng = np.random.default_rng(seed)
     out_dir.mkdir(parents=True, exist_ok=True)
     games, plays, ratings = load_data(data_dir, use_ratings)
@@ -101,6 +109,7 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
     model = EventTransformer(cfg)
     if base is not None:
         model.load_state_dict(base["state_dict"])
+    model.to(dev)
     log.info("params: %.2fM", sum(p.numel() for p in model.parameters()) / 1e6)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.05, betas=(0.9, 0.98))
     steps_per_epoch = math.ceil(len(train_items) / batch_size)
@@ -117,8 +126,9 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
     step, t0 = 0, time.time()
     for epoch in range(epochs):
         for b in batches(train_items, batch_size, rng):
-            batch = collate([train_items[i] for i in b], unk_ts_prob, rng, unk_cont_prob)
-            loss, logs = model.loss(batch)
+            batch = to_device(collate([train_items[i] for i in b], unk_ts_prob, rng, unk_cont_prob), dev)
+            with autocast(dev, amp):
+                loss, logs = model.loss(batch)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -128,12 +138,12 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
             if step % 50 == 0:
                 log.info("ep %d step %d/%d loss %.4f %s (%.0fs)", epoch, step, total_steps, loss.item(),
                          " ".join(f"{k}={v:.3f}" for k, v in logs.items()), time.time() - t0)
-        val = evaluate(model, val_items) if val_items else {}
+        val = evaluate(model, val_items, amp=amp) if val_items else {}
         history.append({"epoch": epoch, **{f"val_{k}": v for k, v in val.items()}})
         log.info("epoch %d val %s", epoch, json.dumps({k: round(v, 4) for k, v in val.items()}))
         score = val.get("total", -epoch)
         if score < best or not val_items:
             best = score
-            torch.save({"state_dict": model.state_dict(), **meta, "history": history}, ckpt)
+            torch.save({"state_dict": cpu_state_dict(model), **meta, "history": history}, ckpt)
     (out_dir / "history.json").write_text(json.dumps(history, indent=1))
     return ckpt
