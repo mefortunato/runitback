@@ -93,6 +93,31 @@ def simulate(home: str, away: str, season: int = 2026, n: int = 1000, game_type:
     _write_result(res, out, scores)
 
 
+@nfl.command()
+def embed(ckpt: Path = DEFAULT_CKPT, out: Path = DATA / "embeddings" / "games.parquet",
+          data: list[Path] = typer.Option(None, help="games/plays directory; repeat to combine several. "
+                                                      "Default: data/nfl/processed"),
+          start: int = typer.Option(None, help="first season to embed (default: all)"),
+          end: int = typer.Option(None, help="last season to embed (default: all)"),
+          batch_size: int = 64, threads: int = 0):
+    """Write per-game, per-team embeddings (pooled hidden states of the real plays) to a parquet.
+
+    For a walk-forward backtest of a downstream model, train one checkpoint per test season Y that
+    never saw season Y (`train --val-season Y-1 --out runs/nfl/cutoff_Y`) and embed with each.
+    """
+    from .nfl.embed import game_embeddings
+    _log()
+    seasons = None
+    if start is not None or end is not None:
+        seasons = range(start or 1999, (end or 2100) + 1)
+    df = game_embeddings(ckpt, data or [DATA / "processed"], seasons, batch_size, threads or None)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(out, index=False)
+    dim = sum(c.startswith("emb_") for c in df.columns)
+    typer.echo(f"{len(df) // 2} games, {dim} dims, {int(df.in_sample.sum()) // 2} in the checkpoint's "
+               f"training range -> {out}")
+
+
 @nfl.command("fetch-model")
 def fetch_model(version: str = "v0.1.0", dest: Path = DEFAULT_CKPT, force: bool = False):
     """Download a released, pre-trained model (no data download or training needed)."""

@@ -128,7 +128,14 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min(1.0, (s + 1) / warmup) * 0.5 * (1 + math.cos(math.pi * min(s, total_steps) / total_steps)))
 
+    # (season, week) of the last training game: downstream users of this model's game embeddings
+    # need to know which games it was trained on
+    last = train_g.sort_values(["season", "week"]).iloc[-1] if len(train_g) else None
+    train_last = [int(last.season), int(last.week)] if last is not None else None
+    if base is not None and base.get("train_last"):  # a fine-tuned model also saw its base's games
+        train_last = max(train_last or base["train_last"], list(base["train_last"]))
     meta = dict(config=cfg.to_dict(), team_seasons=ts.keys, val_season=val_season, val_week=val_week,
+                train_last=train_last,
                 ratings=RatingsTable(lookup_ratings).to_records() if lookup_ratings is not None else None,
                 init_checkpoint=str(init) if init else None)
     best, ckpt = float("inf"), out_dir / "model.pt"

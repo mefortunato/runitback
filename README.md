@@ -285,6 +285,27 @@ Interactive endpoints (all under `/api/nfl`): `POST /games`, `POST /games/{id}/s
 `POST /seasons`, `GET /seasons/{id}`. The same NFL routes are still served without the `/nfl`
 prefix (`/api/simulate`, ...) for clients written before the NBA was added.
 
+### Game embeddings for downstream models
+
+`runitback nfl embed` runs every finished game's real plays through a frozen checkpoint and writes
+one vector per team per game to `data/nfl/embeddings/games.parquet`: the mean hidden state over the
+plays where the team had the ball, then over the plays where the opponent had it
+(`emb_0 .. emb_{2·d_model-1}`). Team-season embeddings are set to the unknown slot (they are fit on a
+whole season, so they would carry later results into an early game's vector); pre-game ratings are
+kept. Each row also has `checkpoint` (the checkpoint's sha256) and `in_sample` (whether the checkpoint
+was trained on that game; `train` now saves the last training game's season and week as `train_last`).
+
+[sportsml](https://github.com/mefortunato/sportsml)'s transformer reads this file as an extra input
+on each history game (`--game_embeddings`). For its walk-forward backtest, embed each test season Y
+with a checkpoint that never saw Y:
+
+```bash
+for Y in 2021 2022 2023 2024 2025; do
+  runitback nfl train --val-season $((Y - 1)) --out runs/nfl/cutoff_$Y
+  runitback nfl embed --ckpt runs/nfl/cutoff_$Y/model.pt --out data/nfl/embeddings/cutoff_$Y.parquet
+done
+```
+
 ### Deploy to Google Cloud Run
 
 The repository includes a Docker image that builds the web app, installs the CPU version of PyTorch,
