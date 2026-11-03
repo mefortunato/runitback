@@ -225,7 +225,21 @@ runitback nfl train --out runs/nfl/prod --epochs 10
 ```
 
 The default model (d_model 192, 4 layers, 2.6M params) trains on a 4-core CPU in about 40
-minutes. Use `--d-model/--n-layers` for larger models on a GPU.
+minutes.
+
+**GPU training.** `train` (NFL and NBA) picks a device with `--device auto` (the default): a CUDA
+GPU if PyTorch sees one, then Apple Silicon (MPS), then the CPU. Pass `--device cpu`, `cuda`,
+`cuda:1` or `mps` to choose. On CUDA GPUs with bfloat16 support (Ampere and newer) training uses
+bf16 mixed precision and TF32 matmuls; turn mixed precision off with `--no-amp`. Install a
+CUDA build of PyTorch first (see [pytorch.org](https://pytorch.org/get-started/locally/)). A GPU
+makes larger models practical, e.g.:
+
+```bash
+runitback nfl train --out runs/nfl/prod --epochs 10 --d-model 384 --n-layers 8 --n-heads 8 --batch-size 128
+```
+
+Checkpoints are always saved with CPU weights, so a model trained on a GPU loads and serves the
+same way on a CPU-only machine.
 
 ### Use it
 
