@@ -20,9 +20,10 @@ const SPORTS: Record<SportId, { name: string; start: string; periods: number; pe
 };
 
 // Timeline (ms)
-const HERO = 5200, REWIND_END = 6300, ENS_START = 6500;
-const SLOW_N = 8, SLOW_GAP = 330, SLOW_DUR = 700, FAST_SPAN = 3600, FAST_DUR = 420;
-const READOUT = 13300, FADE = 18300, LOOP = 19000;
+const HERO = 2800, REWIND_PAUSE = 150, REWIND_END = 3500, ENS_START = 3600;
+const SLOW_N = 4, SLOW_GAP = 250, SLOW_DUR = 550, FAST_SPAN = 3200, FAST_DUR = 420;
+const ENS_END = ENS_START + SLOW_N * SLOW_GAP + FAST_SPAN + FAST_DUR;
+const READOUT = ENS_END + 200, FADE = READOUT + 5000, LOOP = FADE + 700;
 
 const spawnAt = (k: number) => ENS_START + (k <= SLOW_N
   ? (k - 1) * SLOW_GAP
@@ -379,7 +380,7 @@ export default function ReplayAnimation() {
       // The narrated game: drawn play by play, then rewound, then left as a ghost.
       let heroUpto: number;
       if (t < HERO) heroUpto = (t / HERO) * steps;
-      else heroUpto = steps * (1 - ease(clamp((t - HERO - 300) / (REWIND_END - HERO - 300))));
+      else heroUpto = steps * (1 - ease(clamp((t - HERO - REWIND_PAUSE) / (REWIND_END - HERO - REWIND_PAUSE))));
       // ghost of the full game once it has been played
       if (t >= HERO) {
         ctx.globalAlpha = Math.min(fadeOut, 0.22 + 0.5 * (1 - clamp((t - HERO) / 2500)));
