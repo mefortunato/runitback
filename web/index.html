@@ -4,6 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Run It Back</title>
+    <script>
+      // Apply a saved theme before first paint to avoid a flash of the wrong theme.
+      try {
+        var t = localStorage.getItem("runitback-theme");
+        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

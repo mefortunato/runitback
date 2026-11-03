@@ -3,6 +3,7 @@ import Home from "./Home";
 import NbaApp from "./nba/NbaApp";
 import NflApp from "./nfl/NflApp";
 import { Link, usePath } from "./router";
+import { ThemeToggle } from "./theme";
 
 const PAGES: Record<string, { title: string; render: () => React.ReactNode }> = {
   "/": { title: "Run It Back", render: () => <Home /> },
@@ -22,7 +23,10 @@ export default function App() {
     <div className="app">
       <header className="site-header">
         <Link to="/" className="brand">Run It Back</Link>
-        <nav aria-label="Sports">{tab("/", "Home")}{tab("/nfl", "NFL")}{tab("/nba", "NBA")}</nav>
+        <div className="header-actions">
+          <nav aria-label="Sports">{tab("/", "Home")}{tab("/nfl", "NFL")}{tab("/nba", "NBA")}</nav>
+          <ThemeToggle />
+        </div>
       </header>
       <main>
         {page ? page.render() : (
