@@ -205,11 +205,15 @@ def nba_fetch_model(version: str = typer.Option(None, help="release version (def
     if optional and version is None and release.LATEST is None:
         typer.echo("no NBA model released yet; skipping")
         return
-    typer.echo(f"model ready: {release.fetch_model(dest, version, force)}")
+    try:
+        path = release.fetch_model(dest, version, force)
+    except (ValueError, FileExistsError) as e:
+        raise typer.BadParameter(str(e)) from e
+    typer.echo(f"model ready: {path}")
 
 
 @nba.command("sha256")
-def nba_sha256(ckpt: Path = NBA_RUNS / "prod" / "model.pt"):
+def nba_sha256(ckpt: Path = typer.Argument(NBA_RUNS / "prod" / "model.pt", exists=True, dir_okay=False)):
     """Print a checkpoint's SHA-256, for adding a release to runitback/nba/release.py."""
     from .core.release import sha256
     typer.echo(f"{sha256(ckpt)}  {ckpt}")
