@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { call } from "./http";
 import { Link } from "./router";
+import ReplayAnimation from "./components/ReplayAnimation";
 
 interface Sport { id: string; name: string; model_available: boolean }
 
@@ -48,6 +49,8 @@ export default function Home() {
           {SPORTS.map((s) => <Link key={s.id} to={s.to} className="button primary">Open {s.name}</Link>)}
         </div>
       </section>
+
+      <ReplayAnimation />
 
       <section className="sport-cards" aria-label="Sports">
         {SPORTS.map((s) => (
