@@ -166,6 +166,12 @@ runitback serve                                                   # http://127.0
 runitback nba simulate BOS NYK --season 2027 --n 1000
 ```
 
+**Releasing an NBA model**: run `runitback nba sha256 runs/nba/prod/model.pt`, attach the
+checkpoint to a GitHub release tagged `nba-v0.1.0` as `runitback-nba-model-v0.1.0.pt`, then add
+`"v0.1.0": ("nba-v0.1.0", "runitback-nba-model-v0.1.0.pt", "<sha256>")` to `MODELS` in
+`src/runitback/nba/release.py` and set `LATEST = "v0.1.0"`. `runitback nba fetch-model` then
+downloads it, and the Docker image (and so the deployed web app) includes it.
+
 ```python
 from runitback.nba import Simulator, simulate_games
 sim = Simulator.load("runs/nba/prod/model.pt")
@@ -199,8 +205,9 @@ runitback nfl fetch-model     # downloads the v0.1.0 release to runs/nfl/prod/mo
 runitback serve               # open http://127.0.0.1:8000
 ```
 
-No NBA model is released yet. Until you train one (see [NBA](#nba)), the NBA page shows the
-commands to do so and the rest of the app works as usual.
+For the NBA, `runitback nba fetch-model` downloads the latest released model to
+`runs/nba/prod/model.pt`. Until an NBA model is released (or you train one, see [NBA](#nba)), the
+NBA page shows the commands to train one and the rest of the app works as usual.
 
 The released model (see [Releases](https://github.com/mefortunato/runitback/releases)) includes team
 ratings through 2026 week 7. Retrain (below) to pick up later games.

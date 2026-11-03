@@ -20,11 +20,12 @@ COPY src ./src
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir . \
-    && runitback nfl fetch-model --dest "$RUNITBACK_NFL_CKPT"
+    && runitback nfl fetch-model --dest "$RUNITBACK_NFL_CKPT" \
+    && runitback nba fetch-model --dest "$RUNITBACK_NBA_CKPT" --optional
 
 COPY --from=web-build /app/web/dist ./web/dist
-# No NBA model is released yet: the NBA page explains how to train one. To ship one, copy a
-# checkpoint to runs/nba/prod/model.pt in the image (e.g. COPY runs/nba/prod/model.pt ...).
+# The NBA model is the latest release in src/runitback/nba/release.py; until one is listed there
+# the NBA page explains how to train one.
 
 EXPOSE 8080
 CMD ["sh", "-c", "uvicorn runitback.server:app --host 0.0.0.0 --port ${PORT:-8080}"]

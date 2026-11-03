@@ -201,6 +201,26 @@ def nba_simulate(home: str, away: str, season: int = 2027, n: int = 1000, game_t
     _write_result(res, out, scores)
 
 
+@nba.command("fetch-model")
+def nba_fetch_model(version: str = typer.Option(None, help="release version (default: the latest)"),
+                    dest: Path = NBA_CKPT, force: bool = False,
+                    optional: bool = typer.Option(False, help="succeed without downloading if no NBA "
+                                                              "model has been released yet")):
+    """Download a released, pre-trained NBA model (no data download or training needed)."""
+    from .nba import release
+    if optional and version is None and release.LATEST is None:
+        typer.echo("no NBA model released yet; skipping")
+        return
+    typer.echo(f"model ready: {release.fetch_model(dest, version, force)}")
+
+
+@nba.command("sha256")
+def nba_sha256(ckpt: Path = NBA_RUNS / "prod" / "model.pt"):
+    """Print a checkpoint's SHA-256, for adding a release to runitback/nba/release.py."""
+    from .core.release import sha256
+    typer.echo(f"{sha256(ckpt)}  {ckpt}")
+
+
 @nba.command("serve")
 def nba_serve(ckpt: Path = NBA_CKPT, host: str = "127.0.0.1", port: int = 8000):
     """Run the API + web app (NBA checkpoint from --ckpt; NFL from RUNITBACK_NFL_CKPT)."""
