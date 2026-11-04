@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Forecast from "../components/Forecast";
+import { useBatchedForecast } from "../components/useBatchedForecast";
 import WinProbChart from "../components/WinProbChart";
 import { clock, qtrName } from "../format";
 import { errorText } from "../http";
-import { api, seasonLabel, situation, type Game, type SimResult, type StepBody, type Teams } from "./api";
+import { api, seasonLabel, situation, type Game, type StepBody, type Teams } from "./api";
 import BoxScore from "./BoxScore";
 import Court from "./Court";
 import SeasonSimulator from "./SeasonSimulator";
@@ -20,13 +21,12 @@ export default function NbaApp() {
   const [season, setSeason] = useState(2027);
   const [gameType, setGameType] = useState("REG");
   const [game, setGame] = useState<Game | null>(null);
-  const [forecast, setForecast] = useState<SimResult | null>(null);
+  const fc = useBatchedForecast();
   const [busy, setBusy] = useState(false);
   const [auto, setAuto] = useState(false);
   const [speed, setSpeed] = useState(500);
   const [liveWp, setLiveWp] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [forecasting, setForecasting] = useState(false);
   const [view, setView] = useState<"game" | "season">("game");
   const wpBusy = useRef(false);
   const wpPending = useRef<Game | null>(null);
@@ -86,14 +86,8 @@ export default function NbaApp() {
     return () => clearTimeout(t);
   }, [auto, game, busy, speed]);
 
-  const doForecast = async () => {
-    setBusy(true);
-    setForecasting(true);
-    setError(null);
-    try { setForecast(await api.simulate(home, away, season, gameType, 1000)); }
-    catch (e) { setError(errorText(e)); }
-    finally { setBusy(false); setForecasting(false); }
-  };
+  const doForecast = () => fc.start(home, away, (n, signal) =>
+    api.simulate(home, away, season, gameType, n, { include_scores: true, signal }));
 
   const ready = meta?.model_loaded ?? false;
   const teams = meta?.teams ?? [];
@@ -137,12 +131,14 @@ runitback serve`}</code></pre>
         <label>Type<select value={gameType} onChange={(e) => setGameType(e.target.value)}>
           <option value="REG">Regular season</option><option value="POST">Playoffs</option></select></label>
         <button className="primary" disabled={!ready || busy || home === away} onClick={start}>New game</button>
-        <button disabled={!ready || busy || home === away} onClick={doForecast} aria-busy={forecasting}>
-          {forecasting ? "Simulating 1,000 games…" : "Forecast 1,000 games"}</button>
+        {fc.running
+          ? <button onClick={fc.stop} aria-busy="true">
+              Stop · {(fc.forecast?.n ?? 0).toLocaleString()} / {fc.total.toLocaleString()} games</button>
+          : <button disabled={!ready || home === away} onClick={doForecast}>Forecast 1,000 games</button>}
       </section>
-      {error && <div className="error" role="alert">{error}</div>}
+      {(error || fc.error) && <div className="error" role="alert">{error || fc.error}</div>}
 
-      {forecast && <Forecast r={forecast} ticks={MARGIN_TICKS} />}
+      {fc.forecast && <Forecast r={fc.forecast} ticks={MARGIN_TICKS} />}
 
       {game && s && (
         <div className="game">

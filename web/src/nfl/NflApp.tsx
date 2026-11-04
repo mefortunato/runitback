@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Forecast from "../components/Forecast";
+import { useBatchedForecast } from "../components/useBatchedForecast";
 import WinProbChart from "../components/WinProbChart";
-import { api, clock, qtrName, situation, type Game, type SimResult } from "./api";
+import { api, clock, qtrName, situation, type Game } from "./api";
 import Field from "./Field";
 import SeasonSimulator from "./SeasonSimulator";
 
@@ -19,7 +20,7 @@ export default function NflApp() {
   const [season, setSeason] = useState(2026);
   const [gameType, setGameType] = useState("REG");
   const [game, setGame] = useState<Game | null>(null);
-  const [forecast, setForecast] = useState<SimResult | null>(null);
+  const fc = useBatchedForecast();
   const [busy, setBusy] = useState(false);
   const [auto, setAuto] = useState(false);
   const [speed, setSpeed] = useState(700);
@@ -76,13 +77,8 @@ export default function NflApp() {
     return () => clearTimeout(t);
   }, [auto, game, busy, speed]);
 
-  const doForecast = async () => {
-    setBusy(true);
-    setError(null);
-    try { setForecast(await api.simulate(home, away, season, gameType, 1000)); }
-    catch (e) { setError(String((e as Error).message || e)); }
-    finally { setBusy(false); }
-  };
+  const doForecast = () => fc.start(home, away, (n, signal) =>
+    api.simulate(home, away, season, gameType, n, { include_scores: true, signal }));
 
   const s = game?.state;
   const lastPlay = game?.plays[game.plays.length - 1];
@@ -111,11 +107,14 @@ export default function NflApp() {
         <label>Type<select value={gameType} onChange={(e) => setGameType(e.target.value)}>
           <option value="REG">Regular</option><option value="POST">Playoff</option></select></label>
         <button className="primary" disabled={busy || home === away} onClick={start}>New game</button>
-        <button disabled={busy || home === away} onClick={doForecast}>Forecast 1,000 games</button>
+        {fc.running
+          ? <button onClick={fc.stop} aria-busy="true">
+              Stop · {(fc.forecast?.n ?? 0).toLocaleString()} / {fc.total.toLocaleString()} games</button>
+          : <button disabled={home === away} onClick={doForecast}>Forecast 1,000 games</button>}
       </section>
-      {error && <div className="error" role="alert">{error}</div>}
+      {(error || fc.error) && <div className="error" role="alert">{error || fc.error}</div>}
 
-      {forecast && <Forecast r={forecast} showTie />}
+      {fc.forecast && <Forecast r={fc.forecast} showTie />}
 
       {game && s && (
         <div className="game">
