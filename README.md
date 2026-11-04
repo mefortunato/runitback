@@ -205,9 +205,9 @@ runitback nfl fetch-model     # downloads the v0.1.0 release to runs/nfl/prod/mo
 runitback serve               # open http://127.0.0.1:8000
 ```
 
-For the NBA, `runitback nba fetch-model` downloads the latest released model to
-`runs/nba/prod/model.pt`. Until an NBA model is released (or you train one, see [NBA](#nba)), the
-NBA page shows the commands to train one and the rest of the app works as usual.
+For the NBA, `runitback nba fetch-model` downloads the latest released model (`nba-v0.1.0`) to
+`runs/nba/prod/model.pt` and checks its SHA-256. Without it (and without one you trained, see
+[NBA](#nba)), the NBA page shows the commands to train one and the rest of the app works as usual.
 
 The released model (see [Releases](https://github.com/mefortunato/runitback/releases)) includes team
 ratings through 2026 week 7. Retrain (below) to pick up later games.

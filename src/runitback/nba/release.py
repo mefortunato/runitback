@@ -11,8 +11,11 @@ from pathlib import Path
 from ..core.release import REPO_URL, fetch_release, sha256  # noqa: F401  (re-exported)
 
 # version -> (release tag, asset file name, sha256)
-MODELS: dict[str, tuple[str, str, str]] = {}
-LATEST: str | None = None
+MODELS: dict[str, tuple[str, str, str]] = {
+    "v0.1.0": ("nba-v0.1.0", "runitback-nba-model-v0.1.0.pt",
+               "eaa9ca750fb11558edab51b817a98c77d1622deb20136e6acce619efa64813a6"),
+}
+LATEST: str | None = "v0.1.0"
 
 
 def fetch_model(dest: Path, version: str | None = None, force: bool = False, url: str | None = None) -> Path:
