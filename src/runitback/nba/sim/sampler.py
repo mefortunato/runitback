@@ -85,10 +85,14 @@ class Simulator:
     @torch.no_grad()
     def sample_step(self, states: list[GameState], prevs: list[Outcome | None], cache,
                     forced: list[dict | None] | None = None, temperature: float = 1.0,
-                    gen: torch.Generator | None = None, ratings=None) -> list[Outcome]:
+                    gen: torch.Generator | None = None, ratings=None,
+                    row_ratings: list[tuple[dict, dict] | None] | None = None) -> list[Outcome]:
+        """Sample one event for each state. `ratings` applies to every row; `row_ratings` gives
+        each row its own (home, away) ratings, for batches that mix different matchups."""
         gen = gen or torch.Generator().manual_seed(random.randrange(2**31))
         forced = forced or [None] * len(states)
-        rows = [encode_state(s, p, self.ts, ratings) for s, p in zip(states, prevs)]
+        per_row = row_ratings if row_ratings is not None else [ratings] * len(states)
+        rows = [encode_state(s, p, self.ts, r) for s, p, r in zip(states, prevs, per_row)]
         h = self.model.encode(self._rows_to_feats(rows, batch_first=True), cache)[:, 0]
         m = self.model
 
@@ -154,3 +158,39 @@ class Simulator:
             finals += states
             logs += game_logs[: max(0, keep_plays - b0)]
         return finals, logs
+
+    @torch.no_grad()
+    def rollout_games(self, starts: list[GameState], ratings: list[tuple[dict, dict] | None],
+                      seed: int | None = None, temperature: float = 1.0, batch_size: int = 128,
+                      inference_context: Callable[[], ContextManager[None]] | None = None,
+                      on_batch: Callable[[int], None] | None = None) -> list[GameState]:
+        """Simulate many *different* games (one per start state, each with its own pre-game
+        `ratings`) in batches, and return their final states in order. A game that hits the
+        event cap before it ends comes back with `over=False`; callers decide whether to resample.
+        `on_batch(k)` is called after each batch with the number of games it held."""
+        if len(starts) != len(ratings):
+            raise ValueError("starts and ratings must have the same length")
+        rng = random.Random(seed)
+        gen = torch.Generator().manual_seed(rng.randrange(2**31))
+        context = inference_context or nullcontext
+        finals: list[GameState] = []
+        for b0 in range(0, len(starts), batch_size):
+            states = [s.copy() for s in starts[b0:b0 + batch_size]]
+            batch_ratings = ratings[b0:b0 + batch_size]
+            B = len(states)
+            cache = self.model.new_cache(B)
+            prevs: list[Outcome | None] = [None] * B
+            for _ in range(MAX_EVENTS):
+                if all(s.over for s in states) or cache.len >= self.model.cfg.max_len:
+                    break
+                with context():
+                    outs = self.sample_step(states, prevs, cache, temperature=temperature, gen=gen,
+                                            row_ratings=batch_ratings)
+                for i, (s, o) in enumerate(zip(states, outs)):
+                    if not s.over:
+                        states[i] = apply_outcome(s, o)
+                        prevs[i] = o
+            finals += states
+            if on_batch:
+                on_batch(B)
+        return finals

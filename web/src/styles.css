@@ -289,3 +289,18 @@ a { color: var(--accent); }
 .boxscore .results-table td, .boxscore .results-table th { padding: 5px 6px; }
 .line-score td.game-score { font-size: 14px; }
 .nba .controls .row:first-child .primary { padding: 7px 18px; }
+
+/* NBA season view */
+.standings-table .seed-num { display: inline-block; width: 20px; color: var(--muted); font-size: 10px; font-weight: 400; }
+.standings-table sup { color: var(--muted); margin-left: 1px; }
+.standings-table tr.play-in-team th:first-child { color: var(--text); font-weight: 650; }
+.standings-table tr.seed-cutoff th, .standings-table tr.seed-cutoff td { border-bottom: 2px solid var(--border-strong, var(--muted)); }
+.bracket-game.series summary { list-style: none; cursor: pointer; }
+.bracket-game.series summary::-webkit-details-marker { display: none; }
+.series-games { list-style: none; margin: 0; padding: 4px 2px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.series-games li { display: flex; gap: 8px; padding: 2px 0; color: var(--text-2); }
+.series-games li span:first-child { width: 22px; color: var(--muted); }
+.results-filter { margin: 0 0 8px; }
+.nba .bracket-round { display: flex; flex-direction: column; }
+.nba .bracket-games { flex: 1; height: auto; }
+@media (max-width: 560px) { .standings-table .wide-only { display: none; } }
