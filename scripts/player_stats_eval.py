@@ -10,7 +10,12 @@ actual stat lines and with leak-free baselines:
   form+opp   form, adjusted by the opponent's tendency to allow that stat to that position
              (linear fit on training seasons)
 
-Usage: python scripts/player_stats_eval.py runs/nfl/eval_who/model.pt [sims=100] [out.json] [max_games]
+Usage: python scripts/player_stats_eval.py runs/nfl/eval_who/model.pt [sims=100] [out.json] [max_games|all]
+                                          [sources=previous,pregame,game]
+
+Depth-chart sources: previous = each team's previous game (ranked by its snaps); pregame = the players
+active for this game (known ~90 min before kickoff) ranked by their previous-game role, newcomers by
+career games; game = this game's own snap ranks (optimistic: knows how usage actually split).
 """
 import json
 import sys
@@ -32,7 +37,8 @@ torch.set_num_threads(4)
 CKPT = Path(sys.argv[1])
 N = int(sys.argv[2]) if len(sys.argv) > 2 else 100
 OUT = Path(sys.argv[3]) if len(sys.argv) > 3 else CKPT.parent / "player_stats.json"
-MAX_GAMES = int(sys.argv[4]) if len(sys.argv) > 4 else None  # smoke tests
+MAX_GAMES = int(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] != "all" else None  # smoke tests
+SOURCES = sys.argv[5].split(",") if len(sys.argv) > 5 else ["previous", "pregame", "game"]
 P = Path("data/nfl/processed")
 STATS = ["targets", "receptions", "rec_yds", "carries", "rush_yds"]
 GROUPS = ["RB", "WR", "TE"]
@@ -120,11 +126,32 @@ def slot_players(game_id: str, team: str) -> dict[int, str]:
     return _slot_maps.get((game_id, team), {})
 
 
+def pregame_chart(game_id: str, team: str) -> tuple[np.ndarray, dict[int, str]]:
+    """This game's active players, ordered by their role in the team's previous game."""
+    from runitback.nfl.data.players import DEPTH
+    rows = pg[(pg.game_id == game_id) & (pg.team == team)]
+    prev = ld._prev_game.get((game_id, team))
+    prank = {} if prev is None else {(r.group, r.player_id): r.depth for r in
+                                     pg[(pg.game_id == prev) & (pg.team == team)].itertuples()}
+    toks, smap = np.zeros(N_SLOTS, dtype=np.int32), {}
+    for grp, d in rows.groupby("group"):
+        order = sorted(d.itertuples(), key=lambda r: (prank.get((grp, r.player_id), 99), -r.career_games))
+        for rank, r in enumerate(order[: DEPTH[grp]]):
+            sl = SLOT_IDX[(grp, rank)]
+            toks[sl] = ld.pvocab.token(r.player_id, grp, r.career_games)
+            smap[sl] = r.player_id
+    return toks, smap
+
+
 def simulate(source: str) -> pd.DataFrame:
     out, t0 = [], time.time()
     for i, g in enumerate(val.itertuples()):
         maps, toks = [], []
         for team in (g.home, g.away):
+            if source == "pregame":
+                t_, m_ = pregame_chart(g.game_id, team)
+                toks.append(t_), maps.append(m_)
+                continue
             src_game = g.game_id if source == "game" else ld._prev_game.get((g.game_id, team))
             maps.append(slot_players(src_game, team) if src_game else {})
             toks.append(ld.lineup(g.game_id, team) if source == "game" else ld.previous_lineup(g.game_id, team))
@@ -175,7 +202,7 @@ for j, k in enumerate(STATS):
     test[f"formopp_{k}"] = [coef[(gname, k)] @ [1, f, o] for gname, f, o in
                             zip(test.group, test[f"form_{k}"], test[f"opp_{k}"])]
 rng = np.random.default_rng(0)
-for source in ("previous", "game"):
+for source in SOURCES:
     simdf = simulate(source)
     # evaluated: players on the simulated depth chart who actually played in the game
     df = test.merge(simdf, on=["game_id", "player_id"], how="inner")
@@ -203,8 +230,26 @@ for source in ("previous", "game"):
             # does the model know something the baseline doesn't? corr of (model - base) with (actual - base)
             a, b = d[f"sim_{k}"] - d[f"formopp_{k}"], d[k] - d[f"formopp_{k}"]
             row["corr_model_adjustment_vs_actual"] = float(np.corrcoef(a, b)[0, 1])
+            # blend: y ~ w0 + w1 * model + w2 * form+opp, weights fit on half the games and scored on
+            # the other half (and vice versa), so the comparison stays out of sample
+            half = (pd.Series(gids).map({g: j % 2 for j, g in enumerate(ug)})).to_numpy()
+            blend = np.zeros(len(d))
+            X = np.c_[np.ones(len(d)), d[f"sim_{k}"], d[f"formopp_{k}"]]
+            for h_ in (0, 1):
+                w = np.linalg.lstsq(X[half != h_], d[k].to_numpy()[half != h_], rcond=None)[0]
+                blend[half == h_] = X[half == h_] @ w
+            row["blend"] = metrics(d.assign(blend_=blend), "blend_", k)
+            dd = (blend - d[k]) ** 2 - (d[f"formopp_{k}"] - d[k]) ** 2
+            per = pd.Series(dd.to_numpy()).groupby(gids).agg(["sum", "count"]).loc[ug]
+            bs = []
+            for _ in range(1000):
+                kk = rng.integers(0, len(ug), len(ug))
+                bs.append(per["sum"].to_numpy()[kk].sum() / per["count"].to_numpy()[kk].sum())
+            row["blend_minus_formopp_mse"] = [float(dd.mean()), float(np.percentile(bs, 2.5)),
+                                              float(np.percentile(bs, 97.5))]
             res["groups"][gname][k] = row
     report["by_source"][source] = res
+    df.to_csv(OUT.with_name(f"{OUT.stem}_{source}.csv"), index=False)
     print(json.dumps({source: {g: {k: {m: round(v["rmse"], 2) for m, v in r.items() if isinstance(v, dict)}
                                    for k, r in gr.items() if k != "n"} for g, gr in res["groups"].items()}}, indent=0))
 OUT.write_text(json.dumps(report, indent=1))

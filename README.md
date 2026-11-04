@@ -232,6 +232,46 @@ shadow, and who covered whom is not in nflverse (it needs NGS/PFF-style coverage
 Per-player *offensive* stat lines remain promising: player form is stable (r ≈ 0.48) and opponent
 team defense adds to it.
 
+### Player stat lines: the who-gets-the-ball head (2026-11)
+
+`--who` adds a head that picks which of the possession team's 11 on-field players gets the ball
+(the rusher on runs; the target on passes, or nobody for sacks and throwaways). It runs after the
+play type and personnel and before the result, which must agree with it (no catch without a target,
+no sack with one). Labels come from nflverse rusher/receiver ids, and 99.9% are among the 11 on the
+field. Simulated outcomes carry the chosen player's depth-chart slot (`Outcome.who`), so
+rollouts produce stat lines. `scripts/player_stats_eval.py` simulates the 150 held-out games
+(2025 week 10+, 100 sims each) and compares per-player targets, receptions, receiving yards,
+carries and rushing yards with actual stat lines and with leak-free baselines: role average,
+the player's shrunk exponentially weighted form, and form adjusted for the opponent.
+
+RMSE, RB/WR/TE player-games who played (about 3,100–3,500). The pre-game depth chart is this
+game's active players ranked by their previous-game role:
+
+| | form + opponent | model | blend (cross-fitted) |
+|---|---|---|---|
+| WR targets | 2.37 | 2.82 | **2.35** (significant) |
+| WR receiving yards | 26.5 | 29.6 | 26.3 (n.s.) |
+| TE targets | 1.80 | 2.09 | **1.78** (significant) |
+| TE receiving yards | 18.0 | 19.8 | 17.9 (n.s.) |
+| RB carries | 4.19 | 5.31 | 4.16 (n.s.) |
+| RB rushing yards | 25.1 | 29.5 | 25.1 (n.s.) |
+
+- **Alone, the model is worse than form** with any pre-game depth chart, and still worse when form
+  is frozen at the training cutoff like the model's embeddings. Blended, it adds ~1% on WR/TE
+  targets. With the game's own snap ranks (in-game knowledge) the blend beats form on every stat,
+  e.g. RB rushing yards 24.1 vs 25.2.
+- **Why:** usage is too flat. RB1 gets 12.0 simulated carries vs 14.7 actual, and TE1 3.8 targets
+  vs 4.8. Per-touch efficiency is about right.
+- **The who head is not the bottleneck** (`scripts/who_head_teacher_forced.py`). Given the real
+  plays and the real 11 on the field, it predicts targets better than an equal split among eligible
+  players: RMSE WR 1.95 vs 2.17, TE 1.49 vs 1.61. It predicts carries far better (1.35 vs 4.72),
+  and both beat form. The information is in *who is on the field and how often*. The personnel
+  sampler draws that from league-wide rotation rates, which erases workhorse backs and every-down
+  receivers.
+- **Next step:** player-specific on-field rates (each player's recent snap share by situation) in
+  place of league-average package frequencies, plus recent-usage features so embeddings aren't
+  static across a career.
+
 ## Quick start (pre-trained model)
 
 You need Python 3.10+ and Node 18+. This takes about 5 minutes and needs no data download or training.
@@ -434,6 +474,8 @@ legality masks match sampling-time masks, sampler termination, and the API.
 
 ## Limitations / next steps (NFL)
 
+- Player stat lines (`--who`) don't beat a form baseline before kickoff yet: the personnel sampler
+  uses league-average rotation, so usage is too flat (see *Player stat lines*).
 - Lineup models don't yet beat the team-only model on held-out games, and they react too little
   to quarterback changes (see *Lineup experiments*).
 - Lineups are what the user (or the previous game) says. The model doesn't know about injuries
