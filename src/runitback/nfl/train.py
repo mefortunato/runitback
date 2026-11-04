@@ -58,7 +58,8 @@ def evaluate(model: PlayTransformer, items: list[dict], batch_size: int = 32) ->
             sums[k] = sums.get(k, 0.0) + v * w
         n += w
     model.train()
-    return {k: v / n for k, v in sums.items()} | {"total": sum(sums.values()) / n}
+    play = ("type", "result", "yards", "elapsed")  # "total" stays comparable with models without a who head
+    return {k: v / n for k, v in sums.items()} | {"total": sum(v for k, v in sums.items() if k in play) / n}
 
 
 def fit_personnel_sampler(items: list[dict]) -> PersonnelSampler:
@@ -151,7 +152,8 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
           unk_ts_prob: float = 0.1, unk_cont_prob: float = 0.05, use_ratings: bool = True, threads: int | None = None,
           seed: int = 0, init: Path | None = None, use_lineups: bool = True, unk_lineup_prob: float = 0.1,
           unk_pers_prob: float = 0.15, other_player_prob: float = 0.03, player_dim: int = 0,
-          lineup_dropout: float = 0.0, prev_lineup_prob: float = 0.0, box_weight: float = 0.0) -> Path:
+          lineup_dropout: float = 0.0, prev_lineup_prob: float = 0.0, box_weight: float = 0.0,
+          who_head: bool = False) -> Path:
     """Train a model on one or more data directories. With `init`, fine-tune that checkpoint: its
     architecture and team-season vocabulary are kept (team-seasons it has not seen use the unknown
     embedding) and d_model/n_layers/n_heads/dropout are ignored."""
@@ -192,7 +194,7 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
         cfg = ModelConfig(feature_sizes=feature_sizes(len(ts)), d_model=d_model, n_layers=n_layers,
                           n_heads=n_heads, dropout=dropout, n_cont=len(CONT_FEATURES) if ratings is not None else 0,
                           n_players=len(ld.pvocab) if ld else 0, n_coaches=len(ld.cvocab) if ld else 0,
-                          player_dim=player_dim, lineup_dropout=lineup_dropout)
+                          player_dim=player_dim, lineup_dropout=lineup_dropout, who_head=who_head and ld is not None)
     if lookup_ratings is None:
         lookup_ratings = ratings  # only synthetic data: better than no pre-game ratings at all
     train_items = encode_games(plays[plays.game_id.isin(train_g.game_id)], train_g, ts, cfg.max_len, ratings, ld)

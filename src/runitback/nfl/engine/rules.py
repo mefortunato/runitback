@@ -21,6 +21,9 @@ class Outcome:
     result: str
     yards: int = 0
     elapsed: int = 0
+    # possession team's depth-chart slot code of the player who got the ball (runs/targets), when the
+    # model predicts it; None = nobody / not modeled. Not part of the outcome's identity.
+    who: int | None = field(default=None, compare=False)
 
 
 @dataclass

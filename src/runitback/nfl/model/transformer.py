@@ -10,7 +10,8 @@ import torch.nn.functional as F
 from ...core.transformer import Block, KVCache, mlp
 from ..vocab import N_ELAPSED, N_YARDS, PLAY_TYPES, RESULTS
 from .features import FEATURES
-from .lineups import N_COACH_CONT, N_GROUPS, N_SLOTS, SIDE, SLOT_GROUP
+from .lineups import N_COACH_CONT, N_GROUPS, N_SLOTS, SIDE, SLOT_GROUP, WHO_NONE
+from ..vocab import PT, RS
 
 NEG = -1e9
 
@@ -28,6 +29,7 @@ class ModelConfig:
     n_coaches: int = 0
     player_dim: int = 0  # player/coach embedding width, projected to d_model (0 = d_model)
     lineup_dropout: float = 0.0  # dropout on the lineup/coach context and the personnel vector
+    who_head: bool = False  # predict which offensive player gets the ball (needs lineups)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -99,6 +101,13 @@ class PlayTransformer(nn.Module):
             self.off_coach, self.def_coach = coach(), coach()
             self.coach_cont = nn.Linear(N_COACH_CONT, d)
             self.lineup_drop = nn.Dropout(cfg.lineup_dropout)
+        if cfg.n_players and cfg.who_head:
+            self.who_ctx, self.who_cand = nn.Linear(d, d), nn.Linear(d, d)
+            self.who_score = nn.Sequential(nn.GELU(), nn.Linear(d, 1))
+            self.who_none = nn.Linear(d, 1)
+            self.who_out = nn.Linear(d, d)
+            self.who_none_emb = nn.Parameter(torch.zeros(d))
+            self.who_unk = nn.Parameter(torch.zeros(d))
         self.pos = nn.Embedding(cfg.max_len, d)
         self.cont = nn.Linear(cfg.n_cont, d) if cfg.n_cont else None
         self.in_ln = nn.LayerNorm(d)
@@ -144,6 +153,46 @@ class PlayTransformer(nn.Module):
             return 0
         return self.lineup_drop(self.lineup.personnel(feats["pers"], feats["pers_grp"]))
 
+    # -- who gets the ball (after the play type and personnel, before the result)
+    @property
+    def has_who(self) -> bool:
+        return getattr(self, "who_ctx", None) is not None
+
+    def who_candidates(self, pers: torch.Tensor, grp: torch.Tensor) -> torch.Tensor:
+        """(.., 22) personnel -> (.., 11, d): the possession team's players on the field."""
+        return self.lineup.player(pers[..., :SIDE]) + self.lineup.group(grp[..., :SIDE])
+
+    def who_mask(self, t: torch.Tensor, pers: torch.Tensor) -> torch.Tensor:
+        """(.., 12) legal choices: runs need a ball carrier, passes may target nobody (sack, throwaway),
+        other plays go to nobody; without known personnel only 'nobody' is legal."""
+        cand = pers[..., :SIDE] > 0
+        run, pas = t == PT["run"], t == PT["pass"]
+        ok = cand & (run | pas)[..., None]
+        none = ~run | ~cand.any(-1)
+        return torch.cat([ok, none[..., None]], -1)
+
+    def who_logits(self, h, t, p, cand):
+        ctx = h + self.e_type(t) + p
+        s = self.who_score(self.who_ctx(ctx)[..., None, :] + self.who_cand(cand)).squeeze(-1)
+        return torch.cat([s, self.who_none(ctx)], -1)
+
+    def who_vec(self, who: torch.Tensor, t: torch.Tensor, cand: torch.Tensor) -> torch.Tensor:
+        """Vector added to the result/yards/clock heads: the chosen player, 'nobody', or unknown (-1)."""
+        idx = who.clamp(0, SIDE - 1)
+        chosen = torch.gather(cand, -2, idx[..., None, None].expand(*idx.shape, 1, cand.shape[-1])).squeeze(-2)
+        v = torch.where((who >= 0)[..., None] & (who < SIDE)[..., None], self.who_out(chosen), self.who_unk)
+        nobody = (who == WHO_NONE) | ((t != PT["run"]) & (t != PT["pass"]))
+        return torch.where(nobody[..., None], self.who_none_emb, v)
+
+    @staticmethod
+    def who_result_mask(t: torch.Tensor, who: torch.Tensor, n_results: int) -> torch.Tensor:
+        """Results consistent with who got the ball: no completion to nobody, no sack with a target."""
+        m = torch.ones(*who.shape, n_results, dtype=torch.bool, device=who.device)
+        pas = t == PT["pass"]
+        m[..., RS["complete"]] &= ~(pas & (who == WHO_NONE))
+        m[..., RS["sack"]] &= ~(pas & (who >= 0) & (who < SIDE))
+        return m
+
     def new_cache(self, batch: int) -> KVCache:
         c = self.cfg
         return KVCache(c.n_layers, batch, c.n_heads, c.max_len, c.d_model // c.n_heads,
@@ -172,6 +221,18 @@ class PlayTransformer(nn.Module):
         p = self.personnel(batch["feats"])
         valid = batch["valid"]
         t, r, y, e = batch["type"], batch["result"], batch["yards"], batch["elapsed"]
+        who_part = None
+        if self.has_who and "who" in batch["feats"]:
+            f = batch["feats"]
+            cand = self.who_candidates(f["pers"], f["pers_grp"])
+            who = f["who"]
+            logits = self.who_logits(h, t, p, cand).masked_fill(~self.who_mask(t, f["pers"]), NEG)
+            m = (who >= 0) & ((t == PT["run"]) | (t == PT["pass"])) & (valid > 0)
+            nll = F.cross_entropy(logits.flatten(0, 1), who.clamp(min=0).flatten(), reduction="none").view_as(who)
+            who_part = (nll * m).sum() / m.sum().clamp(min=1)
+            p = p + self.lineup_drop(self.who_vec(who, t, cand))
+            rm = batch["result_mask"] & self.who_result_mask(t, who, batch["result_mask"].shape[-1])
+            batch = dict(batch, result_mask=rm | F.one_hot(r, rm.shape[-1]).bool())
         parts = {
             "type": (self.type_logits(h), t, batch["type_mask"]),
             "result": (self.result_logits(h, t, p), r, batch["result_mask"]),
@@ -186,6 +247,9 @@ class PlayTransformer(nn.Module):
             l = (nll * valid).sum() / n
             total = total + l
             logs[name] = l.item()
+        if who_part is not None:
+            total = total + who_part
+            logs["who"] = who_part.item()
         if box_weight > 0:
             from .boxscore import batch_box, box_loss
             pred, real = batch_box(self, h, p, batch)

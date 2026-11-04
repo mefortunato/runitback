@@ -126,20 +126,26 @@ class Simulator:
 
     def _personnel(self, states: list[GameState], names: list[str], lineups: GameLineups | None,
                    gen: torch.Generator):
-        """Sample the 22 players on the field for each row's play (after its play type is drawn)."""
+        """Sample the 22 players on the field for each row's play (after its play type is drawn).
+        Returns (pooled vector or 0, personnel tokens (B, 22), groups (B, 22), offense slot codes)."""
         if self.model.lineup is None:
-            return 0
+            return 0, None, None, None
         B = len(states)
-        pers = np.zeros((B, 1, 2 * SIDE), dtype=np.int64)
-        grp = np.zeros((B, 1, 2 * SIDE), dtype=np.int64)
+        pers = np.zeros((B, 2 * SIDE), dtype=np.int64)
+        grp = np.zeros((B, 2 * SIDE), dtype=np.int64)
+        codes = [[-1] * SIDE for _ in range(B)]
         if lineups is not None and self.lineups is not None:
             rng = np.random.default_rng(int(torch.randint(2**31, (1,), generator=gen)))
             for i, (s, n) in enumerate(zip(states, names)):
                 for k, (role, side) in enumerate((("off", s.pos), ("def", 1 - s.pos))):
-                    t, g = self.lineups.sampler.sample(role, n, s.down, s.ytg, s.yl, lineups.tokens[side], rng)
-                    pers[i, 0, k * SIDE:(k + 1) * SIDE] = t
-                    grp[i, 0, k * SIDE:(k + 1) * SIDE] = g
-        return self.model.lineup.personnel(torch.as_tensor(pers), torch.as_tensor(grp))[:, 0]
+                    t, g, c = self.lineups.sampler.sample(role, n, s.down, s.ytg, s.yl, lineups.tokens[side], rng,
+                                                          codes=True)
+                    pers[i, k * SIDE:(k + 1) * SIDE] = t
+                    grp[i, k * SIDE:(k + 1) * SIDE] = g
+                    if k == 0:
+                        codes[i] = c
+        pt, gt = torch.as_tensor(pers), torch.as_tensor(grp)
+        return self.model.lineup.personnel(pt[:, None], gt[:, None])[:, 0], pt, gt, codes
 
     def _prefill(self, history: list[tuple[GameState, Outcome]], ratings=None, lineups: GameLineups | None = None):
         """Run the model over an existing play history (batch 1) and return the cache."""
@@ -177,9 +183,19 @@ class Simulator:
         t = self._sample(m.type_logits(h), tm, temperature, gen)
         tt = torch.as_tensor(t)
         names = [PLAY_TYPES[k] for k in t]
-        p = self._personnel(states, names, lineups, gen)
+        p, pers, grp, codes = self._personnel(states, names, lineups, gen)
+        who_codes = [None] * len(states)
+        if m.has_who and pers is not None:
+            cand = m.who_candidates(pers, grp)
+            wm = m.who_mask(tt, pers).numpy()
+            w = self._sample(m.who_logits(h, tt, p, cand), wm, temperature, gen)
+            wt = torch.as_tensor(w)
+            p = p + m.who_vec(wt, tt, cand)
+            who_codes = [codes[i][k] if k < SIDE else None for i, k in enumerate(w)]
 
         rm = np.stack([result_mask(s, n) for s, n in zip(states, names)])
+        if m.has_who and pers is not None:
+            rm = rm & m.who_result_mask(tt, wt, rm.shape[-1]).numpy()
         for i, f in enumerate(forced):
             if f and f.get("result") in RS and rm[i, RS[f["result"]]]:
                 rm[i] = False
@@ -192,7 +208,10 @@ class Simulator:
         y = self._sample(m.yards_logits(h, tt, rt, p), ym, temperature, gen)
         em = np.stack([elapsed_mask(s) for s in states])
         e = self._sample(m.elapsed_logits(h, tt, rt, torch.as_tensor(y), p), em, temperature, gen)
-        return [Outcome(n, rn, idx_to_yards(yy), int(ee)) for n, rn, yy, ee in zip(names, rnames, y, e)]
+        # who: depth-chart slot code of the possession team's player who got the ball (None = nobody);
+        # codes >= N_SLOTS are off-chart players of group code - N_SLOTS
+        return [Outcome(n, rn, idx_to_yards(yy), int(ee), None if c is None or c < 0 else int(c))
+                for n, rn, yy, ee, c in zip(names, rnames, y, e, who_codes)]
 
     @torch.no_grad()
     def rollout(self, start: GameState, n: int, history: list[tuple[GameState, Outcome]] | None = None,

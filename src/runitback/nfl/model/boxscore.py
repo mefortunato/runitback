@@ -123,6 +123,8 @@ def batch_box(model, h, p, batch) -> tuple[torch.Tensor, torch.Tensor]:
     """(predicted, real) game box scores for a batch, each (B, 11)."""
     f = batch["feats"]
     yl, is_home, valid = f["yl"], f["is_home"], batch["valid"]
+    if getattr(model, "has_who", False):
+        p = p + model.who_unk  # expectations marginalize over who gets the ball
     eo, ed = expected_play_stats(model, h, p, batch["type_mask"], yl)
     to, td = true_play_stats(batch["type"], batch["result"], batch["yards"] + YARDS_MIN, yl)
     return game_box(eo, ed, is_home, valid), game_box(to, td, is_home, valid)

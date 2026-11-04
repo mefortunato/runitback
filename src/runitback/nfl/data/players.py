@@ -163,7 +163,25 @@ def build_personnel(raw: Path, seasons: list[int], schedule: pd.DataFrame) -> pd
     p["away_ids"] = [d if h else o for o, d, h in zip(offense, defense, home_off)]
     p = p[known & (offense.map(len) > 0) & (defense.map(len) > 0)]
     p["play_id"] = p.play_id.astype(int)
-    return p[["game_id", "play_id", "home_ids", "away_ids"]].reset_index(drop=True)
+    p = p.merge(_ball_ids(raw.parent, seasons), on=["game_id", "play_id"], how="left")
+    return p[["game_id", "play_id", "home_ids", "away_ids", "ball_id"]].reset_index(drop=True)
+
+
+def _ball_ids(pbp_dir: Path, seasons: list[int]) -> pd.DataFrame:
+    """Who got the ball on each play: the rusher on runs, the targeted receiver on passes (None for
+    sacks, throwaways and other plays). Scrambles are pass plays in nflverse, so they have no target."""
+    frames = []
+    for s in seasons:
+        f = pbp_dir / f"pbp_{s}.parquet"
+        if not f.exists():
+            continue
+        d = pd.read_parquet(f, columns=["game_id", "play_id", "play_type", "rusher_player_id", "receiver_player_id"])
+        ball = np.where(d.play_type == "run", d.rusher_player_id,
+                        np.where(d.play_type == "pass", d.receiver_player_id, None))
+        frames.append(pd.DataFrame({"game_id": d.game_id, "play_id": d.play_id.astype(int), "ball_id": ball}))
+    if not frames:
+        return pd.DataFrame(columns=["game_id", "play_id", "ball_id"])
+    return pd.concat(frames, ignore_index=True).drop_duplicates(["game_id", "play_id"])
 
 
 # ---------------------------------------------------------------------------------------- coaches

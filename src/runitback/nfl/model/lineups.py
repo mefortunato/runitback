@@ -35,6 +35,7 @@ N_SLOTS = len(SLOTS)
 SIDE = 11              # players per side in per-play personnel
 N_PERS = 2 * SIDE
 N_COACH_CONT = 2 * len(COACH_STATS)
+WHO_NONE = SIDE        # "who got the ball" class for nobody (sacks, throwaways, non-scrimmage plays)
 NEW_LABEL = "NEW"      # depth-chart entry for a new / unknown player
 
 
@@ -234,11 +235,12 @@ class PersonnelSampler:
         return None
 
     def sample(self, role: str, play_type: str, down: int, ytg: int, yl: int, lineup: np.ndarray,
-               rng: np.random.Generator) -> tuple[list[int], list[int]]:
-        """Tokens and groups (1-based, 0 = pad) of one side's 11 players for this play."""
+               rng: np.random.Generator, codes: bool = False):
+        """Tokens and groups (1-based, 0 = pad) of one side's 11 players for this play; with
+        codes=True also each player's slot code (depth-chart slot, or N_SLOTS + group if off-chart)."""
         hit = self._lookup(role, play_type, down, ytg, yl)
         if hit is None or not lineup.any():
-            return [0] * SIDE, [0] * SIDE
+            return ([0] * SIDE, [0] * SIDE, [-1] * SIDE) if codes else ([0] * SIDE, [0] * SIDE)
         sigs, cum = hit
         sig = sigs[min(int(np.searchsorted(cum, rng.random() * cum[-1])), len(sigs) - 1)]
         toks, grps = [], []
@@ -251,6 +253,8 @@ class PersonnelSampler:
                 t = other_token(g)
             toks.append(t), grps.append(g + 1)
         pad = SIDE - len(toks)
+        if codes:
+            return toks + [0] * pad, grps + [0] * pad, list(sig) + [-1] * pad
         return toks + [0] * pad, grps + [0] * pad
 
 

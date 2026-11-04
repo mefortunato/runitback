@@ -213,3 +213,65 @@ def test_box_score_loss_is_differentiable_and_exact_for_real_outcomes(lineup_sim
     loss.backward()
     assert m.yards_head[-1].weight.grad.abs().sum() > 0 and m.type_head[-1].weight.grad.abs().sum() > 0
     m.eval()
+
+
+@pytest.fixture(scope="module")
+def who_sim():
+    torch.manual_seed(0)
+    ts = TeamSeasonVocab(["KC_2025", "BUF_2025"])
+    meta = tiny_lineup_meta()
+    model = PlayTransformer(ModelConfig(feature_sizes(len(ts)), d_model=32, n_layers=1, n_heads=2,
+                                        n_cont=len(CONT_FEATURES), n_players=len(PlayerVocab(meta["player_vocab"])),
+                                        n_coaches=5, player_dim=8, who_head=True))
+    return Simulator(model, ts, {"lineup_meta": meta}, ratings=RatingsTable(compute_ratings(toy_games())))
+
+
+def test_who_result_mask():
+    from runitback.nfl.model.lineups import WHO_NONE
+    from runitback.nfl.vocab import PT, RESULTS, RS
+    t = torch.tensor([PT["pass"], PT["pass"], PT["run"]])
+    who = torch.tensor([WHO_NONE, 3, 2])
+    m = PlayTransformer.who_result_mask(t, who, len(RESULTS))
+    assert not m[0, RS["complete"]] and m[0, RS["sack"]] and m[0, RS["incomplete"]]   # no target: no catch
+    assert m[1, RS["complete"]] and not m[1, RS["sack"]]                              # a target: no sack
+    assert m[2].all()
+
+
+def test_who_head_attributes_runs_and_targets(who_sim):
+    from runitback.nfl.model.lineups import N_SLOTS, SLOTS
+    finals, logs = who_sim.rollout(new_game("KC", "BUF", 2025, opening_kicker=0), 3, seed=0, keep_plays=3)
+    plays = [o for lg in logs for _, o in lg]
+    runs = [o for o in plays if o.play_type == "run"]
+    assert runs and all(o.who is not None for o in runs)                 # every run has a ball carrier
+    assert all(o.who is None for o in plays if o.play_type not in ("run", "pass"))
+    assert all(o.who is not None for o in plays if o.play_type == "pass" and o.result == "complete")
+    assert all(o.who is None for o in plays if o.play_type == "pass" and o.result == "sack")
+    # the tiny sampler only puts QB1 RB1 WR1-3 TE1 OL1-5 on the field
+    on_field = {SLOT_IDX[s] for s in [("QB", 0), ("RB", 0), ("WR", 0), ("WR", 1), ("WR", 2), ("TE", 0)]
+                + [("OL", i) for i in range(5)]}
+    assert {o.who for o in plays if o.who is not None} <= on_field and all(o.who < N_SLOTS for o in runs)
+    assert SLOTS[runs[0].who][0] in ("QB", "RB", "WR", "TE", "OL")
+
+
+def test_who_loss_term(who_sim):
+    from runitback.nfl.model.lineups import WHO_NONE
+    from runitback.nfl.vocab import PT, RESULTS, RS
+    m = who_sim.model.train()
+    B, T = 1, 2
+    st = [new_game("KC", "BUF", 2025)] * T
+    feats = {f: torch.zeros(B, T, dtype=torch.long) for f in m.emb} | {"cont": torch.zeros(B, T, 5)}
+    feats["phase"] = torch.full((B, T), 2)
+    feats |= who_sim._lineup_feats([st], who_sim.lineups_for("KC", "BUF", 2025))
+    feats["pers"] = torch.arange(1, 23).repeat(B, T, 1) + 30
+    feats["pers_grp"] = torch.ones(B, T, 22, dtype=torch.long)
+    feats["who"] = torch.tensor([[4, WHO_NONE]])
+    t = torch.tensor([[PT["pass"], PT["pass"]]]); r = torch.tensor([[RS["complete"], RS["sack"]]])
+    batch = {"feats": feats, "valid": torch.ones(B, T), "type": t, "result": r,
+             "yards": torch.full((B, T), 105), "elapsed": torch.full((B, T), 5),
+             "type_mask": torch.ones(B, T, 11, dtype=torch.bool), "result_mask": torch.ones(B, T, len(RESULTS), dtype=torch.bool),
+             "yards_mask": torch.ones(B, T, 200, dtype=torch.bool), "elapsed_mask": torch.ones(B, T, 61, dtype=torch.bool)}
+    loss, logs = m.loss(batch)
+    assert "who" in logs and torch.isfinite(loss)
+    loss.backward()
+    assert m.who_ctx.weight.grad.abs().sum() > 0
+    m.eval()
