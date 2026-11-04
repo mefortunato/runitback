@@ -3,7 +3,7 @@ import { summarizeScores, type SimResult } from "../format";
 import { errorText } from "../http";
 
 export const FORECAST_GAMES = 1000;
-export const FORECAST_BATCH = 100;
+export const FORECAST_BATCH = 25;
 
 type Simulate = (n: number, signal: AbortSignal) => Promise<SimResult>;
 
