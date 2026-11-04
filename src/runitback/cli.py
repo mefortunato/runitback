@@ -201,6 +201,40 @@ def nba_simulate(home: str, away: str, season: int = 2027, n: int = 1000, game_t
     _write_result(res, out, scores)
 
 
+@nba.command("season")
+def nba_season(season: int = 2027, seed: int = 0, temperature: float = 1.0,
+               strength: str = typer.Option("checkpoint", help="checkpoint | neutral | randomized"),
+               ckpt: Path = NBA_CKPT, out: Path = typer.Option(None, help="save the full result as .json")):
+    """Simulate a full season: 82-game schedule, play-in and best-of-seven playoffs."""
+    from .nba.sim.sampler import Simulator
+    from .nba.sim.season import simulate_season
+    sim = Simulator.load(ckpt)
+
+    def progress(stage: str, completed: int, total: int) -> None:
+        typer.echo(f"\r{stage}: {completed}/{total} games", nl=False, err=True)
+
+    res = simulate_season(sim, season, seed=seed, temperature=temperature, strength_mode=strength,
+                          progress=progress)
+    typer.echo("", err=True)
+    for conference, table in res["standings"].items():
+        typer.echo(f"\n{conference}")
+        for row in table["seeds"]:
+            typer.echo(f"{row['seed']:>3} {row['team']:<4} {row['wins']:>2}-{row['losses']:<2} {row['status']}")
+    for rnd in res["play_in_rounds"]:
+        typer.echo(f"\n{rnd['round']}")
+        for g in rnd["games"]:
+            typer.echo(f"  {g['round']}: {g['away']} {g['away_score']} @ {g['home']} {g['home_score']}")
+    for rnd in res["playoffs"]:
+        typer.echo(f"\n{rnd['round']}")
+        for s in rnd["series"]:
+            typer.echo(f"  ({s['high']['seed']}) {s['high']['team']} vs ({s['low']['seed']}) {s['low']['team']}: "
+                       f"{s['summary']}")
+    typer.echo(f"\nChampion: {res['champion']}")
+    if out:
+        out.write_text(json.dumps(res, indent=1))
+        typer.echo(f"saved {out}")
+
+
 @nba.command("fetch-model")
 def nba_fetch_model(version: str = typer.Option(None, help="release version (default: the latest)"),
                     dest: Path = NBA_CKPT, force: bool = False,

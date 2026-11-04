@@ -9,7 +9,7 @@ helpers. One server (`runitback.server`) serves every sport's API and the web ap
 
 - `/`: a landing page that explains the model and links to each sport
 - `/nfl`: the NFL game, forecast and season simulators
-- `/nba`: the NBA game and forecast simulators
+- `/nba`: the NBA game, forecast and season simulators
 
 ## NFL
 
@@ -89,7 +89,8 @@ what the team with the ball does next, and a deterministic rules engine applies 
 
 - **Web app** (`/nba`): step an event or a whole possession at a time, simulate to the end of the
   quarter or game, call 2s, 3s and timeouts, auto-play, undo, and follow the scoreboard, shot
-  chart, line score, team stats and live win probability. Forecast a matchup over 1,000 games.
+  chart, line score, team stats and live win probability. Forecast a matchup over 1,000 games, or
+  simulate a full season: 82-game schedule, play-in and best-of-seven playoffs.
 - **External use**: Python API, HTTP endpoints under `/api/nba`, and the CLI.
 
 Data comes from [SportsDataverse](https://www.sportsdataverse.org/) (`sportsdataverse.nba.load_nba_pbp`,
@@ -105,6 +106,7 @@ ESPN and historical ones (`GS`, `NJ`, `SEA`, ...) are mapped to the current fran
 | Ratings | `src/runitback/nba/data/ratings.py` | efficiency vs league average (EWMA) and Elo |
 | Model | `src/runitback/nba/model/transformer.py` | core trunk; heads type → result → clock |
 | Sampler / API / routes | `src/runitback/nba/sim/`, `src/runitback/nba/server/app.py` | `simulate_games`, FastAPI |
+| Season simulator | `src/runitback/nba/sim/season.py` | schedule formula, standings and tiebreakers, play-in, playoffs |
 | Web | `web/src/nba/` | page, court/shot chart, box score |
 
 **Events** (`play_type` → `result` → `elapsed` seconds):
@@ -164,7 +166,31 @@ runitback nba calibrate --ckpt runs/nba/eval/model.pt --season 2025   # strength
 runitback nba train --out runs/nba/prod                           # production model on all data
 runitback serve                                                   # http://127.0.0.1:8000/nba
 runitback nba simulate BOS NYK --season 2027 --n 1000
+runitback nba season --season 2027 --seed 0 --out season.json   # full season + playoffs
 ```
+
+**Season simulator** (the **Season** tab on `/nba`, `runitback nba season`, or
+`simulate_season(sim, 2027)` from `runitback.nba.sim.season`). Supports seasons 2005–2040 (the
+30-team, six-division era). The 82-game schedule follows the NBA formula: four games against each
+division rival, four against six of the other ten conference teams and three against the other
+four (rotating by season and seed), and two against every team in the other conference, with 41
+home games each. Games are spread over about 170 days from opening night (the fourth Tuesday of
+October), with no team playing twice in a day. Standings use the NBA tiebreakers (head-to-head,
+division winner, division and conference record, point differential, then a seeded coin flip; the
+record-against-playoff-teams steps are left out). From 2020-21 on, seeds 7–10 play the play-in
+(7 v 8, 9 v 10, then the loser of the first game against the winner of the second). Earlier
+seasons seed the top eight directly. Each conference then plays a fixed 1/8–4/5, 3/6–2/7 bracket of
+best-of-seven series, with the higher seed hosting games 1, 2, 5 and 7. In the Finals, home court
+goes to the better record.
+
+Team strength is held fixed for the whole season: each team's preseason rating (*checkpoint*),
+those ratings shuffled between teams (*randomized*), or league average (*neutral*). That makes
+games independent, so the simulator batches games with different matchups (128 at a time) and
+samples all seven games of a series at once, keeping only the games up to the fourth win. With
+fixed ratings this gives the same distribution as playing the games in order. A season is 1,341
+sampled games (1,230 regular season, 6 play-in and 15 × 7 playoff games).
+HTTP: `POST /api/nba/seasons {season, seed, temperature, strength_mode}` starts a background job;
+poll `GET /api/nba/seasons/{id}` for progress and the result.
 
 **Releasing an NBA model**: run `runitback nba sha256 runs/nba/prod/model.pt`, attach the
 checkpoint to a GitHub release tagged `nba-v0.1.0` as `runitback-nba-model-v0.1.0.pt`, then add
@@ -185,8 +211,9 @@ HTTP: `POST /api/nba/simulate {home, away, season, n, before?, ratings?}`, and i
 `GET /api/nba/teams` (teams always; seasons once a model is loaded).
 Set `RUNITBACK_NBA_DATA`, `RUNITBACK_NBA_RUNS` or `RUNITBACK_NBA_CKPT` to move the defaults.
 
-**NBA limitations:** team-level only (no players, injuries or rest); no season simulator yet
-(82-game schedule, play-in and best-of-seven playoffs); shot locations on the court are
+**NBA limitations:** team-level only (no players, injuries or rest); season simulations hold
+team strength fixed (no in-season rating updates) and don't export synthetic training data the
+way NFL seasons do; shot locations on the court are
 illustrative because the model predicts a shot's value and result, not where it was taken; rare
 sequences are simplified (flagrant and clear-path free throws followed by possession, fouls on
 the offense during a loose ball, and coach's challenges).

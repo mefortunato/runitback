@@ -16,6 +16,40 @@ export interface Game { id: string; state: State; plays: Play[]; winprob: WinPro
 export interface Teams {
   teams: string[]; names: Record<string, string>; seasons: number[]; model_loaded: boolean; error: string | null;
 }
+export interface SeasonGame {
+  game_id: string; season: number; game_type: string; stage: string; round: string;
+  day: number | null; date: string | null; game_in_series: number | null;
+  home: string; away: string; home_score: number; away_score: number; winner: string;
+  home_seed: number | null; away_seed: number | null; overtimes: number;
+}
+export interface Standing {
+  team: string; conference: string; division: string; wins: number; losses: number; win_pct: number;
+  games_behind: number; home_wins: number; home_losses: number; away_wins: number; away_losses: number;
+  conference_wins: number; conference_losses: number; division_wins: number; division_losses: number;
+  points_for: number; points_against: number; point_diff: number; streak: string; last_ten: string;
+  seed: number; status: "playoffs" | "play_in" | "out"; division_winner: boolean; division_rank?: number;
+}
+export interface Series {
+  conference: string; high: { team: string; seed: number }; low: { team: string; seed: number };
+  wins: Record<string, number>; winner: string; loser: string; games: SeasonGame[]; summary: string;
+}
+export interface SeasonResult {
+  season: number; seed: number; strength_mode: string; temperature: number;
+  regular_game_count: number; playoff_game_count: number; playoff_team_count: number; play_in: boolean;
+  games: SeasonGame[];
+  standings: Record<"East" | "West", { seeds: Standing[]; divisions: Record<string, Standing[]> }>;
+  play_in_rounds: Array<{ round: string; games: SeasonGame[] }>;
+  playoffs: Array<{ round: string; series: Series[] }>;
+  champion: string; finals: Series;
+}
+export interface SeasonJob {
+  id: string; status: "running" | "complete" | "failed";
+  progress: { stage: string; completed: number; total: number };
+  result: SeasonResult | null; error: string | null;
+}
+export interface SeasonRequest {
+  season: number; seed: number; temperature: number; strength_mode: "checkpoint" | "neutral" | "randomized";
+}
 export type StepBody = { play_type?: string; count?: number; until?: "possession" | "period"; temperature?: number };
 
 const call = <T,>(path: string, init?: RequestInit) => http<T>(`/api/nba${path}`, init);
@@ -29,6 +63,9 @@ export const api = {
   winprob: (id: string, n = 120) => call<WinProb>(`/games/${id}/winprob?n=${n}`),
   simulate: (home: string, away: string, season: number, game_type: string, n: number) =>
     call<SimResult>("/simulate", { method: "POST", body: JSON.stringify({ home, away, season, game_type, n }) }),
+  startSeason: (request: SeasonRequest) =>
+    call<SeasonJob>("/seasons", { method: "POST", body: JSON.stringify(request) }),
+  seasonJob: (id: string) => call<SeasonJob>(`/seasons/${id}`),
 };
 
 // Seasons are named by the year they end in, as in the ESPN data: 2026 is the 2025-26 season.

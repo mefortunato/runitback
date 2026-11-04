@@ -6,6 +6,7 @@ import { errorText } from "../http";
 import { api, seasonLabel, situation, type Game, type SimResult, type StepBody, type Teams } from "./api";
 import BoxScore from "./BoxScore";
 import Court from "./Court";
+import SeasonSimulator from "./SeasonSimulator";
 
 const CALLABLE: Record<string, string> = {
   shot2: "2-pointer", shot3: "3-pointer", timeout: "Timeout", jump_ball: "Jump ball",
@@ -26,6 +27,7 @@ export default function NbaApp() {
   const [liveWp, setLiveWp] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [forecasting, setForecasting] = useState(false);
+  const [view, setView] = useState<"game" | "season">("game");
   const wpBusy = useRef(false);
   const wpPending = useRef<Game | null>(null);
   const sinceWp = useRef(0);
@@ -102,7 +104,7 @@ export default function NbaApp() {
     <div className="sport-page nba">
       <div className="page-intro">
         <h1>NBA</h1>
-        <p className="muted">Play a game possession by possession, call shots, or forecast a matchup over 1,000 simulated games.</p>
+        <p className="muted">Play a game possession by possession, forecast a matchup over 1,000 simulated games, or simulate a full season through the Finals.</p>
       </div>
 
       {meta && !ready && (
@@ -116,6 +118,14 @@ runitback serve`}</code></pre>
         </section>
       )}
 
+      <nav className="view-tabs" aria-label="Simulation type">
+        <button className={view === "game" ? "selected" : ""} aria-pressed={view === "game"}
+          onClick={() => setView("game")}>Game</button>
+        <button className={view === "season" ? "selected" : ""} aria-pressed={view === "season"}
+          onClick={() => setView("season")}>Season</button>
+      </nav>
+
+      {view === "season" ? (ready && <SeasonSimulator seasons={meta?.seasons ?? []} />) : <>
       <section className="card setup">
         <label>Away<select value={away} onChange={(e) => setAway(e.target.value)}>
           {teams.map((t) => <option key={t} value={t}>{t} · {name(t)}</option>)}</select></label>
@@ -206,6 +216,7 @@ runitback serve`}</code></pre>
           </aside>
         </div>
       )}
+      </>}
     </div>
   );
 }
