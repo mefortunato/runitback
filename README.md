@@ -198,6 +198,40 @@ Next experiments, by expected value:
 3. Evaluate walk-forward over several seasons (about 1,400 games) to resolve Brier differences
    of 0.005.
 
+### Do individual defenders change what opposing players produce? (2026-11 check)
+
+The question: does an elite DB1 hold the opposing WR1 to noticeably fewer yards than an average
+DB1 would? `scripts/matchup_analysis.py OFF_GROUP DEF_POSITIONS RANK STAT` tests this from the
+data alone, with no model. Roles come from snap counts (the most-used WR, the defense's most-used
+CB). Every predictor uses only earlier games. Nested regressions are fit on 2013–2022 and tested
+on 2023–2025 (about 1,700 team-games), with game-level bootstrap intervals:
+
+| Pairing | Opponent team defense adds (MSE) | Specific defender's track record adds | Defender year-to-year r |
+|---|---|---|---|
+| WR1 rec. yards vs CB1 | +7.3 (CI +1.2..+13.7) | −0.1 (−1.3..+1.0) | 0.09 |
+| WR2 rec. yards vs CB2 | +1.9 (+0.4..+3.4) | −0.1 (−0.5..+0.2) | 0.11 |
+| WR1 targets vs CB1 | +0.05 (+0.01..+0.09) | +0.01 (−0.01..+0.03) | 0.00 |
+| TE1 rec. yards vs top safety | +1.4 (−0.2..+3.1) | +0.3 (−1.1..+1.6) | −0.02 |
+| RB1 rush yards vs top DL | +15.8 (+5.0..+26.6) | +0.0 (−0.1..+0.1) | −0.06 |
+| RB1 rush yards vs top LB | +15.8 (+5.0..+26.6) | −1.1 (−2.2..−0.1) | 0.14 |
+
+For comparison, a WR's own receiving yards have a year-to-year correlation of 0.48. Learning a
+per-CB identity effect (shrunk) doesn't improve test RMSE either (37.91–38.18 vs 37.93). When a
+defense's usual CB1 is out, opposing WR1s gain −3.6 ± 7.3 yards: not significant, and the
+opposite sign to the hypothesis.
+
+The trained lineup model agrees (`scripts/model_defender_effect.py`). On the 300 held-out
+team-games, replacing the real DBs with generic ones shifts expected passing yards by only about
+1.5 yards per team-game. Those shifts don't correlate with how actual yards differed from the
+generic prediction (r = −0.02, 95% CI −0.13..+0.10). DL/LB on rushing: r = −0.08 (−0.19..+0.05).
+
+**Conclusion:** opposing *team* defense is a real, persistent signal. With public data, the identity
+of a specific defender is not: it isn't stable from season to season and doesn't predict
+out-of-sample. The caveat is that "CB1 by snaps" is not "the CB covering WR1". NFL defenses rarely
+shadow, and who covered whom is not in nflverse (it needs NGS/PFF-style coverage charting).
+Per-player *offensive* stat lines remain promising: player form is stable (r ≈ 0.48) and opponent
+team defense adds to it.
+
 ## Quick start (pre-trained model)
 
 You need Python 3.10+ and Node 18+. This takes about 5 minutes and needs no data download or training.
