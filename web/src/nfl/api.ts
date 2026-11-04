@@ -55,8 +55,12 @@ export const api = {
     call<Game>(`/games/${id}/step`, { method: "POST", body: JSON.stringify(body) }),
   undo: (id: string) => call<Game>(`/games/${id}/undo`, { method: "POST" }),
   winprob: (id: string, n = 150) => call<WinProb>(`/games/${id}/winprob?n=${n}`),
-  simulate: (home: string, away: string, season: number, game_type: string, n: number) =>
-    call<SimResult>("/simulate", { method: "POST", body: JSON.stringify({ home, away, season, game_type, n }) }),
+  simulate: (home: string, away: string, season: number, game_type: string, n: number,
+    opts: { include_scores?: boolean; signal?: AbortSignal } = {}) =>
+    call<SimResult>("/simulate", {
+      method: "POST", signal: opts.signal,
+      body: JSON.stringify({ home, away, season, game_type, n, include_scores: opts.include_scores ?? false }),
+    }),
   startSeason: (request: SeasonRequest) =>
     call<SeasonJob>("/seasons", { method: "POST", body: JSON.stringify(request) }),
   seasonJob: (id: string) => call<SeasonJob>(`/seasons/${id}`),
