@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from ..core.training import autocast, batches, cpu_state_dict, resolve_device, to_device
 from .data.ratings import RatingsTable
 from .model.dataset import build_team_seasons, collate, encode_games
 from .model.features import CONT_FEATURES
@@ -34,26 +35,15 @@ def split_games(games: pd.DataFrame, val_season: int | None, val_week: int) -> t
     return games[~is_val], games[(games.season == val_season) & (games.week >= val_week)]
 
 
-def batches(items: list[dict], batch_size: int, rng: np.random.Generator, shuffle: bool = True):
-    order = rng.permutation(len(items)) if shuffle else np.arange(len(items))
-    # bucket by length to reduce padding
-    chunks = [order[i: i + batch_size * 20] for i in range(0, len(order), batch_size * 20)]
-    out = []
-    for c in chunks:
-        c = sorted(c, key=lambda i: len(items[i]["type"]))
-        out += [c[i: i + batch_size] for i in range(0, len(c), batch_size)]
-    if shuffle:
-        rng.shuffle(out)
-    return out
-
-
 @torch.no_grad()
-def evaluate(model: PlayTransformer, items: list[dict], batch_size: int = 32) -> dict[str, float]:
+def evaluate(model: PlayTransformer, items: list[dict], batch_size: int = 32, amp: bool = False) -> dict[str, float]:
     model.eval()
+    device = next(model.parameters()).device
     sums, n = {}, 0.0
     for b in batches(items, batch_size, np.random.default_rng(0), shuffle=False):
-        batch = collate([items[i] for i in b])
-        _, logs = model.loss(batch)
+        batch = to_device(collate([items[i] for i in b]), device)
+        with autocast(device, amp):
+            _, logs = model.loss(batch)
         w = batch["valid"].sum().item()
         for k, v in logs.items():
             sums[k] = sums.get(k, 0.0) + v * w
@@ -99,11 +89,12 @@ def evaluate_box(model: PlayTransformer, items: list[dict], sigma: torch.Tensor,
     from .model.boxscore import GAME_STATS, batch_box
     model.eval()
     sq, n = 0.0, 0
+    device = next(model.parameters()).device
     for b in batches(items, batch_size, np.random.default_rng(0), shuffle=False):
-        batch = collate([items[i] for i in b])
+        batch = to_device(collate([items[i] for i in b]), device)
         h = model.encode(batch["feats"])
         pred, real = batch_box(model, h, model.personnel(batch["feats"]), batch)
-        sq, n = sq + ((pred - real) ** 2).sum(0), n + len(b)
+        sq, n = sq + ((pred - real) ** 2).sum(0).float().cpu(), n + len(b)
     model.train()
     return {k: float(v) for k, v in zip(GAME_STATS, (sq / n) ** 0.5)}
 
@@ -151,16 +142,22 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
           epochs: int = 8, batch_size: int = 32, lr: float = 1e-3, d_model: int = 256, n_layers: int = 6,
           n_heads: int = 8, dropout: float = 0.1, min_season: int = 1999, max_games: int | None = None,
           unk_ts_prob: float = 0.1, unk_cont_prob: float = 0.05, use_ratings: bool = True, threads: int | None = None,
-          seed: int = 0, init: Path | None = None, use_lineups: bool = True, unk_lineup_prob: float = 0.1,
-          unk_pers_prob: float = 0.15, other_player_prob: float = 0.03, player_dim: int = 0,
-          lineup_dropout: float = 0.0, prev_lineup_prob: float = 0.0, box_weight: float = 0.0,
-          who_head: bool = False) -> Path:
+          seed: int = 0, init: Path | None = None, device: str | None = "auto", amp: bool = True,
+          use_lineups: bool = True, unk_lineup_prob: float = 0.1, unk_pers_prob: float = 0.15,
+          other_player_prob: float = 0.03, player_dim: int = 0, lineup_dropout: float = 0.0,
+          prev_lineup_prob: float = 0.0, box_weight: float = 0.0, who_head: bool = False) -> Path:
     """Train a model on one or more data directories. With `init`, fine-tune that checkpoint: its
     architecture and team-season vocabulary are kept (team-seasons it has not seen use the unknown
     embedding) and d_model/n_layers/n_heads/dropout are ignored."""
     if threads:
         torch.set_num_threads(threads)
     torch.manual_seed(seed)
+    dev = resolve_device(device)
+    amp = amp and dev.type == "cuda" and torch.cuda.is_bf16_supported()
+    log.info("training on %s%s", dev, " with bf16 autocast" if amp else "")
+    if dev.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     rng = np.random.default_rng(seed)
     out_dir.mkdir(parents=True, exist_ok=True)
     games, plays, ratings, lookup_ratings = load_data(data_dir, use_ratings)
@@ -207,6 +204,7 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
     model = PlayTransformer(cfg)
     if base is not None:
         model.load_state_dict(base["state_dict"])
+    model.to(dev)
     log.info("params: %.2fM", sum(p.numel() for p in model.parameters()) / 1e6)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.05, betas=(0.9, 0.98))
     steps_per_epoch = math.ceil(len(train_items) / batch_size)
@@ -215,6 +213,7 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
         opt, lambda s: min(1.0, (s + 1) / warmup) * 0.5 * (1 + math.cos(math.pi * min(s, total_steps) / total_steps)))
 
     sigma = box_sigma(train_items)
+    sigma_dev = sigma.to(dev)
     log.info("box-score scales: %s", [round(float(x), 1) for x in sigma])
     meta = dict(config=cfg.to_dict(), team_seasons=ts.keys, val_season=val_season, val_week=val_week,
                 ratings=RatingsTable(lookup_ratings).to_records() if lookup_ratings is not None else None,
@@ -231,9 +230,10 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
     step, t0 = 0, time.time()
     for epoch in range(epochs):
         for b in batches(train_items, batch_size, rng):
-            batch = collate([train_items[i] for i in b], unk_ts_prob, rng, unk_cont_prob,
-                            unk_lineup_prob, unk_pers_prob, other_player_prob, prev_lineup_prob)
-            loss, logs = model.loss(batch, box_weight, sigma)
+            batch = to_device(collate([train_items[i] for i in b], unk_ts_prob, rng, unk_cont_prob,
+                                      unk_lineup_prob, unk_pers_prob, other_player_prob, prev_lineup_prob), dev)
+            with autocast(dev, amp):
+                loss, logs = model.loss(batch, box_weight, sigma_dev)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -244,8 +244,8 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
                 log.info("ep %d step %d/%d loss %.4f %s (%.0fs)", epoch, step, total_steps, loss.item(),
                          " ".join(f"{k}={v:.3f}" for k, v in logs.items() if not k.startswith("box_")),
                          time.time() - t0)
-        val = evaluate(model, val_items) if val_items else {}
-        vbox = evaluate_box(model, val_items, sigma) if val_items else {}
+        val = evaluate(model, val_items, amp=amp) if val_items else {}
+        vbox = evaluate_box(model, val_items, sigma) if val_items and box_weight > 0 else {}
         history.append({"epoch": epoch, **{f"val_{k}": v for k, v in val.items()},
                         **{f"val_box_rmse_{k}": v for k, v in vbox.items()}})
         log.info("epoch %d val %s", epoch, json.dumps({k: round(v, 4) for k, v in val.items()}))
@@ -254,6 +254,6 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
         score = val.get("total", -epoch)
         if score < best or not val_items:
             best = score
-            torch.save({"state_dict": model.state_dict(), **meta, "history": history}, ckpt)
+            torch.save({"state_dict": cpu_state_dict(model), **meta, "history": history}, ckpt)
     (out_dir / "history.json").write_text(json.dumps(history, indent=1))
     return ckpt

@@ -53,8 +53,8 @@ export default function LineupEditor({ side, view, value, coaches, season, onCha
     const known = coaches.find((c) => c.name === coachName);
     if (!known || !view) { setCoachInfo(undefined); return; }
     let live = true;
-    fetch(`/api/coaches?team=${view.team}&season=${season}&q=${encodeURIComponent(coachName)}`)
-      .then((r) => r.json()).then((d) => live && setCoachInfo((d.coaches as CoachInfo[]).find((c) => c.name === coachName)))
+    api.coaches(season, view.team, coachName)
+      .then((d) => live && setCoachInfo(d.coaches.find((c) => c.name === coachName)))
       .catch(() => live && setCoachInfo(known));
     return () => { live = false; };
   }, [coachName, coaches, view, season]);

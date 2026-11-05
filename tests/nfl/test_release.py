@@ -9,7 +9,7 @@ from runitback.nfl import release
 def fake_release(tmp_path, monkeypatch):
     src = tmp_path / "asset.pt"
     src.write_bytes(b"weights")
-    monkeypatch.setitem(release.MODELS, "vtest", ("asset.pt", hashlib.sha256(b"weights").hexdigest()))
+    monkeypatch.setitem(release.MODELS, "vtest", ("vtest", "asset.pt", hashlib.sha256(b"weights").hexdigest()))
     return src.as_uri()
 
 
@@ -21,7 +21,7 @@ def test_fetch_downloads_and_verifies(tmp_path, fake_release):
 
 
 def test_fetch_rejects_bad_checksum_and_foreign_file(tmp_path, fake_release, monkeypatch):
-    monkeypatch.setitem(release.MODELS, "vbad", ("asset.pt", "0" * 64))
+    monkeypatch.setitem(release.MODELS, "vbad", ("vbad", "asset.pt", "0" * 64))
     dest = tmp_path / "model.pt"
     with pytest.raises(ValueError, match="checksum mismatch"):
         release.fetch_model(dest, "vbad", url=fake_release)

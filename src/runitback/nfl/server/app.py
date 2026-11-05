@@ -1,21 +1,16 @@
-"""FastAPI server: interactive play-by-play sessions + batch simulation endpoint."""
+"""NFL API routes: interactive play-by-play sessions, batch simulation and season jobs."""
 from __future__ import annotations
 
-import os
 import logging
 import random
 import threading
 import uuid
-from contextlib import contextmanager
-from pathlib import Path
-from typing import Iterator
 
 import torch
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import APIRouter, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from ...core.scheduler import MODEL_SCHEDULER, ModelScheduler  # noqa: F401  (ModelScheduler re-exported)
 from ..engine.rules import GameState, Outcome, apply_outcome, legal_types, new_game
 from ..sim.api import simulate_games, summarize
 from ..sim.describe import describe
@@ -25,50 +20,9 @@ from ..sim.sampler import Simulator
 from ..data.players import DEPTH
 from ..vocab import PHASES, TEAMS
 
-app = FastAPI(title="Run It Back — NFL", version="0.1.0")
+router = APIRouter()
 _sim: Simulator | None = None
-
-
-class ModelScheduler:
-    """Serialize model access while giving interactive requests priority."""
-
-    def __init__(self):
-        self._condition = threading.Condition()
-        self._active = False
-        self._interactive_waiters = 0
-
-    @contextmanager
-    def interactive(self) -> Iterator[None]:
-        with self._condition:
-            self._interactive_waiters += 1
-            try:
-                while self._active:
-                    self._condition.wait()
-                self._active = True
-            finally:
-                self._interactive_waiters -= 1
-        try:
-            yield
-        finally:
-            with self._condition:
-                self._active = False
-                self._condition.notify_all()
-
-    @contextmanager
-    def background(self) -> Iterator[None]:
-        with self._condition:
-            while self._active or self._interactive_waiters:
-                self._condition.wait()
-            self._active = True
-        try:
-            yield
-        finally:
-            with self._condition:
-                self._active = False
-                self._condition.notify_all()
-
-
-_model_scheduler = ModelScheduler()
+_model_scheduler = MODEL_SCHEDULER
 SESSIONS: dict[str, "Session"] = {}
 MAX_SESSIONS = 500
 SEASON_JOBS: dict[str, dict] = {}
@@ -184,12 +138,12 @@ def _session(gid: str) -> Session:
     return SESSIONS[gid]
 
 
-@app.get("/api/health")
+@router.get("/health")
 def health():
     return {"ok": True, "model_loaded": _sim is not None}
 
 
-@app.get("/api/teams")
+@router.get("/teams")
 def teams():
     sim = get_sim()
     return {"teams": TEAMS, "seasons": sim.seasons, "lineups": sim.lineups is not None}
@@ -202,7 +156,7 @@ def _lineup_resolver():
     return sim.lineups
 
 
-@app.get("/api/teams/{team}/lineup")
+@router.get("/teams/{team}/lineup")
 def team_lineup(team: str, season: int = 2026):
     """A team's default lineup (its most recent game), with player and coach details, plus the
     players to choose from: everyone whose latest team is this team, by position group."""
@@ -222,7 +176,7 @@ def team_lineup(team: str, season: int = 2026):
             "depth_chart": chart, "pool": pool, "groups": list(DEPTH), "max_depth": DEPTH}
 
 
-@app.get("/api/players")
+@router.get("/players")
 def players(q: str = "", group: str | None = None, limit: int = 25):
     """Search the player directory by name (any team)."""
     r = _lineup_resolver()
@@ -235,7 +189,7 @@ def players(q: str = "", group: str | None = None, limit: int = 25):
     return {"players": out[: max(1, min(limit, 200))]}
 
 
-@app.get("/api/coaches")
+@router.get("/coaches")
 def coaches(team: str | None = None, season: int = 2026, q: str = ""):
     """Head coaches with their records before `season` (as seen from `team`)."""
     r = _lineup_resolver()
@@ -249,7 +203,7 @@ def coaches(team: str | None = None, season: int = 2026, q: str = ""):
     return {"coaches": out}
 
 
-@app.post("/api/games")
+@router.post("/games")
 def create_game(req: NewGame):
     home, away = req.home.upper(), req.away.upper()
     _check_teams(home, away)
@@ -267,12 +221,12 @@ def create_game(req: NewGame):
     return {"id": gid, **s.view()}
 
 
-@app.get("/api/games/{gid}")
+@router.get("/games/{gid}")
 def get_game(gid: str):
     return {"id": gid, **_session(gid).view()}
 
 
-@app.post("/api/games/{gid}/step")
+@router.post("/games/{gid}/step")
 def step(gid: str, req: Step):
     s = _session(gid)
     sim = get_sim()
@@ -301,7 +255,7 @@ def step(gid: str, req: Step):
     return {"id": gid, "new_plays": new, **s.view()}
 
 
-@app.post("/api/games/{gid}/undo")
+@router.post("/games/{gid}/undo")
 def undo(gid: str, count: int = 1):
     s = _session(gid)
     with s.lock:
@@ -313,7 +267,7 @@ def undo(gid: str, count: int = 1):
     return {"id": gid, **s.view()}
 
 
-@app.get("/api/games/{gid}/winprob")
+@router.get("/games/{gid}/winprob")
 def winprob(gid: str, n: int = 200):
     s = _session(gid)
     sim = get_sim()
@@ -339,7 +293,7 @@ def winprob(gid: str, n: int = 200):
     return point
 
 
-@app.post("/api/simulate")
+@router.post("/simulate")
 def simulate(req: SimRequest):
     home, away = req.home.upper(), req.away.upper()
     _check_teams(home, away)
@@ -379,7 +333,7 @@ def _run_season_job(job_id: str, req: SeasonRequest, schedule: list[dict], bye_w
             job["error"] = str(exc)
 
 
-@app.post("/api/seasons", status_code=202)
+@router.post("/seasons", status_code=202)
 def start_season(req: SeasonRequest):
     sim = get_sim()
     if req.strength_mode == "randomized" and sim.ratings is None:
@@ -412,7 +366,7 @@ def start_season(req: SeasonRequest):
         return dict(SEASON_JOBS[job_id])
 
 
-@app.get("/api/seasons/{job_id}")
+@router.get("/seasons/{job_id}")
 def season_status(job_id: str):
     with _season_jobs_lock:
         job = SEASON_JOBS.get(job_id)
@@ -421,16 +375,11 @@ def season_status(job_id: str):
         return dict(job)
 
 
-@app.get("/api/meta")
+@router.get("/meta")
 def meta():
     return {"phases": PHASES}
 
 
-WEB = Path(os.environ.get("RUNITBACK_WEB", Path(__file__).resolve().parents[4] / "web" / "dist"))
-if WEB.exists():
-    app.mount("/assets", StaticFiles(directory=WEB / "assets"), name="assets")
-
-    @app.get("/{path:path}", include_in_schema=False)
-    def spa(path: str):
-        f = WEB / path
-        return FileResponse(f if path and f.is_file() else WEB / "index.html")
+# API-only app (routes under /api). The combined NFL + NBA app with the web UI is runitback.server:app.
+app = FastAPI(title="Run It Back — NFL", version="0.1.0")
+app.include_router(router, prefix="/api")

@@ -2,9 +2,14 @@
 
 Simulate sports games one play at a time, or replay a matchup a thousand times.
 
-Run It Back is built to cover several sports. Each sport has its own package with its rules,
-data and vocabulary (`runitback.nfl`). Shared pieces live in `runitback.core`: the transformer
-building blocks and the score-distribution summaries. **NFL** is the first sport.
+Run It Back covers several sports. Each sport has its own package with its rules, data and
+vocabulary (`runitback.nfl`, `runitback.nba`). Shared pieces live in `runitback.core`: the
+transformer building blocks, the score-distribution summaries, the model scheduler and training
+helpers. One server (`runitback.server`) serves every sport's API and the web app:
+
+- `/`: a landing page that explains the model and links to each sport
+- `/nfl`: the NFL game, forecast and season simulators
+- `/nba`: the NBA game, forecast and season simulators
 
 ## NFL
 
@@ -32,7 +37,7 @@ which reads the nflverse/nflfastR play-by-play releases), 1999–present.
 | Model | `src/runitback/nfl/model/transformer.py` | one position per play; heads factorized as type → result → yards → clock |
 | Players, lineups, coaches | `src/runitback/nfl/data/players.py`, `src/runitback/nfl/model/lineups.py` | depth charts, per-play personnel, NEW PLAYER rule, coach records, personnel sampler |
 | Sampler | `src/runitback/nfl/sim/sampler.py` | batched rollouts with a KV cache and legal-outcome masks |
-| API / server | `src/runitback/nfl/sim/api.py`, `src/runitback/nfl/server/app.py` | `simulate_games`, FastAPI |
+| API / server | `src/runitback/nfl/sim/api.py`, `src/runitback/nfl/server/app.py` | `simulate_games`, FastAPI routes under `/api/nfl` |
 | Web | `web/` | Vite + React + TypeScript |
 
 **Outcome per play** (each field is sampled conditioned on the ones before it):
@@ -311,6 +316,141 @@ game's active players ranked by their previous-game role:
   context: play volume, play-calling mix and packages. Each simulated game also draws one
   realization, so stat lines inherit the variance of whole-game simulation. A straight blend of the
   two is the most accurate option today.
+## NBA
+
+Generates NBA games one **event** at a time with the same design: a causal transformer samples
+what the team with the ball does next, and a deterministic rules engine applies it.
+
+- **Web app** (`/nba`): step an event or a whole possession at a time, simulate to the end of the
+  quarter or game, call 2s, 3s and timeouts, auto-play, undo, and follow the scoreboard, shot
+  chart, line score, team stats and live win probability. Forecast a matchup over 1,000 games, or
+  simulate a full season: 82-game schedule, play-in and best-of-seven playoffs.
+- **External use**: Python API, HTTP endpoints under `/api/nba`, and the CLI.
+
+Data comes from [SportsDataverse](https://www.sportsdataverse.org/) (`sportsdataverse.nba.load_nba_pbp`,
+ESPN play-by-play published by hoopR), 2002–present. Seasons are named by the year they end in
+(2026 = 2025-26), as in the data. Team abbreviations are the NBA's (`GSW`, `NYK`, `SAS`, ...);
+ESPN and historical ones (`GS`, `NJ`, `SEA`, ...) are mapped to the current franchise.
+
+| Piece | File | Notes |
+|---|---|---|
+| Vocabularies | `src/runitback/nba/vocab.py` | event types, results, phases, teams |
+| Rules engine | `src/runitback/nba/engine/rules.py` | `apply_outcome(state, outcome)`, legality, quarters, OT |
+| Preprocessing | `src/runitback/nba/data/preprocess.py` | ESPN rows → (state, event); results derived from what happens next |
+| Ratings | `src/runitback/nba/data/ratings.py` | efficiency vs league average (EWMA) and Elo |
+| Model | `src/runitback/nba/model/transformer.py` | core trunk; heads type → result → clock |
+| Sampler / API / routes | `src/runitback/nba/sim/`, `src/runitback/nba/server/app.py` | `simulate_games`, FastAPI |
+| Season simulator | `src/runitback/nba/sim/season.py` | schedule formula, standings and tiebreakers, play-in, playoffs |
+| Web | `web/src/nba/` | page, court/shot chart, box score |
+
+**Events** (`play_type` → `result` → `elapsed` seconds):
+`jump_ball` (won/lost) · `shot2`, `shot3` (made, made_fouled = and-one, missed_off, missed_def,
+missed_fouled) · `free_throw` (made, missed, or on the last of a trip missed_off/missed_def) ·
+`turnover` · `foul` (non-shooting foul that sends the offense to the line for 1–3 free throws) ·
+`technical` (a technical free throw made by either team, or missed) · `timeout` (offense/defense) ·
+`run_out` (the team holds the ball until the period ends). Rebounds are folded into the miss they
+follow, so possession always follows from the outcome. Side-out fouls, substitutions and
+violations that don't change possession are not events; their clock time goes to the next event.
+
+**Engine rules**: 12-minute quarters and 5-minute overtimes; the team that loses the opening tip
+starts the 2nd and 3rd quarters and the winner the 4th; every overtime starts with a jump ball;
+free throws awarded at the buzzer are shot before the period ends; 7 timeouts per game, at most
+4 in the 4th quarter, 2 per overtime; no ties.
+
+**Engine replay check:** replaying every real 2021–2027 event through the engine reproduces the
+next real state (period, phase, possession, free throws left, score) on **99.48%** of 2.2M
+transitions, and every kept game ends at its real final score.
+
+**Per-event input features:** period, clock, phase, free throws left, score difference, timeouts,
+home/away, offense and defense team and team-season embeddings, season, regular season vs.
+playoffs, the previous event, and five **team-strength ratings** from the offense's point of
+view: its offensive and defensive efficiency, the opponent's, and the Elo difference. Efficiency
+is points per 100 possessions relative to the league average so far that season, as an
+exponentially weighted average (α=0.08); Elo is 538-style (K=20, home advantage 100,
+margin-of-victory multiplier). Both regress a quarter of the way to the mean between seasons.
+
+### Evaluation (smoke run)
+
+A small model (d_model 128, 3 layers, 0.8M params, 3 epochs, about 12 minutes on a 4-core CPU)
+trained on 2020-21 to the first 60% of 2025-26, evaluated on 150 games from the rest of 2025-26
+with 100 simulations each:
+
+| | Model | Elo alone | Spread |
+|---|---|---|---|
+| Brier (coin flip 0.25) | 0.216 | 0.200 | 0.186 |
+| Picked winner | 66% | 73% | 69% |
+| Margin error (pts) | 13.2 | – | 12.3 |
+
+Simulated games match real ones closely (per game, both teams, simulated vs. real): 283 vs 286
+events, 108 vs 107 two-point attempts, 69 vs 69 three-point attempts (26 vs 26 made), 43 vs 45
+free throws, 27 vs 28 turnovers, 30 vs 30 offensive rebounds, 225 vs 228 total points. Predicted
+margins correlate 0.77 with the spread. As with the NFL, the win-probability gap to Elo and the
+spread is mostly about information the model doesn't have (rosters, injuries, rest); a bigger
+model, more seasons and `calibrate` are the obvious next steps.
+
+### NBA pipeline
+
+```bash
+pip install -e ".[data,dev]"
+runitback nba download --start 2015 --end 2027      # raw parquet → data/nba/raw/
+runitback nba preprocess --start 2015 --end 2027    # → data/nba/processed/{games,plays,ratings}.parquet, prints engine agreement
+runitback nba train --out runs/nba/eval --val-season 2026        # hold out the last 40% of 2025-26
+runitback nba evaluate --ckpt runs/nba/eval/model.pt
+runitback nba calibrate --ckpt runs/nba/eval/model.pt --season 2025   # strength_scale by Brier
+runitback nba train --out runs/nba/prod                           # production model on all data
+runitback serve                                                   # http://127.0.0.1:8000/nba
+runitback nba simulate BOS NYK --season 2027 --n 1000
+runitback nba season --season 2027 --seed 0 --out season.json   # full season + playoffs
+```
+
+**Season simulator** (the **Season** tab on `/nba`, `runitback nba season`, or
+`simulate_season(sim, 2027)` from `runitback.nba.sim.season`). Supports seasons 2005–2040 (the
+30-team, six-division era). The 82-game schedule follows the NBA formula: four games against each
+division rival, four against six of the other ten conference teams and three against the other
+four (rotating by season and seed), and two against every team in the other conference, with 41
+home games each. Games are spread over about 170 days from opening night (the fourth Tuesday of
+October), with no team playing twice in a day. Standings use the NBA tiebreakers (head-to-head,
+division winner, division and conference record, point differential, then a seeded coin flip; the
+record-against-playoff-teams steps are left out). From 2020-21 on, seeds 7–10 play the play-in
+(7 v 8, 9 v 10, then the loser of the first game against the winner of the second). Earlier
+seasons seed the top eight directly. Each conference then plays a fixed 1/8–4/5, 3/6–2/7 bracket of
+best-of-seven series, with the higher seed hosting games 1, 2, 5 and 7. In the Finals, home court
+goes to the better record.
+
+Team strength is held fixed for the whole season: each team's preseason rating (*checkpoint*),
+those ratings shuffled between teams (*randomized*), or league average (*neutral*). That makes
+games independent, so the simulator batches games with different matchups (128 at a time) and
+samples all seven games of a series at once, keeping only the games up to the fourth win. With
+fixed ratings this gives the same distribution as playing the games in order. A season is 1,341
+sampled games (1,230 regular season, 6 play-in and 15 × 7 playoff games).
+HTTP: `POST /api/nba/seasons {season, seed, temperature, strength_mode}` starts a background job;
+poll `GET /api/nba/seasons/{id}` for progress and the result.
+
+**Releasing an NBA model**: run `runitback nba sha256 runs/nba/prod/model.pt`, attach the
+checkpoint to a GitHub release tagged `nba-v0.1.0` as `runitback-nba-model-v0.1.0.pt`, then add
+`"v0.1.0": ("nba-v0.1.0", "runitback-nba-model-v0.1.0.pt", "<sha256>")` to `MODELS` in
+`src/runitback/nba/release.py` and set `LATEST = "v0.1.0"`. `runitback nba fetch-model` then
+downloads it, and the Docker image (and so the deployed web app) includes it.
+
+```python
+from runitback.nba import Simulator, simulate_games
+sim = Simulator.load("runs/nba/prod/model.pt")
+r = simulate_games(sim, home="BOS", away="NYK", season=2027, n=1000, seed=0)
+print(r.home_win, r.home_score_mean, r.away_score_mean, r.margin_quantiles)
+```
+
+HTTP: `POST /api/nba/simulate {home, away, season, n, before?, ratings?}`, and interactive
+`POST /api/nba/games`, `POST /api/nba/games/{id}/step {play_type?, count?, until?: "possession" | "period"}`,
+`POST /api/nba/games/{id}/undo`, `GET /api/nba/games/{id}`, `GET /api/nba/games/{id}/winprob`,
+`GET /api/nba/teams` (teams always; seasons once a model is loaded).
+Set `RUNITBACK_NBA_DATA`, `RUNITBACK_NBA_RUNS` or `RUNITBACK_NBA_CKPT` to move the defaults.
+
+**NBA limitations:** team-level only (no players, injuries or rest); season simulations hold
+team strength fixed (no in-season rating updates) and don't export synthetic training data the
+way NFL seasons do; shot locations on the court are
+illustrative because the model predicts a shot's value and result, not where it was taken; rare
+sequences are simplified (flagrant and clear-path free throws followed by possession, fouls on
+the offense during a loose ball, and coach's challenges).
 
 ## Quick start (pre-trained model)
 
@@ -323,8 +463,12 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu   # or a CUDA
 pip install -e .
 (cd web && npm install && npm run build)
 runitback nfl fetch-model     # downloads the v0.1.0 release to runs/nfl/prod/model.pt, checks its SHA-256
-runitback nfl serve           # open http://127.0.0.1:8000
+runitback serve               # open http://127.0.0.1:8000
 ```
+
+For the NBA, `runitback nba fetch-model` downloads the latest released model (`nba-v0.1.0`) to
+`runs/nba/prod/model.pt` and checks its SHA-256. Without it (and without one you trained, see
+[NBA](#nba)), the NBA page shows the commands to train one and the rest of the app works as usual.
 
 The released model (see [Releases](https://github.com/mefortunato/runitback/releases)) includes team
 ratings through 2026 week 7. Retrain (below) to pick up later games.
@@ -354,14 +498,28 @@ team-only model. `evaluate` scores a lineup model three ways: with who actually 
 with each team's previous-game lineup (what the app defaults to), and with no depth charts.
 
 The default model (d_model 192, 4 layers, 2.6M params) trains on a 4-core CPU in about 40
-minutes. Use `--d-model/--n-layers` for larger models on a GPU.
+minutes.
+
+**GPU training.** `train` (NFL and NBA) picks a device with `--device auto` (the default): a CUDA
+GPU if PyTorch sees one, then Apple Silicon (MPS), then the CPU. Pass `--device cpu`, `cuda`,
+`cuda:1` or `mps` to choose. On CUDA GPUs with bfloat16 support (Ampere and newer) training uses
+bf16 mixed precision and TF32 matmuls; turn mixed precision off with `--no-amp`. Install a
+CUDA build of PyTorch first (see [pytorch.org](https://pytorch.org/get-started/locally/)). A GPU
+makes larger models practical, e.g.:
+
+```bash
+runitback nfl train --out runs/nfl/prod --epochs 10 --d-model 384 --n-layers 8 --n-heads 8 --batch-size 128
+```
+
+Checkpoints are always saved with CPU weights, so a model trained on a GPU loads and serves the
+same way on a CPU-only machine.
 
 ### Use it
 
 **Web app**
 
 ```bash
-runitback nfl serve --ckpt runs/nfl/prod/model.pt   # http://127.0.0.1:8000 (serves web/dist)
+runitback serve --nfl-ckpt runs/nfl/prod/model.pt --nba-ckpt runs/nba/prod/model.pt   # http://127.0.0.1:8000 (serves web/dist)
 # frontend dev: (cd web && npm run dev)    # Vite on :5173, proxies /api to :8000
 ```
 In the **Season** view, pick a season (2002–2040, the 32-team era) and run. The backend builds the
@@ -410,22 +568,27 @@ To continue a game in progress, call `sim.rollout(state, n, history=[(state, out
 **HTTP**
 
 ```bash
-curl -X POST localhost:8000/api/simulate -H 'Content-Type: application/json' \
+curl -X POST localhost:8000/api/nfl/simulate -H 'Content-Type: application/json' \
   -d '{"home":"KC","away":"BUF","season":2026,"n":1000}'
 ```
 
-`/api/simulate` and `POST /api/games` take `"lineups": {"KC": {"coach": "...", "depth_chart": {"QB": [ids or "NEW"], ...}}}`.
-`GET /api/teams/{team}/lineup` returns the default depth chart with player details and coach record, plus
-the team's players to pick from; `GET /api/players?q=&group=` searches the league; `GET /api/coaches` lists coaches.
-In the web app, **Depth charts & coaches** opens the editor for both teams.
+`/simulate` and `POST /games` take `"lineups": {"KC": {"coach": "...", "depth_chart": {"QB": [ids or "NEW"], ...},
+"snap_shares": {"<player id>": 0.8}}}` (lineup models; `snap_shares` optional). `GET /teams/{team}/lineup` returns
+the default depth chart with player details and coach record, plus the team's players to pick from;
+`GET /players?q=&group=` searches the league; `GET /coaches` lists coaches. In the web app, **Depth charts &
+coaches** opens the editor for both teams.
 
-Interactive endpoints: `POST /api/games`, `POST /api/games/{id}/step {play_type?, count?, temperature?}`,
-`POST /api/games/{id}/undo`, `GET /api/games/{id}`, `GET /api/games/{id}/winprob?n=200`, `GET /api/teams`.
+Interactive endpoints (all under `/api/nfl`): `POST /games`, `POST /games/{id}/step {play_type?, count?, temperature?}`,
+`POST /games/{id}/undo`, `GET /games/{id}`, `GET /games/{id}/winprob?n=200`, `GET /teams`,
+`POST /seasons`, `GET /seasons/{id}`. The same NFL routes are still served without the `/nfl`
+prefix (`/api/simulate`, ...) for clients written before the NBA was added.
 
 ### Deploy to Google Cloud Run
 
 The repository includes a Docker image that builds the web app, installs the CPU version of PyTorch,
-and downloads the checksum-verified `v0.1.0` model during the image build. Install and authenticate
+and downloads the checksum-verified `v0.1.0` NFL model during the image build. It runs the combined
+server (`runitback.server:app`); the NBA page loads `RUNITBACK_NBA_CKPT`
+(`/app/runs/nba/prod/model.pt`) if the image contains one. Install and authenticate
 the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install), then create and edit the deployment
 environment file:
 
@@ -510,7 +673,10 @@ pytest
 
 The suite covers engine rules (scoring, downs, penalties, halftime, PATs after time expires, and
 the three OT eras), a replay of real 2024 games through the engine, a check that training-time
-legality masks match sampling-time masks, sampler termination, and the API.
+legality masks match sampling-time masks, sampler termination, and the API. The NBA tests cover the
+engine (and-ones, free-throw trips, quarter possession, OT, timeouts), ratings, a replay of real
+games when `data/nba/raw` exists, mask agreement when `data/nba/processed` exists, the sampler,
+the NBA API, and the combined server's routes.
 
 ## Limitations / next steps (NFL)
 
@@ -528,7 +694,7 @@ legality masks match sampling-time masks, sampler termination, and the API.
 - Some rare situations are simplified: untimed downs, penalty-forced re-kicks, defensive two-point
   returns, the 2024+ dynamic kickoff spot (the model learns the landing spots, but the field view
   shows the old 35-yard tee), and playoff OT coin tosses.
-- **Adding a sport** (e.g. `runitback.cfb` via cfbfastR, `runitback.nba` via hoopR) means writing
-  that sport's vocabulary, rules engine, preprocessing and outcome heads. The transformer trunk and
-  the summaries in `runitback.core` are reused. The NFL sampler and server are the template; the
-  next refactor is to move their sport-independent parts into `core` as the second sport lands.
+- **Adding a sport** (e.g. `runitback.cfb` via cfbfastR) means writing that sport's vocabulary,
+  rules engine, preprocessing and outcome heads, as `runitback.nba` does. The transformer trunk,
+  summaries, scheduler and batching in `runitback.core` are reused; the NFL and NBA samplers and
+  servers are near-identical templates and are the next candidates to move into `core`.

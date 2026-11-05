@@ -18,7 +18,7 @@ from runitback.nfl.server import app as server
 from runitback.nfl.sim.api import simulate_games
 from runitback.nfl.sim.sampler import Simulator
 
-from conftest import toy_games
+from .conftest import toy_games
 
 PROCESSED = Path(__file__).resolve().parents[2] / "data" / "nfl" / "processed"
 
@@ -158,6 +158,13 @@ def test_lineup_endpoints(lineup_sim):
     ok = c.post("/api/simulate", json={"home": "KC", "away": "BUF", "n": 4, "seed": 0,
                                        "lineups": {"KC": {"coach": "Brand New", "depth_chart": {"QB": ["NEW"]}}}})
     assert ok.status_code == 200 and ok.json()["n"] == 4
+    # the deployed, combined server serves the same routes under /api/nfl
+    from runitback.server import app as combined
+    cc = TestClient(combined)
+    assert cc.get("/api/nfl/teams/KC/lineup").json()["coach"] == "Andy Reid"
+    assert cc.get("/api/nfl/players", params={"q": "kc_qb"}).status_code == 200
+    assert cc.post("/api/nfl/simulate", json={"home": "KC", "away": "BUF", "n": 2, "seed": 0,
+                                              "lineups": {"KC": {"depth_chart": {"QB": ["NEW"]}}}}).status_code == 200
 
 
 def test_team_only_model_rejects_lineups(tiny_sim):

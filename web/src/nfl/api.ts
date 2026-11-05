@@ -1,3 +1,7 @@
+import { call as http } from "../http";
+import type { SimResult, WinProb } from "../format";
+
+export type { SimResult, WinProb };
 export interface State {
   season: number; game_type: string; home: string; away: string;
   qtr: number; qsec: number; phase: "kickoff" | "pat" | "scrimmage";
@@ -7,8 +11,6 @@ export interface State {
 }
 export interface Outcome { play_type: string; result: string; yards: number; elapsed: number }
 export interface Play { n: number; before: State; outcome: Outcome; text: string; after: State }
-export interface WinProb { n: number; qtr: number; qsec: number; home_win: number; away_win: number; tie: number;
-  home_score_mean: number; away_score_mean: number }
 export interface Game { id: string; state: State; plays: Play[]; winprob: WinProb[]; legal_play_types: string[];
   new_plays?: Play[]; lineups?: Record<"home" | "away", { team: string; coach: string | null;
     depth_chart: Record<string, string[]> }> | null }
@@ -30,12 +32,6 @@ export interface TeamLineupView {
 export interface LineupEdit { coach: string; depth_chart: Record<string, PlayerInfo[]>; edited: boolean }
 export type LineupRequest = Record<string, { coach: string | null; depth_chart: Record<string, string[]> }>;
 export const NEW_PLAYER: PlayerInfo = { id: "NEW", name: "New player", status: "new" };
-export interface SimResult {
-  home: string; away: string; n: number; home_win: number; away_win: number; tie: number;
-  home_score_mean: number; away_score_mean: number; margin_mean: number; total_mean: number;
-  margin_quantiles: Record<string, number>; total_quantiles: Record<string, number>;
-  margin_hist: Record<string, number>;
-}
 export interface SeasonGame {
   game_id: string; season: number; week: number; game_type: string; stage: string; round: string;
   home: string; away: string; home_score: number; away_score: number; winner: string | null;
@@ -68,20 +64,15 @@ export interface SeasonRequest {
   temperature: number; strength_mode: "checkpoint" | "neutral" | "randomized";
 }
 
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(`/api${path}`, {
-    ...init, headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-  });
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
-  return r.json();
-}
+const call = <T,>(path: string, init?: RequestInit) => http<T>(`/api/nfl${path}`, init);
 
 export const api = {
   teams: () => call<{ teams: string[]; seasons: number[]; lineups?: boolean }>("/teams"),
   teamLineup: (team: string, season: number) => call<TeamLineupView>(`/teams/${team}/lineup?season=${season}`),
   players: (q: string, group?: string) =>
     call<{ players: PlayerInfo[] }>(`/players?q=${encodeURIComponent(q)}${group ? `&group=${group}` : ""}&limit=12`),
-  coaches: (season: number) => call<{ coaches: CoachInfo[] }>(`/coaches?season=${season}`),
+  coaches: (season: number, team?: string, q?: string) => call<{ coaches: CoachInfo[] }>(
+    `/coaches?season=${season}${team ? `&team=${team}` : ""}${q ? `&q=${encodeURIComponent(q)}` : ""}`),
   newGame: (home: string, away: string, season: number, game_type: string, lineups?: LineupRequest | null) =>
     call<Game>("/games", { method: "POST", body: JSON.stringify({ home, away, season, game_type, lineups }) }),
   step: (id: string, body: { play_type?: string; count?: number; temperature?: number }) =>
@@ -89,15 +80,18 @@ export const api = {
   undo: (id: string) => call<Game>(`/games/${id}/undo`, { method: "POST" }),
   winprob: (id: string, n = 150) => call<WinProb>(`/games/${id}/winprob?n=${n}`),
   simulate: (home: string, away: string, season: number, game_type: string, n: number,
-    lineups?: LineupRequest | null) =>
-    call<SimResult>("/simulate", { method: "POST", body: JSON.stringify({ home, away, season, game_type, n, lineups }) }),
+    opts: { include_scores?: boolean; signal?: AbortSignal; lineups?: LineupRequest | null } = {}) =>
+    call<SimResult>("/simulate", {
+      method: "POST", signal: opts.signal,
+      body: JSON.stringify({ home, away, season, game_type, n, include_scores: opts.include_scores ?? false,
+                             lineups: opts.lineups ?? null }),
+    }),
   startSeason: (request: SeasonRequest) =>
     call<SeasonJob>("/seasons", { method: "POST", body: JSON.stringify(request) }),
   seasonJob: (id: string) => call<SeasonJob>(`/seasons/${id}`),
 };
 
-export const clock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-export const qtrName = (q: number) => (q <= 4 ? `Q${q}` : q === 5 ? "OT" : `OT${q - 4}`);
+export { clock, qtrName } from "../format";
 export const ordinal = (d: number) => ["", "1st", "2nd", "3rd", "4th"][d] || "";
 export function spot(s: State): string {
   const opp = s.pos === s.home ? s.away : s.home;
