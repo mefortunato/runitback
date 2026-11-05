@@ -9,4 +9,5 @@ web/dist/
 .venv/
 /logs/
 .env
-web/*.tsbuildinfo
+*.tsbuildinfo
+build/

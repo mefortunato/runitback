@@ -166,6 +166,34 @@ label.inline { display: inline-flex; gap: 6px; align-items: center; color: var(-
   .standings-table { font-size: 11px; }
   .standings-table th, .standings-table td { padding: 5px 2px; }
 }
+.small { font-size: 12px; }
+.lineups > p { margin: 0 0 10px; }
+.lineup-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 900px) { .lineup-grid { grid-template-columns: minmax(0, 1fr); } }
+.lineup-team { min-width: 0; }
+.lineup-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.lineup-head h3 { margin: 0; font-size: 16px; }
+.lineup-team > p { margin: 4px 0 8px; }
+.coach-field { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--text-2); }
+.coach-field input, .add-row input, .add-row select { background: var(--surface); border: 1px solid var(--border);
+  border-radius: 7px; padding: 5px 7px; min-width: 0; }
+.groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 8px; }
+.group { border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px 8px; margin: 0; min-width: 0; }
+.group legend { font-size: 12px; font-weight: 650; padding: 0 4px; }
+.group ol { list-style: none; margin: 0; padding: 0; }
+.group li { display: flex; align-items: center; gap: 6px; padding: 3px 0; border-bottom: 1px solid var(--grid); font-size: 13px; }
+.group .depth { color: var(--muted); font-size: 11px; width: 30px; flex: none; font-variant-numeric: tabular-nums; }
+.group .pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-actions { display: flex; gap: 2px; flex: none; }
+.row-actions button { padding: 0 6px; font-size: 12px; line-height: 20px; }
+.group .empty { margin: 4px 0; }
+.add-row { display: flex; gap: 6px; margin-top: 6px; }
+.add-row select { flex: 1; } .add-row .search { flex: 1; }
+.results { list-style: none; margin: 4px 0 0; padding: 0; }
+.results button { width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--grid); border-radius: 0; padding: 4px 2px; font-size: 12px; }
+.badge { font-size: 10px; font-weight: 700; border-radius: 4px; padding: 0 5px; flex: none; text-transform: uppercase; letter-spacing: .03em; }
+.badge.new { background: color-mix(in srgb, var(--series-2) 18%, transparent); color: var(--series-2); }
+.badge.generic { background: var(--grid); color: var(--text-2); }
 
 /* ---- site shell */
 a { color: var(--accent); }

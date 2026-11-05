@@ -25,6 +25,12 @@ def _nan(x) -> bool:
     return x is None or (isinstance(x, float) and math.isnan(x))
 
 
+def _play_id(r) -> int:
+    """nflverse play_id (joins to per-play participation); -1 when the raw data has none."""
+    v = getattr(r, "play_id", None)
+    return -1 if _nan(v) else int(v)
+
+
 def _team(x):
     return TEAM_ALIASES.get(x, x)
 
@@ -182,7 +188,7 @@ def process_game(g: pd.DataFrame) -> tuple[dict, list[dict]] | None:
             el = row["qsec"]
         oc["elapsed"] = int(min(max(el, 0), MAX_ELAPSED))
         st.update(to_h=timeouts[0], to_a=timeouts[1])
-        out.append({"game_id": meta["game_id"], **st, **oc})
+        out.append({"game_id": meta["game_id"], "play_id": _play_id(row["raw"]), **st, **oc})
         if row["kind"] == "timeout":
             timeouts[row["team"]] -= 1
     return meta, out
@@ -264,6 +270,8 @@ def preprocess(seasons: list[int], raw_dir: Path, out_dir: Path, min_agreement: 
     plays.to_parquet(out_dir / "plays.parquet")
     from .ratings import build_ratings
     build_ratings(seasons, raw_dir, out_dir)
+    from .players import build_players
+    build_players(seasons, raw_dir, out_dir)
     top = sorted(misses.items(), key=lambda kv: -kv[1])[:25]
     log.info("engine replay agreement: %.4f over %d transitions", tot_ok / max(tot, 1), tot)
     for k, v in top:

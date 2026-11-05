@@ -1,0 +1,84 @@
+name: Refresh NFL model data
+
+# Weekly: update the deployed NFL model's data without retraining (team ratings, default depth charts,
+# player usage, coach records) and publish it as the next patch release, with a PR that deploys it.
+# Weeks without new games publish nothing.
+on:
+  schedule:
+    - cron: "41 14 * * 2"   # Tuesdays 14:41 UTC, after Monday night's game reaches nflverse
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Publish even if there are no new games since the current model's data"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write        # create the release, push the release branch
+  pull-requests: write   # open the PR that deploys the model
+
+concurrency:
+  group: nfl-model-release
+  cancel-in-progress: false
+
+# explicit bash = -eo pipefail, so a failing command piped into tail/tee still fails the step
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FORCE: ${{ inputs.force || false }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-nfl
+
+      - name: Next version
+        run: |
+          v=$(runitback nfl next-version --file src/runitback/nfl/releases.json)
+          # skip versions already published by release PRs that haven't been merged yet
+          while gh release view "$v" >/dev/null 2>&1; do v=$(runitback nfl next-version --after "$v"); done
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "next version: $v"
+
+      - name: Fetch the deployed model
+        run: runitback nfl fetch-model --dest runs/nfl/prod/model.pt
+
+      - name: Refresh its data
+        run: |
+          runitback nfl refresh-lineups --ckpt runs/nfl/prod/model.pt --out runs/nfl/prod/refreshed.pt \
+            --end "$NFL_SEASON" > summary.json
+          cat summary.json
+          echo "CHANGED=$(jq -r .changed summary.json)" >> "$GITHUB_ENV"
+
+      - name: Release notes
+        if: env.CHANGED == 'true' || env.FORCE == 'true'
+        run: |
+          latest=$(jq -r .latest src/runitback/nfl/releases.json)
+          {
+            echo "NFL model **$VERSION**: model **$latest** with refreshed data (no retraining), by"
+            echo "[this workflow run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+            echo
+            jq -r '"- Ratings through: \(.ratings_through)",
+                   (if .lineups_through then "- Default depth charts through: \(.lineups_through)" else empty end),
+                   (if (.teams_behind_latest_week // [] | length) > 0
+                    then "- Teams whose latest game is older (byes): \(.teams_behind_latest_week | join(", "))"
+                    else empty end),
+                   "- Previously: \(.previous | to_entries | map("\(.key) \(.value)") | join(", "))",
+                   "- SHA-256: `\(.sha256)`"' summary.json
+          } > notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Nothing new
+        if: env.CHANGED != 'true' && env.FORCE != 'true'
+        run: |
+          echo "No new games since the deployed model's data; nothing to publish." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish release and open the deploy PR
+        if: env.CHANGED == 'true' || env.FORCE == 'true'
+        run: scripts/ci/publish_nfl_release.sh "$VERSION" runs/nfl/prod/refreshed.pt notes.md

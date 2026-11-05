@@ -35,6 +35,7 @@ which reads the nflverse/nflfastR play-by-play releases), 1999–present.
 | Preprocessing | `src/runitback/nfl/data/preprocess.py` | nflverse rows → (state, outcome); outcomes are derived from the *next* play's state |
 | Shared trunk | `src/runitback/core/transformer.py` | causal block with a preallocated KV cache (sport-agnostic) |
 | Model | `src/runitback/nfl/model/transformer.py` | one position per play; heads factorized as type → result → yards → clock |
+| Players, lineups, coaches | `src/runitback/nfl/data/players.py`, `src/runitback/nfl/model/lineups.py` | depth charts, per-play personnel, NEW PLAYER rule, coach records, personnel sampler |
 | Sampler | `src/runitback/nfl/sim/sampler.py` | batched rollouts with a KV cache and legal-outcome masks |
 | API / server | `src/runitback/nfl/sim/api.py`, `src/runitback/nfl/server/app.py` | `simulate_games`, FastAPI routes under `/api/nfl` |
 | Web | `web/` | Vite + React + TypeScript |
@@ -67,6 +68,79 @@ offense and defense, and the Elo difference. For future games the simulator uses
 latest ratings; `ratings={"KC": {...}}` overrides them for what-ifs. `strength_scale` stretches
 the rating gaps; production uses 1.5, which roughly matches the market's dispersion.
 
+### Players, lineups and coaches
+
+Team-season embeddings and ratings move slowly, so they miss a missing starter. The model also sees
+**who plays**:
+
+- **Depth charts (game level).** Each team's lineup is built from that game's snap counts (PFR via
+  nflverse, 2012+): players are ranked by snaps within 11 position groups (QB, RB, WR, TE, OL, DL,
+  LB, DB, K, P, LS), up to 9 deep. Each group is pooled separately with learned per-slot weights, so
+  QB1 has a channel of its own. The possession team's lineup enters every play as the offense and the
+  opponent's as the defense. This shapes play calling as well as outcomes.
+- **On-field personnel (play level).** For 2016–2025 the 22 players on the field for each play
+  (nflverse participation) are pooled per side and position group, then added to the result, yards
+  and clock heads *after* the play type is drawn. On-field players change how a play turns out, but
+  don't decide what is called (a punt unit on the field would otherwise make the 4th-down call for the
+  model). When simulating, a **personnel sampler** picks which depth-chart slots take the field (WR3
+  vs WR4, DL rotation, special-teams units) given the play type, down, distance and field position.
+  It learned these frequencies from the participation data, then fills the slots from the depth chart.
+- **New players.** A player's first 3 career games, and any id the model has never seen, use a
+  position-specific `NEW <group>` token (a new QB carries different uncertainty than a new long
+  snapper). Veterans with too little history for their own embedding use `OTHER <group>`. Players
+  who debuted before 2012 count as veterans.
+- **Head coaches** (schedules, 1999+): an offense-coach and a defense-coach embedding (`NEW COACH`
+  for a head coach's first 4 games or an unknown name, `OTHER COACH` for too little history), plus
+  his record before the game: seasons as head coach, seasons with this team, career games and a
+  win% shrunk toward .500. Careers of coaches already in charge in 1999 are truncated.
+  Coordinators are not in the nflverse data.
+
+Seasons without lineup data (before 2012) and synthetic seasons train with unknown depth charts,
+and training randomly hides depth charts (10% of team-games), personnel (15% of games) and single
+players (3%, swapped for `OTHER`). So the model works with any amount of lineup information.
+
+At inference each team defaults to **its most recent game** (who played, ranked by snaps). Users
+can replace any position group, reorder it, add a `"NEW"` player or swap the coach.
+
+### Game-level box-score loss (optional)
+
+`--box-weight w` adds a game-level term to the per-play loss:
+
+1. **Per play, expected stats.** Under teacher forcing (the real game states), the play heads give
+   P(type), P(result | type) and P(yards | type, result). Together with the engine's scoring rules,
+   they give each play's expected contribution for both teams:
+   - points: TD if yards ≥ yardline, return TD at spot 0, safety, FG / PAT / two-point good
+   - rushing yards: designed runs (nflverse labels scrambles as pass plays)
+   - passing yards: completions
+   - sacks taken and turnovers
+
+   All play types are marginalized, not just the real one. That's 8 result-head and 12 yards-head
+   evaluations per position, all differentiable.
+2. **Per game, sum.** Each batch row is one whole game (padded plays), so a game's predicted box
+   score is a masked sum over the play axis, split by which team had the ball. That gives 5 stats
+   per team plus the margin. The real box score uses the same definitions on the real outcomes; it
+   matches the real final score in about 97% of team-games (2024 sample).
+3. **Loss.** For each stat, (predicted − real) / σ, where σ is that stat's standard deviation
+   across training games (e.g. 10 points, 52 rushing yards, 76 passing yards, 14.6 margin). The
+   box term is ½·mean over games and stats of the squared values. Total loss = per-play NLL
+   (mean over plays) + w × box term.
+
+**Result: the box loss is off by default because it teaches a shortcut.** Under teacher forcing,
+later plays see the real score so far, and the game-total loss rewards using it. The model learns
+to shade late-game predictions so they cancel earlier misses: the sum looks accurate while each
+play's prediction is biased. On the 2025 held-out games (weight 1.0, after 3 epochs):
+
+| | margin RMSE, teacher-forced | corr(1st-half, 2nd-half margin residual) | next-play NLL (epoch 2) |
+|---|---|---|---|
+| no box loss (team-only and lineup models) | 11.9 | −0.02 | 5.97 |
+| box loss | 7.0 | **−0.47** | 6.10 |
+
+A calibrated model can't get below about 12 points here: each half's residual is about 8.5 points
+of genuine uncertainty. `evaluate` reports this check (`margin_residual_halves`) for every
+checkpoint. Any proper loss on teacher-forced per-play expectations reduces to a per-play loss.
+A game-level penalty that can't be gamed has to score games the model generates itself (rollouts),
+or predict the box score from pre-game information only.
+
 ### Evaluation (held-out: 2025 week 10+ and playoffs, 150 games, 200 sims each)
 
 | | v1 (team embeddings) | v2 (+ ratings) | Elo alone | Vegas spread |
@@ -82,6 +156,166 @@ real games. Stretching the ratings (`strength_scale` 2.0) widened the predicted 
 Brier unchanged (0.232), so the remaining gap to Elo and the spread is about missing information,
 not calibration. 150 games is a small test set (Brier standard error about ±0.01).
 
+### Lineup experiments (same held-out split, 10 epochs each, CPU)
+
+| Model | Next-play NLL, actual lineup + on-field 22 | Next-play NLL, previous-game lineup | Brier, actual lineup | Brier, previous lineup |
+|---|---|---|---|---|
+| Team-only baseline | 5.840 | – | 0.234 | – |
+| Lineups v1 (192-wide players, light dropout) | 5.854 | 5.874 | 0.232 | 0.239 |
+| v2 (32-wide players, 0.2 lineup dropout, 20% hidden charts) | 5.840 | 5.853 | 0.238 | 0.230 |
+| v3 (v2 + 30% of team-games trained on the previous game's chart) | 5.838 | 5.853 | 0.236 | 0.232 |
+
+Paired bootstrap against the baseline (per-game, 95% intervals):
+
+- With who actually played, v2/v3 tie the baseline on next-play NLL (v3 −0.002, interval
+  −0.008..+0.004). That includes the 38 games where a team's most-used QB changed from its
+  previous game.
+- With the previous game's lineup (the realistic pre-kickoff input), lineup models are **worse**:
+  +0.013 NLL/play (+0.02 on QB-change games), significant.
+- No variant's Brier differs significantly from the baseline (all intervals include 0; 150 games
+  resolve roughly ±0.02).
+
+Ablation on v3 (next-play NLL):
+
+| v3 input | NLL |
+|---|---|
+| actual lineup + actual on-field 22 | 5.838 |
+| actual lineup + sampled 22 | 5.848 |
+| actual lineup + no 22 | 5.853 |
+| previous lineup + sampled 22 | 5.850 |
+| previous lineup + no 22 | 5.853 |
+
+**A stale depth chart costs nothing; the gap is per-play personnel.** The real on-field 22 carry
+pre-snap information (goal-line and heavy packages, special units) that the model learns to rely
+on. The simulator can only sample packages from league-wide frequencies, so at inference that
+information is missing. Lineup what-ifs also respond weakly (v3, 400 sims, ±2.5 pts): replacing the home starter with a
+`NEW` QB moves win probability by only 1–4 points in five 2026 matchups (Mahomes → Gabbert: none).
+A `NEW` QB for the visiting team moves it 5–11 points, and a new head coach 0–7. Team-season embeddings and EPA ratings were
+always fit with the same starter and soak up his value (collinearity), leaving little for the
+player embedding to carry.
+
+Next experiments, by expected value:
+1. Drop team-season and team embeddings (and possibly the EPA ratings) for most training
+   team-games whenever a lineup is known, so team strength has to flow through the players.
+2. Use per-play participation only as a *training* signal for player embeddings (no on-field 22
+   at inference), or teach the model to predict personnel itself so simulated packages are
+   team-specific.
+3. Evaluate walk-forward over several seasons (about 1,400 games) to resolve Brier differences
+   of 0.005.
+
+### Do individual defenders change what opposing players produce? (2026-11 check)
+
+The question: does an elite DB1 hold the opposing WR1 to noticeably fewer yards than an average
+DB1 would? `scripts/matchup_analysis.py OFF_GROUP DEF_POSITIONS RANK STAT` tests this from the
+data alone, with no model. Roles come from snap counts (the most-used WR, the defense's most-used
+CB). Every predictor uses only earlier games. Nested regressions are fit on 2013–2022 and tested
+on 2023–2025 (about 1,700 team-games), with game-level bootstrap intervals:
+
+| Pairing | Opponent team defense adds (MSE) | Specific defender's track record adds | Defender year-to-year r |
+|---|---|---|---|
+| WR1 rec. yards vs CB1 | +7.3 (CI +1.2..+13.7) | −0.1 (−1.3..+1.0) | 0.09 |
+| WR2 rec. yards vs CB2 | +1.9 (+0.4..+3.4) | −0.1 (−0.5..+0.2) | 0.11 |
+| WR1 targets vs CB1 | +0.05 (+0.01..+0.09) | +0.01 (−0.01..+0.03) | 0.00 |
+| TE1 rec. yards vs top safety | +1.4 (−0.2..+3.1) | +0.3 (−1.1..+1.6) | −0.02 |
+| RB1 rush yards vs top DL | +15.8 (+5.0..+26.6) | +0.0 (−0.1..+0.1) | −0.06 |
+| RB1 rush yards vs top LB | +15.8 (+5.0..+26.6) | −1.1 (−2.2..−0.1) | 0.14 |
+
+For comparison, a WR's own receiving yards have a year-to-year correlation of 0.48. Learning a
+per-CB identity effect (shrunk) doesn't improve test RMSE either (37.91–38.18 vs 37.93). When a
+defense's usual CB1 is out, opposing WR1s gain −3.6 ± 7.3 yards: not significant, and the
+opposite sign to the hypothesis.
+
+The trained lineup model agrees (`scripts/model_defender_effect.py`). On the 300 held-out
+team-games, replacing the real DBs with generic ones shifts expected passing yards by only about
+1.5 yards per team-game. Those shifts don't correlate with how actual yards differed from the
+generic prediction (r = −0.02, 95% CI −0.13..+0.10). DL/LB on rushing: r = −0.08 (−0.19..+0.05).
+
+**Conclusion:** opposing *team* defense is a real, persistent signal. With public data, the identity
+of a specific defender is not: it isn't stable from season to season and doesn't predict
+out-of-sample. The caveat is that "CB1 by snaps" is not "the CB covering WR1". NFL defenses rarely
+shadow, and who covered whom is not in nflverse (it needs NGS/PFF-style coverage charting).
+Per-player *offensive* stat lines remain promising: player form is stable (r ≈ 0.48) and opponent
+team defense adds to it.
+
+### Player stat lines: the who-gets-the-ball head (2026-11)
+
+`--who` adds a head that picks which of the possession team's 11 on-field players gets the ball
+(the rusher on runs; the target on passes, or nobody for sacks and throwaways). It runs after the
+play type and personnel and before the result, which must agree with it (no catch without a target,
+no sack with one). Labels come from nflverse rusher/receiver ids, and 99.9% are among the 11 on the
+field. Simulated outcomes carry the chosen player's depth-chart slot (`Outcome.who`), so
+rollouts produce stat lines. `scripts/player_stats_eval.py` simulates the 150 held-out games
+(2025 week 10+, 100 sims each) and compares per-player targets, receptions, receiving yards,
+carries and rushing yards with actual stat lines and with leak-free baselines: role average,
+the player's shrunk exponentially weighted form, and form adjusted for the opponent.
+
+RMSE, RB/WR/TE player-games who played (about 3,100–3,500). The pre-game depth chart is this
+game's active players ranked by their previous-game role:
+
+| | form + opponent | model | blend (cross-fitted) |
+|---|---|---|---|
+| WR targets | 2.37 | 2.82 | **2.35** (significant) |
+| WR receiving yards | 26.5 | 29.6 | 26.3 (n.s.) |
+| TE targets | 1.80 | 2.09 | **1.78** (significant) |
+| TE receiving yards | 18.0 | 19.8 | 17.9 (n.s.) |
+| RB carries | 4.19 | 5.31 | 4.16 (n.s.) |
+| RB rushing yards | 25.1 | 29.5 | 25.1 (n.s.) |
+
+- **Alone, the model is worse than form** with any pre-game depth chart, and still worse when form
+  is frozen at the training cutoff like the model's embeddings. Blended, it adds ~1% on WR/TE
+  targets. With the game's own snap ranks (in-game knowledge) the blend beats form on every stat,
+  e.g. RB rushing yards 24.1 vs 25.2.
+- **Why:** usage is too flat. RB1 gets 12.0 simulated carries vs 14.7 actual, and TE1 3.8 targets
+  vs 4.8. Per-touch efficiency is about right.
+- **The who head is not the bottleneck** (`scripts/who_head_teacher_forced.py`). Given the real
+  plays and the real 11 on the field, it predicts targets better than an equal split among eligible
+  players: RMSE WR 1.95 vs 2.17, TE 1.49 vs 1.61. It predicts carries far better (1.35 vs 4.72),
+  and both beat form. The information is in *who is on the field and how often*. The personnel
+  sampler draws that from league-wide rotation rates, which erases workhorse backs and every-down
+  receivers.
+- **Player-specific snap shares (tried, 2026-11-05).** The sampler now picks on-field players by
+  usage. The league's on-field rate for each depth-chart role, by situation and by how many of that
+  group are in the package (fit from 2016–2025 participation), is multiplied by the player's own
+  usage relative to his role (leak-free EWMA of snap counts, shrunk toward 1). The package mix is
+  tilted toward the team's own group usage. Within a group, players are drawn with exact inclusion
+  probabilities. Callers can set `snap_shares` per player. Pre-game results: RMSE improves
+  significantly but slightly on RB carries (5.31 → 5.19), WR targets (2.82 → 2.79) and TE targets
+  (2.09 → 2.05). Yardage improves within noise, and the blend with form+opponent is unchanged.
+- **That diagnosis was wrong.** On the held-out games' real plays, both samplers already put
+  pre-game starters on the field *more* than reality (RB1 0.68 vs 0.59, WR1 0.88–0.91 vs 0.78;
+  `scripts/sampler_onfield_check.py`). The remaining flatness is in who gets the ball once on the
+  field. In simulated runs QB1 takes 16% of carries (24% when only RB2 is on the field), so RB1 gets
+  55% of RB carries vs 66% actual. Given the real 22 and the real plays the head does well, so the
+  gap is how it allocates in simulated contexts. It has no recent per-player usage inputs (carry
+  share, target share), only career-static embeddings.
+- **Recent usage features in the who head (2026-11-05).** Each on-field candidate gets six leak-free
+  features from his earlier games (`usage.parquet`, `data.players.build_usage`): EWMA share of team
+  carries, share of team targets, snap share, shrunk yards per carry and per target, and history
+  length. They're added to his embedding in the who head. Retrained on the same split (`--who`
+  turns them on automatically when `usage.parquet` exists); validation who-loss drops from 1.203 to
+  1.189. Given the real plays and players, the head improves on RB carries (RMSE 1.35 → 1.17), WR
+  targets (1.95 → 1.85) and TE targets (1.49 → 1.44).
+
+  Simulated stat lines from the pre-game depth chart (usage sampler), old → new model, vs form+opponent:
+
+  | | old | new | form + opp | blend vs form + opp |
+  |---|---|---|---|---|
+  | WR targets | 2.79 | **2.63** | 2.37 | 2.34 (significant) |
+  | WR receiving yards | 29.4 | **28.1** | 26.5 | 26.3 (significant) |
+  | TE targets | 2.05 | **1.99** | 1.80 | 1.78 (significant) |
+  | TE receiving yards | 19.7 | **19.1** | 18.0 | 17.9 (n.s.) |
+  | RB carries | 5.19 | **5.07** | 4.19 | 4.16 (n.s.) |
+  | RB rushing yards | 29.2 | **28.8** | 25.1 | 25.2 (n.s.) |
+
+  Every model-alone change is significant (paired bootstrap; `scripts/compare_samplers.py`), and
+  usage is less flat: WR1 targets 6.2 → 6.6 (actual 7.0), TE1 3.9 → 4.2 (4.7), WR3 3.8 → 3.5 (3.4).
+  It still trails the form baseline alone. RB1 carries are still short (12.3 vs 14.8): QBs take 15.5%
+  of simulated runs vs 12.5% actual, and RBs 80% vs 84%.
+- **Where the remaining gap is:** given the real 22 and the real plays, the head beats form easily
+  (WR targets 1.85 vs 2.37). In simulation it doesn't. The difference is the sampled game
+  context: play volume, play-calling mix and packages. Each simulated game also draws one
+  realization, so stat lines inherit the variance of whole-game simulation. A straight blend of the
+  two is the most accurate option today.
 ## NBA
 
 Generates NBA games one **event** at a time with the same design: a causal transformer samples
@@ -248,8 +482,9 @@ pip install -e ".[data,dev]"   # adds sportsdataverse and test tools
 ### Pipeline
 
 ```bash
-runitback nfl download --start 1999 --end 2026     # raw parquet → data/nfl/raw/
+runitback nfl download --start 1999 --end 2026     # raw parquet → data/nfl/raw/ (+ players/: snaps, participation, coaches)
 runitback nfl preprocess --start 1999 --end 2026   # → data/nfl/processed/{games,plays,ratings}.parquet, prints engine agreement
+                                                   #   + {player_games,personnel,coaches,coach_games,players}.parquet
 # held-out evaluation run (validation = 2025 week 10+ and playoffs)
 runitback nfl train --out runs/nfl/eval --val-season 2025 --epochs 10
 runitback nfl evaluate --ckpt runs/nfl/eval/model.pt --sims 200
@@ -257,6 +492,10 @@ runitback nfl calibrate --ckpt runs/nfl/eval/model.pt --season 2024   # grid-sea
 # production model on all data
 runitback nfl train --out runs/nfl/prod --epochs 10
 ```
+
+Training uses lineups whenever the processed player tables exist; `--no-lineups` trains the
+team-only model. `evaluate` scores a lineup model three ways: with who actually played,
+with each team's previous-game lineup (what the app defaults to), and with no depth charts.
 
 The default model (d_model 192, 4 layers, 2.6M params) trains on a 4-core CPU in about 40
 minutes.
@@ -317,6 +556,11 @@ sim = Simulator.load("runs/nfl/prod/model.pt")
 r = simulate_games(sim, home="KC", away="BUF", season=2026, n=1000, seed=0)
 print(r.home_win, r.home_score_mean, r.away_score_mean, r.margin_quantiles)
 r.scores   # [(home, away), ...] for every simulated game
+
+# lineup what-ifs (lineup models): groups you pass replace the team's most recent game
+sim.lineup_spec("KC", "BUF")["home"]["depth_chart"]["QB"]      # ['00-0033873'] (Patrick Mahomes)
+r = simulate_games(sim, home="KC", away="BUF", season=2026, n=1000, seed=0,
+                   lineups={"KC": {"depth_chart": {"QB": ["NEW"]}, "coach": "Andy Reid"}})
 ```
 
 To continue a game in progress, call `sim.rollout(state, n, history=[(state, outcome), ...])`.
@@ -328,10 +572,68 @@ curl -X POST localhost:8000/api/nfl/simulate -H 'Content-Type: application/json'
   -d '{"home":"KC","away":"BUF","season":2026,"n":1000}'
 ```
 
+`/simulate` and `POST /games` take `"lineups": {"KC": {"coach": "...", "depth_chart": {"QB": [ids or "NEW"], ...},
+"snap_shares": {"<player id>": 0.8}}}` (lineup models; `snap_shares` optional). `GET /teams/{team}/lineup` returns
+the default depth chart with player details and coach record, plus the team's players to pick from;
+`GET /players?q=&group=` searches the league; `GET /coaches` lists coaches. In the web app, **Depth charts &
+coaches** opens the editor for both teams.
+
 Interactive endpoints (all under `/api/nfl`): `POST /games`, `POST /games/{id}/step {play_type?, count?, temperature?}`,
 `POST /games/{id}/undo`, `GET /games/{id}`, `GET /games/{id}/winprob?n=200`, `GET /teams`,
 `POST /seasons`, `GET /seasons/{id}`. The same NFL routes are still served without the `/nfl`
 prefix (`/api/simulate`, ...) for clients written before the NBA was added.
+
+### Publishing a model to the deployed app
+
+The Docker image bakes in the release marked `latest` in `src/runitback/nfl/releases.json`.
+Merging code doesn't change the deployed model; publishing a release does. Two GitHub Actions
+workflows do it end to end. Each publishes a GitHub release with the checkpoint and opens a PR that
+updates `releases.json`; **merging that PR** runs the Cloud Run deploy, so a person always approves
+what goes live:
+
+- **Train NFL model** (`.github/workflows/train-nfl-model.yml`, run by hand with a version such as
+  `v0.2.0`). Downloads and preprocesses every season (raw data is cached between runs), optionally
+  trains a held-out model first and stops if its validation loss is above a threshold, then trains on
+  all data with lineups and the who head, calibrates and smoke tests it. About 45 minutes on a
+  public repository's 4-CPU runner, roughly 1h15 on a private repository's 2-CPU runner.
+- **Refresh NFL model data** (`.github/workflows/refresh-nfl-lineups.yml`, Tuesdays 14:41 UTC or by
+  hand). Fetches the deployed model, runs `refresh-lineups` and publishes the next patch version
+  (`v0.2.0` → `v0.2.1`). Weeks without new games publish nothing. A few minutes.
+
+Repository settings both need: **Settings → Actions → General → Workflow permissions →
+"Allow GitHub Actions to create and approve pull requests"**. The workflows request `contents: write`
+and `pull-requests: write` themselves. Scheduled and manually started workflows only run from the
+default branch, so they start working once this file is on `main`. If an older release PR is still
+open when a newer one arrives, close the older one; each PR sets `latest` to its own version.
+
+The same steps by hand:
+
+```bash
+runitback nfl train --out runs/nfl/prod --epochs 10 --who --prev-lineup-prob 0.3   # all data, no hold-out
+runitback nfl calibrate --ckpt runs/nfl/prod/model.pt --write
+sha256sum runs/nfl/prod/model.pt
+```
+
+Attach the file to a GitHub release (tag `v0.2.0`, asset `runitback-nfl-model-v0.2.0.pt`), then
+`runitback nfl register-release v0.2.0 --ckpt runs/nfl/prod/model.pt --file src/runitback/nfl/releases.json`
+adds it with its SHA-256 and makes it the latest. Merging that change to `main` deploys it.
+
+**Weekly refresh, no retraining.** A checkpoint carries pre-game team ratings and, for lineup models,
+each team's default depth chart (its most recent game), the player directory (career games, usage
+multipliers, recent-usage features) and head-coach records. All of these are frozen when it's built.
+`refresh-lineups` downloads the latest nflverse data and rebuilds them. The model's weights,
+vocabularies and fitted tables stay as trained, and new players and coaches use its NEW / OTHER tokens.
+It takes under a minute:
+
+```bash
+runitback nfl refresh-lineups --ckpt runs/nfl/prod/model.pt --out runs/nfl/prod/model-refreshed.pt
+```
+
+It prints how current the data is, any teams whose latest game is older (byes), and the new file's
+SHA-256. Publish the refreshed file as a new release (e.g. `v0.2.1`) as above; the weekly workflow
+does this for you. Retrain when the
+season rolls over or player vocabularies go stale: players without an embedding fall back to
+NEW / OTHER.
 
 ### Deploy to Google Cloud Run
 
@@ -430,8 +732,13 @@ the NBA API, and the combined server's routes.
 
 ## Limitations / next steps (NFL)
 
-- Team-level only, with no players or injuries. A starting-QB change is the biggest signal this
-  misses, and team ratings take several games to catch up to one.
+- Player stat lines (`--who`) don't beat a form baseline before kickoff yet: the personnel sampler
+  uses league-average rotation, so usage is too flat (see *Player stat lines*).
+- Lineup models don't yet beat the team-only model on held-out games, and they react too little
+  to quarterback changes (see *Lineup experiments*).
+- Lineups are what the user (or the previous game) says. The model doesn't know about injuries
+  announced during the week. Per-play participation ends with 2025, so 2026 games train with depth
+  charts but without on-field personnel. Player embeddings are static over a career (no aging curve).
 - Win-probability accuracy is still below Elo alone and the Vegas spread. Next steps: a
   walk-forward evaluation over full seasons (2021–2025, about 1,400 games), then a starting-QB
   rating feature (nflverse depth charts, weekly rosters and injuries are all available before

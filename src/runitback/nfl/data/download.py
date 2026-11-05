@@ -10,7 +10,7 @@ log = logging.getLogger(__name__)
 NFLVERSE_URL = "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{season}.parquet"
 
 COLUMNS = [
-    "game_id", "season", "season_type", "week", "home_team", "away_team", "posteam", "defteam",
+    "game_id", "play_id", "season", "season_type", "week", "home_team", "away_team", "posteam", "defteam",
     "qtr", "quarter_seconds_remaining", "down", "ydstogo", "yardline_100", "play_type",
     "yards_gained", "complete_pass", "interception", "sack", "fumble_lost", "field_goal_result",
     "extra_point_result", "two_point_conv_result", "two_point_attempt", "timeout", "timeout_team",

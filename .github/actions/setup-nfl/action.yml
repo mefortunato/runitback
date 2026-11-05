@@ -1,0 +1,36 @@
+name: Set up Run It Back (NFL)
+description: >
+  Python 3.11, CPU PyTorch and this package, plus the raw nflverse data cached across runs (only the
+  current season and the small player/schedule files are downloaded again). Exports NFL_SEASON, the
+  season in progress (seasons are named by the year they start).
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+        cache: pip
+        cache-dependency-path: pyproject.toml
+
+    - name: Install
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install torch --index-url https://download.pytorch.org/whl/cpu
+        pip install .
+
+    - name: Current season and cache key
+      id: when
+      shell: bash
+      run: |
+        year=$(date -u +%Y); month=$(date -u +%-m)
+        season=$(( month >= 9 ? year : year - 1 ))
+        echo "NFL_SEASON=$season" >> "$GITHUB_ENV"
+        echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore raw data
+      uses: actions/cache@v4
+      with:
+        path: data/nfl/raw
+        key: nfl-raw-${{ steps.when.outputs.week }}
+        restore-keys: nfl-raw-

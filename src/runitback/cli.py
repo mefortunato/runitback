@@ -30,12 +30,19 @@ def _log():
 
 
 @nfl.command()
-def download(start: int = 1999, end: int = 2026, force: bool = False):
-    """Download play-by-play via SportsDataverse."""
+def download(start: int = 1999, end: int = 2026, force: bool = False,
+             players: bool = typer.Option(True, help="also download snap counts, participation, players and coaches"),
+             refresh_latest: bool = typer.Option(True, help="re-download the last season even if cached "
+                                                              "(it may still be in progress)")):
+    """Download play-by-play via SportsDataverse, plus player and coach data from nflverse. Cached seasons
+    are kept unless --force."""
     from .nfl.data.download import download_season
     _log()
     for s in range(start, end + 1):
-        typer.echo(download_season(s, DATA / "raw", force))
+        typer.echo(download_season(s, DATA / "raw", force or (refresh_latest and s == end)))
+    if players:
+        from .nfl.data.players import download_players
+        download_players(list(range(start, end + 1)), DATA / "raw", force)
 
 
 @nfl.command()
@@ -54,6 +61,13 @@ def train(out: Path = RUNS / "prod",
           val_season: int = typer.Option(None, help="hold out late-season games of this season"),
           val_week: int = 10, epochs: int = 10, d_model: int = 192, n_layers: int = 4, n_heads: int = 6,
           batch_size: int = 32, lr: float = 1e-3, threads: int = 0, max_games: int = 0,
+          lineups: bool = typer.Option(True, help="player-level depth charts, per-play personnel and coaches"),
+          player_dim: int = typer.Option(32, help="player/coach embedding width (0 = d_model)"),
+          lineup_dropout: float = 0.2, unk_lineup_prob: float = 0.2, other_player_prob: float = 0.05,
+          prev_lineup_prob: float = typer.Option(0.0, help="share of team-games trained on the previous game's "
+                                                            "depth chart (what users start from)"),
+          box_weight: float = typer.Option(0.0, help="weight of the game-level box-score loss (0 = off)"),
+          who: bool = typer.Option(False, help="predict which player gets the ball (player stat lines)"),
           device: str = typer.Option("auto", help="auto (CUDA GPU, then Apple MPS, then CPU), cpu, cuda, cuda:N or mps"),
           amp: bool = typer.Option(True, help="bf16 mixed precision on CUDA GPUs that support it"),
           ):
@@ -62,7 +76,9 @@ def train(out: Path = RUNS / "prod",
     _log()
     run(data or [DATA / "processed"], out, val_season=val_season, val_week=val_week, epochs=epochs,
         d_model=d_model, n_layers=n_layers, n_heads=n_heads, batch_size=batch_size, lr=lr,
-        threads=threads or None, max_games=max_games or None, init=init, device=device, amp=amp)
+        threads=threads or None, max_games=max_games or None, init=init, device=device, amp=amp,
+        use_lineups=lineups, player_dim=player_dim, lineup_dropout=lineup_dropout, unk_lineup_prob=unk_lineup_prob,
+        other_player_prob=other_player_prob, prev_lineup_prob=prev_lineup_prob, box_weight=box_weight, who_head=who)
 
 
 @nfl.command()
@@ -96,8 +112,48 @@ def simulate(home: str, away: str, season: int = 2026, n: int = 1000, game_type:
     _write_result(res, out, scores)
 
 
+@nfl.command("refresh-lineups")
+def refresh_lineups(ckpt: Path = DEFAULT_CKPT,
+                    out: Path = typer.Option(None, help="where to write the refreshed checkpoint (default: overwrite --ckpt)"),
+                    start: int = typer.Option(1999, help="first season (ratings, career and coach records need history)"),
+                    end: int = typer.Option(None, help="last season (default: the current NFL season)"),
+                    download: bool = typer.Option(True, help="download the latest nflverse data first")):
+    """Update a checkpoint's ratings, default depth charts, player usage and coach records from the latest
+    data, without retraining. Prints the new file's SHA-256 for publishing a release."""
+    import datetime as dt
+
+    from .nfl.refresh import refresh_checkpoint
+    _log()
+    today = dt.date.today()
+    end = end or (today.year if today.month >= 9 else today.year - 1)  # seasons are named by their start year
+    summary = refresh_checkpoint(ckpt, out or ckpt, DATA / "raw", DATA / "processed", start, end, download)
+    typer.echo(json.dumps(summary, indent=1))
+
+
+@nfl.command("register-release")
+def register_release(version: str = typer.Argument(..., help="new version, e.g. v0.2.0 (also the release tag)"),
+                     ckpt: Path = typer.Option(..., help="the checkpoint attached to that release"),
+                     file: Path = typer.Option(None, help="releases.json to edit (default: the installed package's; "
+                                                          "pass src/runitback/nfl/releases.json in a checkout)")):
+    """Add a published checkpoint to nfl/releases.json and make it the latest (what the Docker image bakes in)."""
+    from .nfl.release import RELEASES_FILE
+    from .nfl.release import register_release as run
+    path = file or RELEASES_FILE
+    rel = run(version, ckpt, path)
+    typer.echo(json.dumps({"latest": rel["latest"], "file": str(path), **rel["models"][version]}, indent=1))
+
+
+@nfl.command("next-version")
+def next_version(after: str = typer.Option(None, help="version to bump (default: the latest in --file)"),
+                 file: Path = typer.Option(None, help="releases.json to read (default: the installed package's)")):
+    """Print the next patch version after the latest release (for weekly refreshes)."""
+    from .nfl.release import RELEASES_FILE, load_releases, next_patch_version
+    typer.echo(next_patch_version(after or load_releases(file or RELEASES_FILE)["latest"]))
+
+
 @nfl.command("fetch-model")
-def fetch_model(version: str = "v0.1.0", dest: Path = DEFAULT_CKPT, force: bool = False):
+def fetch_model(version: str = typer.Option(None, help="release version (default: the latest in nfl/releases.json)"),
+                dest: Path = DEFAULT_CKPT, force: bool = False):
     """Download a released, pre-trained model (no data download or training needed)."""
     from .nfl.release import fetch_model as run
     typer.echo(f"model ready: {run(dest, version, force)}")

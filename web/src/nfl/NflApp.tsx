@@ -2,8 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Forecast from "../components/Forecast";
 import { useBatchedForecast } from "../components/useBatchedForecast";
 import WinProbChart from "../components/WinProbChart";
-import { api, clock, qtrName, situation, type Game } from "./api";
+import {
+  api, clock, qtrName, situation, type CoachInfo, type Game, type LineupEdit, type LineupRequest,
+  type TeamLineupView,
+} from "./api";
 import Field from "./Field";
+import LineupEditor, { lineupFromView } from "./LineupEditor";
 import SeasonSimulator from "./SeasonSimulator";
 
 const CALLABLE: Record<string, string> = {
@@ -28,14 +32,46 @@ export default function NflApp() {
   const [error, setError] = useState<string | null>(null);
   const wpBusy = useRef(false);
   const sinceWp = useRef(0);
+  const [hasLineups, setHasLineups] = useState(false);
+  const [showLineups, setShowLineups] = useState(false);
+  const [coaches, setCoaches] = useState<CoachInfo[]>([]);
+  const [views, setViews] = useState<Record<string, TeamLineupView>>({});
+  const [edits, setEdits] = useState<Record<string, LineupEdit>>({});
 
   useEffect(() => {
     api.teams().then((t) => {
       setTeams(t.teams);
       setSeasons(t.seasons);
       setSeason(t.seasons[t.seasons.length - 1]);
+      setHasLineups(!!t.lineups);
     }).catch((e) => setError(String(e.message || e)));
   }, []);
+
+  // Each team's default lineup is the one from its most recent game; edits are kept per team.
+  useEffect(() => {
+    if (!hasLineups) return;
+    api.coaches(season).then((c) => setCoaches(c.coaches)).catch(() => {});
+    for (const t of [home, away]) {
+      if (views[t]) continue;
+      api.teamLineup(t, season).then((v) => {
+        setViews((cur) => ({ ...cur, [t]: v }));
+        setEdits((cur) => (cur[t] ? cur : { ...cur, [t]: lineupFromView(v) }));
+      }).catch((e) => setError(String(e.message || e)));
+    }
+  }, [hasLineups, home, away, season]);
+
+  const lineupRequest = (): LineupRequest | null => {
+    if (!hasLineups) return null;
+    const out: LineupRequest = {};
+    for (const t of [home, away]) {
+      const e = edits[t];
+      if (!e) continue;
+      out[t] = { coach: e.coach.trim() || null,
+        depth_chart: Object.fromEntries(Object.entries(e.depth_chart).map(([g, ps]) => [g, ps.map((p) => p.id)])) };
+    }
+    return out;
+  };
+  const edited = [home, away].filter((t) => edits[t]?.edited);
 
   const refreshWp = useCallback(async (g: Game) => {
     if (wpBusy.current) return;
@@ -67,7 +103,7 @@ export default function NflApp() {
     }
   };
 
-  const start = () => run(() => api.newGame(home, away, season, gameType));
+  const start = () => run(() => api.newGame(home, away, season, gameType, lineupRequest()));
   const step = (play_type?: string) => game && run(() => api.step(game.id, { play_type }));
 
   useEffect(() => {
@@ -78,7 +114,7 @@ export default function NflApp() {
   }, [auto, game, busy, speed]);
 
   const doForecast = () => fc.start(home, away, (n, signal) =>
-    api.simulate(home, away, season, gameType, n, { include_scores: true, signal }));
+    api.simulate(home, away, season, gameType, n, { include_scores: true, signal, lineups: lineupRequest() }));
 
   const s = game?.state;
   const lastPlay = game?.plays[game.plays.length - 1];
@@ -111,7 +147,29 @@ export default function NflApp() {
           ? <button onClick={fc.stop} aria-busy="true">
               Stop · {(fc.forecast?.n ?? 0).toLocaleString()} / {fc.total.toLocaleString()} games</button>
           : <button disabled={home === away} onClick={doForecast}>Forecast 1,000 games</button>}
+        {hasLineups && (
+          <button aria-expanded={showLineups} onClick={() => setShowLineups(!showLineups)}>
+            Depth charts &amp; coaches{edited.length > 0 && ` (edited: ${edited.join(", ")})`}
+          </button>
+        )}
       </section>
+      {hasLineups && showLineups && (
+        <section className="card lineups">
+          <p className="muted small">
+            Lineups start from each team's most recent game. Reorder by how much a player plays: the model picks who
+            is on the field for each play from these depth charts and each player's recent snap share. Players in their
+            first three games, or with no NFL history, use a generic <em>new player</em> rating for their position.
+            Changes apply to the next new game or forecast.
+          </p>
+          <div className="lineup-grid">
+            {([["away", away], ["home", home]] as const).map(([side, t]) => (
+              <LineupEditor key={t} side={side} season={season} view={views[t] ?? null} value={edits[t] ?? null}
+                coaches={coaches} onChange={(v) => setEdits((cur) => ({ ...cur, [t]: v }))}
+                onReset={() => views[t] && setEdits((cur) => ({ ...cur, [t]: lineupFromView(views[t]) }))} />
+            ))}
+          </div>
+        </section>
+      )}
       {(error || fc.error) && <div className="error" role="alert">{error || fc.error}</div>}
 
       {fc.forecast && <Forecast r={fc.forecast} showTie />}

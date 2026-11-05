@@ -14,8 +14,10 @@ from .data.download import load_raw
 from .data.ratings import scale_ratings
 from .engine.rules import new_game
 from .model.dataset import collate, encode_games
-from .sim.sampler import Simulator
-from .train import evaluate as model_nll, split_games
+from .model.lineups import CoachVocab, LineupData, PlayerVocab
+from .sim.sampler import GameLineups, Simulator
+from .model.boxscore import expected_play_stats, sim_box, true_play_stats
+from .train import box_sigma, evaluate as model_nll, evaluate_box, split_games
 
 log = logging.getLogger(__name__)
 
@@ -79,9 +81,38 @@ def _spreads(seasons: list[int], raw_dir: Path) -> pd.DataFrame:
     return pd.concat(frames).groupby("game_id").spread_line.first().reset_index()
 
 
+def load_lineup_data(sim: Simulator, data_dir: Path) -> LineupData | None:
+    lm = sim.meta.get("lineup_meta")
+    if sim.lineups is None or not lm:
+        return None
+    return LineupData.load(data_dir, [], PlayerVocab(lm["player_vocab"]), CoachVocab(lm["coach_vocab"]))
+
+
+def game_lineups(ld: LineupData, g, source: str) -> GameLineups:
+    """Model inputs for a held-out game: who played ("game"), each team's previous game ("previous")
+    or unknown depth charts ("none"). Head coaches are always the real ones."""
+    if source == "game":
+        toks = [ld.lineup(g.game_id, t) for t in (g.home, g.away)]
+    elif source == "previous":
+        toks = [ld.previous_lineup(g.game_id, t, int(g.season), int(g.week)) for t in (g.home, g.away)]
+    else:
+        toks = [np.zeros_like(ld.lineup("", ""))] * 2
+    return GameLineups(toks[0], toks[1], ld.coach(g.game_id, "home"), ld.coach(g.game_id, "away"))
+
+
+def qb_changes(ld: LineupData, games: pd.DataFrame) -> set[str]:
+    """Games in which either team's most-used QB differs from its previous game's."""
+    qb = ld.pg[(ld.pg.group == "QB") & (ld.pg.depth == 0)].sort_values(["season", "week"])
+    qb["prev"] = qb.groupby("team").player_id.shift()
+    changed = qb[qb.prev.notna() & (qb.player_id != qb.prev)]
+    return set(changed.game_id) & set(games.game_id)
+
+
 def run(ckpt: Path, data_dir: Path, sims_per_game: int = 200, raw_dir: Path = Path("data/nfl/raw"),
-        max_games: int | None = None, strength_scale: float | None = None) -> dict:
+        max_games: int | None = None, strength_scale: float | None = None,
+        lineup_sources: tuple[str, ...] = ("game", "previous", "none")) -> dict:
     sim = Simulator.load(ckpt)
+    ld = load_lineup_data(sim, data_dir)
     scale = sim.strength_scale if strength_scale is None else strength_scale
     vs, vw = sim.meta.get("val_season"), sim.meta.get("val_week", 10)
     games = pd.read_parquet(data_dir / "games.parquet")
@@ -93,7 +124,8 @@ def run(ckpt: Path, data_dir: Path, sims_per_game: int = 200, raw_dir: Path = Pa
     rpath = data_dir / "ratings.parquet"
     ratings = pd.read_parquet(rpath) if rpath.exists() else None
     model_ratings = ratings if sim.model.cfg.n_cont else None
-    val_items = encode_games(plays[plays.game_id.isin(val_g.game_id)], val_g, sim.ts, max_len, model_ratings)
+    val_p = plays[plays.game_id.isin(val_g.game_id)]
+    val_items = encode_games(val_p, val_g, sim.ts, max_len, model_ratings, ld)
     tr_sample = train_g[train_g.season >= 2015]
     train_items = encode_games(plays[plays.game_id.isin(tr_sample.game_id)], tr_sample, sim.ts, max_len)
     report = {"val_season": vs, "val_week": vw, "val_games": len(val_g), "strength_scale": scale}
@@ -101,10 +133,84 @@ def run(ckpt: Path, data_dir: Path, sims_per_game: int = 200, raw_dir: Path = Pa
     report["next_play_nll_baseline"] = _baseline_nll(train_items, val_items)
     log.info("NLL model %s", report["next_play_nll_model"])
     log.info("NLL baseline %s", report["next_play_nll_baseline"])
+    sigma = torch.tensor(sim.meta["box_sigma"]) if sim.meta.get("box_sigma") else box_sigma(val_items)
+    report["box_teacher_forced_rmse"] = evaluate_box(sim.model, val_items, sigma)
+    log.info("teacher-forced box-score RMSE %s", report["box_teacher_forced_rmse"])
+    report["margin_residual_halves"] = residual_compensation(sim.model, val_items)
+    log.info("margin residual halves %s", report["margin_residual_halves"])
+    actual_box = _actual_box(val_p)
+    sources = lineup_sources if ld is not None else ("team-only",)
+    if ld is not None:
+        report["next_play_nll_by_lineup"] = {"game (with per-play personnel)": report["next_play_nll_model"]}
+        for src in ("previous", "none"):
+            items = encode_games(val_p, val_g, sim.ts, max_len, model_ratings, ld, lineup_source=src)
+            report["next_play_nll_by_lineup"][src] = model_nll(sim.model, items)
+        log.info("NLL by lineup source %s", report["next_play_nll_by_lineup"])
+        report["qb_change_games"] = sorted(qb_changes(ld, val_g))
 
     # full-game simulations for each held-out game
     sp = _spreads(sorted(val_g.season.unique()), raw_dir)
     val_g = val_g.merge(sp, on="game_id", how="left")
+    report["game_by_lineup"] = {}
+    for src in sources:
+        df, stats = _simulate_val(sim, val_g, ratings, scale, sims_per_game, ld, src)
+        df = df.merge(actual_box, on="game_id", how="left")
+        report["game_by_lineup"][src] = _game_metrics(df)
+        report.setdefault("per_game", {})[src] = df[["game_id", "p_home", "pred_margin", "actual_margin",
+                                                      "spread"]].round(4).to_dict("records")
+        report["game_by_lineup"][src]["box_mae"] = {
+            k: float((df[f"sim_{k}"] - df[f"act_{k}"]).abs().mean()) for k in BOX_COLS}
+        if ld is not None:
+            sub = df[df.game_id.isin(report["qb_change_games"])]
+            if len(sub):
+                report["game_by_lineup"][src]["qb_change_subset"] = _game_metrics(sub, short=True)
+        log.info("games (%s): %s", src, report["game_by_lineup"][src])
+    report["game"] = report["game_by_lineup"][sources[0]]
+    report["realism"] = _realism(plays, val_g, stats)
+    return report
+
+
+BOX_COLS = ["home_rush", "home_pass", "away_rush", "away_pass"]
+
+
+@torch.no_grad()
+def residual_compensation(model, items: list[dict], batch_size: int = 25) -> dict:
+    """Teacher-forced check that per-play predictions don't 'remember' earlier misses.
+
+    For each game, the margin residual (real minus expected points, home minus away) is summed over
+    the first and second half of its plays. A calibrated model's halves are uncorrelated; a model
+    that shades late predictions to cancel early residuals (which a loss on game totals rewards
+    under teacher forcing, because later plays see the real score) shows a clearly negative
+    correlation and a game-level error well below the irreducible sqrt(early^2 + late^2)."""
+    from .vocab import YARDS_MIN
+    model.eval()
+    early, late = [], []
+    for i in range(0, len(items), batch_size):
+        b = collate(items[i: i + batch_size])
+        f = b["feats"]
+        h = model.encode(f)
+        eo, ed = expected_play_stats(model, h, model.personnel(f), b["type_mask"], f["yl"])
+        to, td = true_play_stats(b["type"], b["result"], b["yards"] + YARDS_MIN, f["yl"])
+        res = ((to[..., 0] - eo[..., 0]) - (td - ed)) * (2 * f["is_home"].float() - 1) * b["valid"]
+        for k, n in enumerate(b["valid"].sum(1).long().tolist()):
+            early.append(float(res[k, : n // 2].sum()))
+            late.append(float(res[k, n // 2: n].sum()))
+    e, l = np.array(early), np.array(late)
+    return {"corr_early_late": float(np.corrcoef(e, l)[0, 1]), "rms_early": float(e.std()),
+            "rms_late": float(l.std()), "rms_game": float((e + l).std())}
+
+
+def _actual_box(plays: pd.DataFrame) -> pd.DataFrame:
+    """Real rushing (designed runs) and passing (completions) yards per team, as the engine counts them."""
+    p = plays.assign(rush=np.where((plays.play_type == "run") & (plays.result == "run"), plays.yards, 0),
+                     pas=np.where((plays.play_type == "pass") & (plays.result == "complete"), plays.yards, 0))
+    g = p.groupby(["game_id", "pos"])[["rush", "pas"]].sum().unstack(fill_value=0)
+    return pd.DataFrame({"game_id": g.index, "act_home_rush": g[("rush", 0)].values,
+                         "act_home_pass": g[("pas", 0)].values, "act_away_rush": g[("rush", 1)].values,
+                         "act_away_pass": g[("pas", 1)].values})
+
+
+def _simulate_val(sim, val_g, ratings, scale, sims_per_game, ld, source):
     rows, t0 = [], time.time()
     stats = {"plays": [], "pass": [], "run": [], "punt": [], "turnovers": [], "fg": [], "points": []}
     for i, g in enumerate(val_g.itertuples()):
@@ -115,14 +221,17 @@ def run(ckpt: Path, data_dir: Path, sims_per_game: int = 200, raw_dir: Path = Pa
             raw_pre = tuple({k: float(rg.at[sd, f"pre_{k}"]) for k in ("off_epa", "def_epa", "elo")}
                             for sd in ("home", "away"))
             pre = tuple(scale_ratings(r, scale) for r in raw_pre)
+        lu = game_lineups(ld, g, source) if ld is not None else None
         finals, logs = sim.rollout(start, sims_per_game, seed=i, keep_plays=20,
-                                   ratings=pre if sim.model.cfg.n_cont else None)
+                                   ratings=pre if sim.model.cfg.n_cont else None, lineups=lu)
         h = np.array([s.score[0] for s in finals]); a = np.array([s.score[1] for s in finals])
         rows.append(dict(game_id=g.game_id, home=g.home, away=g.away, actual_margin=g.home_final - g.away_final,
                          actual_total=g.home_final + g.away_final, spread=g.spread_line,
                          p_home=float((h > a).mean() + 0.5 * (h == a).mean()), pred_margin=float((h - a).mean()),
                          pred_total=float((h + a).mean()),
-                         elo_diff=(raw_pre[0]["elo"] - raw_pre[1]["elo"]) if pre else np.nan))
+                         elo_diff=(raw_pre[0]["elo"] - raw_pre[1]["elo"]) if pre else np.nan,
+                         **dict(zip([f"sim_{k}" for k in BOX_COLS],
+                                    np.mean([sim_box(lg) for lg in logs], 0) if logs else [np.nan] * 4))))
         for lg, s in zip(logs, finals):
             types = [o.play_type for _, o in lg]
             stats["plays"].append(len(lg))
@@ -131,12 +240,20 @@ def run(ckpt: Path, data_dir: Path, sims_per_game: int = 200, raw_dir: Path = Pa
             stats["turnovers"].append(sum(o.result in ("interception", "fumble_lost") for _, o in lg))
             stats["points"] += s.score
         if i % 10 == 0:
-            log.info("simulated %d/%d games (%.0fs)", i + 1, len(val_g), time.time() - t0)
-    df = pd.DataFrame(rows)
+            log.info("simulated %d/%d games, lineups=%s (%.0fs)", i + 1, len(val_g), source, time.time() - t0)
+    return pd.DataFrame(rows), stats
+
+
+def _game_metrics(df: pd.DataFrame, short: bool = False) -> dict:
     y = (df.actual_margin > 0).astype(float) + 0.5 * (df.actual_margin == 0)
     p_spread = 1 / (1 + np.exp(-df.spread.fillna(0) / 5.9))  # logistic approx of spread->win prob
     clip = lambda p: np.clip(p, 1e-3, 1 - 1e-3)
-    report["game"] = {
+    if short:
+        return {"games": len(df), "brier_model": float(((df.p_home - y) ** 2).mean()),
+                "brier_spread": float(((p_spread - y) ** 2).mean()),
+                "margin_mae_model": float((df.pred_margin - df.actual_margin).abs().mean()),
+                "margin_mae_spread": float((df.spread - df.actual_margin).abs().mean())}
+    return {
         "brier_model": float(((df.p_home - y) ** 2).mean()),
         "brier_spread": float(((p_spread - y) ** 2).mean()),
         "brier_coinflip": 0.25,
@@ -151,10 +268,13 @@ def run(ckpt: Path, data_dir: Path, sims_per_game: int = 200, raw_dir: Path = Pa
         "pred_margin_std": float(df.pred_margin.std()), "spread_std": float(df.spread.std()),
         "total_mean_pred": float(df.pred_total.mean()), "total_mean_actual": float(df.actual_total.mean()),
     }
+
+
+def _realism(plays, val_g, stats) -> dict:
     actual = plays[plays.game_id.isin(val_g.game_id)]
     per = actual.groupby("game_id").play_type.value_counts().unstack(fill_value=0)
     turn = actual[actual.result.isin(["interception", "fumble_lost"])].groupby("game_id").size()
-    report["realism"] = {
+    return {
         "plays_per_game": [float(np.mean(stats["plays"])), float(actual.groupby("game_id").size().mean())],
         "pass_per_game": [float(np.mean(stats["pass"])), float(per["pass"].mean())],
         "run_per_game": [float(np.mean(stats["run"])), float(per["run"].mean())],
@@ -165,13 +285,13 @@ def run(ckpt: Path, data_dir: Path, sims_per_game: int = 200, raw_dir: Path = Pa
         "points_per_team_std": [float(np.std(stats["points"])), float(np.std(list(val_g.home_final) + list(val_g.away_final)))],
         "_format": "[simulated, actual]",
     }
-    return report
 
 
 def calibrate(ckpt: Path, data_dir: Path, season: int = 2024, n_games: int = 100, sims_per_game: int = 100,
               scales: tuple[float, ...] = (1.0, 1.25, 1.5, 1.75, 2.0), write: bool = False) -> dict:
     """Grid-search the team-strength scale that minimizes Brier score on `season` games."""
     sim = Simulator.load(ckpt)
+    ld = load_lineup_data(sim, data_dir)
     games = pd.read_parquet(data_dir / "games.parquet")
     ratings = pd.read_parquet(data_dir / "ratings.parquet")
     g = games[games.season == season].sample(min(n_games, (games.season == season).sum()), random_state=0)
@@ -184,7 +304,8 @@ def calibrate(ckpt: Path, data_dir: Path, season: int = 2024, n_games: int = 100
             pre = tuple(scale_ratings({k: float(rg.at[s, f"pre_{k}"]) for k in ("off_epa", "def_epa", "elo")}, scale)
                         for s in ("home", "away"))
             start = new_game(row.home, row.away, row.season, row.game_type, opening_kicker=int(row.opening_kicker))
-            finals, _ = sim.rollout(start, sims_per_game, seed=i, ratings=pre)
+            lu = game_lineups(ld, row, "previous") if ld is not None else None
+            finals, _ = sim.rollout(start, sims_per_game, seed=i, ratings=pre, lineups=lu)
             m = np.array([f.score[0] - f.score[1] for f in finals])
             p.append((m > 0).mean() + 0.5 * (m == 0).mean())
             sd.append(m.mean())
