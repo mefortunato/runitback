@@ -585,8 +585,28 @@ prefix (`/api/simulate`, ...) for clients written before the NBA was added.
 
 ### Publishing a model to the deployed app
 
-The Docker image bakes in the release that `src/runitback/nfl/release.py` marks as `LATEST`.
-Merging code doesn't change the deployed model; publishing a release does:
+The Docker image bakes in the release marked `latest` in `src/runitback/nfl/releases.json`.
+Merging code doesn't change the deployed model; publishing a release does. Two GitHub Actions
+workflows do it end to end. Each publishes a GitHub release with the checkpoint and opens a PR that
+updates `releases.json`; **merging that PR** runs the Cloud Run deploy, so a person always approves
+what goes live:
+
+- **Train NFL model** (`.github/workflows/train-nfl-model.yml`, run by hand with a version such as
+  `v0.2.0`). Downloads and preprocesses every season (raw data is cached between runs), optionally
+  trains a held-out model first and stops if its validation loss is above a threshold, then trains on
+  all data with lineups and the who head, calibrates and smoke tests it. About 45 minutes on a
+  public repository's 4-CPU runner, roughly 1h15 on a private repository's 2-CPU runner.
+- **Refresh NFL model data** (`.github/workflows/refresh-nfl-lineups.yml`, Tuesdays 14:41 UTC or by
+  hand). Fetches the deployed model, runs `refresh-lineups` and publishes the next patch version
+  (`v0.2.0` → `v0.2.1`). Weeks without new games publish nothing. A few minutes.
+
+Repository settings both need: **Settings → Actions → General → Workflow permissions →
+"Allow GitHub Actions to create and approve pull requests"**. The workflows request `contents: write`
+and `pull-requests: write` themselves. Scheduled and manually started workflows only run from the
+default branch, so they start working once this file is on `main`. If an older release PR is still
+open when a newer one arrives, close the older one; each PR sets `latest` to its own version.
+
+The same steps by hand:
 
 ```bash
 runitback nfl train --out runs/nfl/prod --epochs 10 --who --prev-lineup-prob 0.3   # all data, no hold-out
@@ -594,9 +614,9 @@ runitback nfl calibrate --ckpt runs/nfl/prod/model.pt --write
 sha256sum runs/nfl/prod/model.pt
 ```
 
-Attach the file to a GitHub release (e.g. tag `v0.2.0`, asset `runitback-nfl-model-v0.2.0.pt`), add it
-to `MODELS` in `src/runitback/nfl/release.py` with its SHA-256, and point `LATEST` at it. Merging that
-change to `main` deploys it.
+Attach the file to a GitHub release (tag `v0.2.0`, asset `runitback-nfl-model-v0.2.0.pt`), then
+`runitback nfl register-release v0.2.0 --ckpt runs/nfl/prod/model.pt --file src/runitback/nfl/releases.json`
+adds it with its SHA-256 and makes it the latest. Merging that change to `main` deploys it.
 
 **Weekly refresh, no retraining.** A checkpoint carries pre-game team ratings and, for lineup models,
 each team's default depth chart (its most recent game), the player directory (career games, usage
@@ -610,7 +630,8 @@ runitback nfl refresh-lineups --ckpt runs/nfl/prod/model.pt --out runs/nfl/prod/
 ```
 
 It prints how current the data is, any teams whose latest game is older (byes), and the new file's
-SHA-256. Publish the refreshed file as a new release (e.g. `v0.2.1`) as above. Retrain when the
+SHA-256. Publish the refreshed file as a new release (e.g. `v0.2.1`) as above; the weekly workflow
+does this for you. Retrain when the
 season rolls over or player vocabularies go stale: players without an embedding fall back to
 NEW / OTHER.
 
