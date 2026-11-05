@@ -199,7 +199,10 @@ label.inline { display: inline-flex; gap: 6px; align-items: center; color: var(-
 a { color: var(--accent); }
 .site-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
   padding: 4px 0 12px; margin-bottom: 14px; border-bottom: 1px solid var(--border); }
-.brand { font-size: 19px; font-weight: 800; color: var(--text); text-decoration: none; letter-spacing: -.01em; }
+.brand { display: inline-flex; align-items: center; gap: 9px; flex-shrink: 0; white-space: nowrap;
+  font-size: 21px; font-weight: 800; color: var(--text); text-decoration: none; letter-spacing: -.035em; }
+.brand-mark { display: block; width: 36px; height: 36px; flex-shrink: 0; }
+.brand:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
 .header-actions { display: flex; align-items: center; gap: 8px; }
 .site-header nav { display: flex; gap: 2px; }
 .theme-toggle { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0;

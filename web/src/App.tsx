@@ -22,7 +22,10 @@ export default function App() {
   return (
     <div className="app">
       <header className="site-header">
-        <Link to="/" className="brand">Run It Back</Link>
+        <Link to="/" className="brand">
+          <img className="brand-mark" src="/favicon.svg?v=monogram-1" width="36" height="36" alt="" aria-hidden="true" />
+          <span>Run It Back</span>
+        </Link>
         <div className="header-actions">
           <nav aria-label="Sports">{tab("/", "Home")}{tab("/nfl", "NFL")}{tab("/nba", "NBA")}</nav>
           <ThemeToggle />
