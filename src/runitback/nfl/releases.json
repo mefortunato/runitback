@@ -1,10 +1,15 @@
 {
-  "latest": "v0.1.0",
+  "latest": "v0.2.0",
   "models": {
     "v0.1.0": {
       "tag": "v0.1.0",
       "asset": "runitback-nfl-model-v0.1.0.pt",
       "sha256": "319e99aacf2fd7531968f260bc6c34e342382ca88be3872f99f0dc57eb071cf4"
+    },
+    "v0.2.0": {
+      "tag": "v0.2.0",
+      "asset": "runitback-nfl-model-v0.2.0.pt",
+      "sha256": "04f414e0a8456e7eb62ebe39172658d2c5f411a54cd2d7e5bfb7d22bbbbc31ac"
     }
   }
 }
