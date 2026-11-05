@@ -29,7 +29,7 @@ import torch
 from runitback.nfl.data.ratings import scale_ratings
 from runitback.nfl.engine.rules import new_game
 from runitback.nfl.evaluate import load_lineup_data
-from runitback.nfl.model.lineups import N_SLOTS, SLOT_IDX, SLOTS
+from runitback.nfl.model.lineups import N_SLOTS, SLOT_IDX, SLOTS, role_share_table, slot_usage, usage_multipliers
 from runitback.nfl.sim.sampler import GameLineups, Simulator
 from runitback.nfl.train import split_games
 
@@ -39,6 +39,8 @@ N = int(sys.argv[2]) if len(sys.argv) > 2 else 100
 OUT = Path(sys.argv[3]) if len(sys.argv) > 3 else CKPT.parent / "player_stats.json"
 MAX_GAMES = int(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] != "all" else None  # smoke tests
 SOURCES = sys.argv[5].split(",") if len(sys.argv) > 5 else ["previous", "pregame", "game"]
+# a "+usage" suffix (e.g. pregame+usage) picks on-field players by player-specific snap shares
+# (league role share x the player's usage multiplier from his snap counts before the game)
 P = Path("data/nfl/processed")
 STATS = ["targets", "receptions", "rec_yds", "carries", "rush_yds"]
 GROUPS = ["RB", "WR", "TE"]
@@ -143,8 +145,14 @@ def pregame_chart(game_id: str, team: str) -> tuple[np.ndarray, dict[int, str]]:
     return toks, smap
 
 
+ROLE = role_share_table(pg[pg.game_id.isin(train_g.game_id) & (pg.season >= 2016)])
+MULT_BEFORE, _ = usage_multipliers(pg, ROLE)  # leak-free: each game's value uses earlier snap counts only
+
+
 def simulate(source: str) -> pd.DataFrame:
     out, t0 = [], time.time()
+    use_usage = source.endswith("+usage")
+    source = source.removesuffix("+usage")
     for i, g in enumerate(val.itertuples()):
         maps, toks = [], []
         for team in (g.home, g.away):
@@ -155,7 +163,11 @@ def simulate(source: str) -> pd.DataFrame:
             src_game = g.game_id if source == "game" else ld._prev_game.get((g.game_id, team))
             maps.append(slot_players(src_game, team) if src_game else {})
             toks.append(ld.lineup(g.game_id, team) if source == "game" else ld.previous_lineup(g.game_id, team))
-        lu = GameLineups(toks[0], toks[1], ld.coach(g.game_id, "home"), ld.coach(g.game_id, "away"))
+        usage = None
+        if use_usage:
+            usage = [slot_usage(t_, ROLE, lambda sl, m_=m_: MULT_BEFORE.get((g.game_id, m_.get(sl)), 1.0))
+                     for t_, m_ in zip(toks, maps)]
+        lu = GameLineups(toks[0], toks[1], ld.coach(g.game_id, "home"), ld.coach(g.game_id, "away"), usage=usage)
         rg = ratings[ratings.game_id == g.game_id].set_index("side")
         pre = tuple(scale_ratings({k: float(rg.at[sd, f"pre_{k}"]) for k in ("off_epa", "def_epa", "elo")},
                                   sim.strength_scale) for sd in ("home", "away"))

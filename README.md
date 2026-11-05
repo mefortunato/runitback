@@ -268,9 +268,23 @@ game's active players ranked by their previous-game role:
   and both beat form. The information is in *who is on the field and how often*. The personnel
   sampler draws that from league-wide rotation rates, which erases workhorse backs and every-down
   receivers.
-- **Next step:** player-specific on-field rates (each player's recent snap share by situation) in
-  place of league-average package frequencies, plus recent-usage features so embeddings aren't
-  static across a career.
+- **Player-specific snap shares (tried, 2026-11-05).** The sampler now picks on-field players by
+  usage. The league's on-field rate for each depth-chart role, by situation and by how many of that
+  group are in the package (fit from 2016–2025 participation), is multiplied by the player's own
+  usage relative to his role (leak-free EWMA of snap counts, shrunk toward 1). The package mix is
+  tilted toward the team's own group usage. Within a group, players are drawn with exact inclusion
+  probabilities. Callers can set `snap_shares` per player. Pre-game results: RMSE improves
+  significantly but slightly on RB carries (5.31 → 5.19), WR targets (2.82 → 2.79) and TE targets
+  (2.09 → 2.05). Yardage improves within noise, and the blend with form+opponent is unchanged.
+- **That diagnosis was wrong.** On the held-out games' real plays, both samplers already put
+  pre-game starters on the field *more* than reality (RB1 0.68 vs 0.59, WR1 0.88–0.91 vs 0.78;
+  `scripts/sampler_onfield_check.py`). The remaining flatness is in who gets the ball once on the
+  field. In simulated runs QB1 takes 16% of carries (24% when only RB2 is on the field), so RB1 gets
+  55% of RB carries vs 66% actual. Given the real 22 and the real plays the head does well, so the
+  gap is how it allocates in simulated contexts. It has no recent per-player usage inputs (carry
+  share, target share), only career-static embeddings.
+- **Next step:** feed each candidate's recent usage (carries per snap, targets per route, from
+  earlier games) into the who head, and retrain weekly so embeddings track form.
 
 ## Quick start (pre-trained model)
 

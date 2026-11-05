@@ -275,3 +275,45 @@ def test_who_loss_term(who_sim):
     loss.backward()
     assert m.who_ctx.weight.grad.abs().sum() > 0
     m.eval()
+
+
+def test_inclusion_sample_hits_target_probabilities():
+    from runitback.nfl.model.lineups import inclusion_sample
+    rng = np.random.default_rng(0)
+    r, k, n = np.array([0.9, 0.5, 0.3, 0.1]), 2, 20000
+    cnt = np.zeros(4)
+    for _ in range(n):
+        pick = inclusion_sample(r, k, rng)
+        assert len(set(pick.tolist())) == k
+        cnt[pick] += 1
+    # capped at 1, the rest proportional: [1, .556, .333, .111]
+    assert np.allclose(cnt / n, [1.0, 5 / 9, 3 / 9, 1 / 9], atol=0.015)
+
+
+def test_usage_mode_follows_player_snap_shares(lineup_sim):
+    r = lineup_sim.lineups
+    role = {g: [0.6, 0.3, 0.1, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05][:n] for g, n in
+            (("QB", 3), ("RB", 4), ("WR", 6), ("TE", 4), ("OL", 9), ("DL", 9), ("LB", 7), ("DB", 9))}
+    role |= {"K": [1.0], "P": [1.0], "LS": [1.0]}
+    from runitback.nfl.model.lineups import PersonnelSampler
+    sampler = PersonnelSampler(r.sampler.table, role)
+    chart = {"RB": ["kc_RB1", "bf_RB1"]}  # two backs; the package holds one
+    spec = lineup_sim.lineup_spec("KC", "BUF", {"KC": {"depth_chart": chart}})["home"]["depth_chart"]
+    toks = r.tokens(spec)
+    rng = np.random.default_rng(0)
+
+    def rb1_rate(usage):
+        on = 0
+        for _ in range(3000):
+            _, _, c = sampler.sample("off", "run", 1, 10, 60, toks, rng, codes=True, usage=usage)
+            on += SLOT_IDX[("RB", 0)] in c
+        return on / 3000
+    even = np.where(toks > 0, 0.5, 0.0)
+    heavy = even.copy(); heavy[SLOT_IDX[("RB", 0)]], heavy[SLOT_IDX[("RB", 1)]] = 0.9, 0.1
+    assert abs(rb1_rate(even) - 0.5) < 0.05 and abs(rb1_rate(heavy) - 0.9) < 0.04
+    # snap_shares overrides reach the per-slot usage; checkpoints without a role table keep league rotation
+    r.role_share = role
+    u = r.usage(spec, toks, {"kc_RB1": 0.95})
+    assert u[SLOT_IDX[("RB", 0)]] == 0.95 and 0 < u[SLOT_IDX[("RB", 1)]] < 0.95
+    r.role_share = None
+    assert r.usage(spec, toks) is None

@@ -201,6 +201,114 @@ def situation_key(play_type: str, down: int, ytg: int, yl: int) -> str:
     return f"{play_type}:{min(down, 4)}{dist}{goal}"
 
 
+# ---------------------------------------------------------------------------------- player usage
+# Scrimmage plays pick which players fill each position group from player-specific usage rates:
+# rate = league snap share of the depth-chart role (RB1, WR3, ...) x the player's usage multiplier
+# (how much more or less he plays than an average player in his role, from recent snap counts).
+SHARE_PLAYS = {"run", "pass", "penalty", "qb_kneel", "qb_spike", "timeout"}
+USAGE_ALPHA, USAGE_K, MULT_CLIP = 0.2, 3.0, (0.2, 3.0)
+
+
+def snap_shares(pg: pd.DataFrame) -> np.ndarray:
+    """Each player-game's share of his unit's snaps (offense or defense; specialists 1.0)."""
+    off = pg.group.isin(["QB", "RB", "WR", "TE", "OL"]).to_numpy()
+    dfn = pg.group.isin(["DL", "LB", "DB"]).to_numpy()
+    tmax_o = pg.groupby(["game_id", "team"]).offense_snaps.transform("max").to_numpy()
+    tmax_d = pg.groupby(["game_id", "team"]).defense_snaps.transform("max").to_numpy()
+    sh = np.ones(len(pg))
+    sh[off] = pg.offense_snaps.to_numpy()[off] / np.maximum(tmax_o[off], 1)
+    sh[dfn] = pg.defense_snaps.to_numpy()[dfn] / np.maximum(tmax_d[dfn], 1)
+    return np.clip(sh, 0, 1)
+
+
+def role_share_table(pg: pd.DataFrame) -> dict[str, list[float]]:
+    """League-average snap share by depth-chart role (group, rank)."""
+    d = pg.assign(share=snap_shares(pg))
+    out = {}
+    for g in GROUPS:
+        m = d[d.group == g].groupby("depth").share.mean()
+        out[g] = [float(m.get(r, m.iloc[-1] if len(m) else 0.0)) for r in range(DEPTH[g])]
+    return out
+
+
+def usage_multipliers(pg: pd.DataFrame, role: dict[str, list[float]]) -> tuple[dict, dict]:
+    """Leak-free usage multipliers: ({(game_id, player_id): multiplier before that game},
+    {player_id: multiplier after all games}). EWMA of share / role share, shrunk toward 1."""
+    d = pg.assign(share=snap_shares(pg)).sort_values(["season", "week", "game_id"])
+    before, state = {}, {}
+    for gid, pid, g, dp, sh in zip(d.game_id, d.player_id, d.group, d.depth, d.share):
+        m, n = state.get(pid, (1.0, 0))
+        before[(gid, pid)] = (n * m + USAGE_K) / (n + USAGE_K)
+        prior = role[g][min(int(dp), DEPTH[g] - 1)]
+        ratio = float(np.clip(sh / max(prior, 0.02), *MULT_CLIP))
+        state[pid] = ((1 - USAGE_ALPHA) * m + USAGE_ALPHA * ratio if n else ratio, n + 1)
+    final = {pid: (n * m + USAGE_K) / (n + USAGE_K) for pid, (m, n) in state.items()}
+    return before, final
+
+
+def slot_usage(lineup: np.ndarray, role: dict[str, list[float]], mult) -> np.ndarray:
+    """Per-slot usage rates for a depth chart: role share x multiplier (mult: slot -> multiplier)."""
+    r = np.zeros(N_SLOTS)
+    for sl, (g, rank) in enumerate(SLOTS):
+        if lineup[sl] > 0:
+            r[sl] = min(1.0, role[g][rank] * float(np.clip(mult(sl), *MULT_CLIP)))
+    return r
+
+
+def inclusion_sample(rates: np.ndarray, k: int, rng: np.random.Generator) -> np.ndarray:
+    """Pick k of n candidates so candidate i is chosen with probability proportional to its rate
+    (capped at 1): systematic sampling with exact inclusion probabilities, in random order."""
+    n = len(rates)
+    if k >= n:
+        return np.arange(n)
+    r = np.maximum(rates, 1e-3).astype(float)
+    pi = np.zeros(n)
+    fixed = np.zeros(n, bool)
+    for _ in range(n):
+        free = ~fixed
+        pi[free] = (k - fixed.sum()) * r[free] / r[free].sum()
+        over = free & (pi >= 1)
+        if not over.any():
+            break
+        fixed |= over
+        pi[fixed] = 1.0
+    order = rng.permutation(n)
+    cum = np.cumsum(pi[order])
+    picks = np.searchsorted(cum, rng.random() + np.arange(k), side="right")
+    return order[np.minimum(picks, n - 1)]
+
+
+def fit_role_inclusion(ld: "LineupData", plays: pd.DataFrame, min_plays: int = 30) -> dict[str, list[float]]:
+    """How often each depth-chart rank is on the field, by side, situation, group and number of that
+    group in the package: key "off|<situation>|<group>|<k>" -> on-field rate per rank. Fit from
+    participation joined to each game's depth chart (scrimmage plays only)."""
+    pe = ld.personnel.merge(plays[["game_id", "play_id", "play_type", "down", "ytg", "yl", "pos"]],
+                            on=["game_id", "play_id"])
+    pe = pe[pe.play_type.isin(SHARE_PLAYS)]
+    on: dict[str, np.ndarray] = {}
+    n: dict[str, int] = defaultdict(int)
+    for gid, pt, dn, ytg, yl, pos, h_ids, a_ids in zip(pe.game_id, pe.play_type, pe.down, pe.ytg, pe.yl, pe.pos,
+                                                      pe.home_ids, pe.away_ids):
+        sit = situation_key(pt, int(dn), int(ytg), int(yl))
+        for role, ids in (("off", h_ids if pos == 0 else a_ids), ("def", a_ids if pos == 0 else h_ids)):
+            by_group: dict[int, list[int]] = defaultdict(list)
+            for pid in list(ids)[:SIDE]:
+                hit = ld.player_game.get((gid, pid))
+                if hit is None:
+                    continue
+                _, g, sl = hit
+                by_group[g].append(SLOTS[sl][1] if sl >= 0 else -1)
+            for g, ranks in by_group.items():
+                gname = GROUPS[g]
+                for key in (f"{role}|{sit}|{gname}|{len(ranks)}", f"{role}|{pt}|{gname}|{len(ranks)}"):
+                    arr = on.setdefault(key, np.zeros(DEPTH[gname]))
+                    for rk in ranks:
+                        if rk >= 0:
+                            arr[rk] += 1
+                    n[key] += 1
+    return {k: (v / n[k]).round(4).tolist() for k, v in on.items() if n[k] >= min_plays}
+
+
 class PersonnelSampler:
     """Which depth-chart slots take the field, given the play type and situation.
 
@@ -210,10 +318,24 @@ class PersonnelSampler:
     """
     TOP = 400
 
-    def __init__(self, table: dict[str, list] | None = None):
+    def __init__(self, table: dict[str, list] | None = None, role_share: dict[str, list[float]] | None = None,
+                 role_inclusion: dict[str, list[float]] | None = None):
         # key -> [signatures (list of tuples), cumulative probabilities]
         self.table = table or {}
         self._cum = {k: (v[0], np.cumsum(v[1])) for k, v in self.table.items()}
+        self.role_share = role_share
+        self.role_inclusion = role_inclusion or {}
+        # per key: probabilities and per-signature counts of each position group (for usage mode)
+        self._freq = {k: np.asarray(v[1], float) for k, v in self.table.items()}
+        self._counts = {}
+        for k, v in self.table.items():
+            c = np.zeros((len(v[0]), N_GROUPS))
+            for i, sig in enumerate(v[0]):
+                for code in sig:
+                    c[i, SLOT_GROUP[code] if code < N_SLOTS else code - N_SLOTS] += 1
+            self._counts[k] = c
+        if role_share:
+            self._league_mu = np.array([sum(role_share[g]) for g in GROUPS])
 
     @classmethod
     def fit(cls, samples: dict[str, Counter]) -> "PersonnelSampler":
@@ -227,21 +349,73 @@ class PersonnelSampler:
     def to_dict(self) -> dict:
         return self.table
 
-    def _lookup(self, role: str, play_type: str, down: int, ytg: int, yl: int):
+    def _key(self, role: str, play_type: str, down: int, ytg: int, yl: int) -> str | None:
         for key in (f"{role}|{situation_key(play_type, down, ytg, yl)}", f"{role}|{play_type}",
                     f"{role}|run" if role == "off" else f"{role}|pass"):
             if key in self._cum:
-                return self._cum[key]
+                return key
         return None
 
+    def _lookup(self, role: str, play_type: str, down: int, ytg: int, yl: int):
+        key = self._key(role, play_type, down, ytg, yl)
+        return None if key is None else self._cum[key]
+
+    def _role_weights(self, role: str, sit: str, play_type: str, g: int, k: int) -> np.ndarray:
+        """On-field rate of each rank of group g in this situation when the package holds k of them
+        (falls back to the play type, then to the overall role snap shares)."""
+        gname = GROUPS[g]
+        for key in (f"{role}|{sit}|{gname}|{k}", f"{role}|{play_type}|{gname}|{k}"):
+            if key in self.role_inclusion:
+                return np.asarray(self.role_inclusion[key])
+        return np.asarray(self.role_share[gname])
+
+    def _sample_usage(self, key: str, lineup: np.ndarray, usage: np.ndarray, rng: np.random.Generator):
+        """Package from the situation's league frequencies, tilted toward the team's own group usage;
+        then players within each group by their usage rates."""
+        mu = np.array([usage[SLOT_GROUP == g].sum() for g in range(N_GROUPS)])
+        tilt = np.log(np.clip(mu / np.maximum(self._league_mu, 1e-6), 0.5, 2.0))
+        w = self._freq[key] * np.exp(self._counts[key] @ tilt)
+        i = min(int(np.searchsorted(np.cumsum(w), rng.random() * w.sum())), len(w) - 1)
+        counts = self._counts[key][i].astype(int)
+        role_, sit_, pt_ = self._ctx
+        toks, grps, codes = [], [], []
+        for g in range(N_GROUPS):
+            k = counts[g]
+            if k == 0:
+                continue
+            slots = np.flatnonzero((SLOT_GROUP == g) & (lineup > 0))
+            if len(slots):
+                # situational role rate x the player's own usage relative to his role
+                gname = GROUPS[g]
+                ranks = np.array([SLOTS[sl][1] for sl in slots])
+                share = np.asarray(self.role_share[gname])[ranks]
+                mult = np.clip(usage[slots] / np.maximum(share, 1e-3), *MULT_CLIP)
+                w = self._role_weights(role_, sit_, pt_, g, k)[ranks] * mult
+                chosen = slots[inclusion_sample(w, k, rng)]
+            else:
+                chosen = np.array([], int)
+            for sl in chosen:
+                toks.append(int(lineup[sl])), grps.append(g + 1), codes.append(int(sl))
+            for _ in range(k - len(chosen)):  # depth chart too short: generic players
+                toks.append(other_token(g)), grps.append(g + 1), codes.append(N_SLOTS + g)
+        return toks[:SIDE], grps[:SIDE], codes[:SIDE]
+
     def sample(self, role: str, play_type: str, down: int, ytg: int, yl: int, lineup: np.ndarray,
-               rng: np.random.Generator, codes: bool = False):
+               rng: np.random.Generator, codes: bool = False, usage: np.ndarray | None = None):
         """Tokens and groups (1-based, 0 = pad) of one side's 11 players for this play; with
-        codes=True also each player's slot code (depth-chart slot, or N_SLOTS + group if off-chart)."""
-        hit = self._lookup(role, play_type, down, ytg, yl)
-        if hit is None or not lineup.any():
+        codes=True also each player's slot code (depth-chart slot, or N_SLOTS + group if off-chart).
+        With per-slot `usage` rates (and a role table), scrimmage plays pick players by usage."""
+        key = self._key(role, play_type, down, ytg, yl)
+        if key is None or not lineup.any():
             return ([0] * SIDE, [0] * SIDE, [-1] * SIDE) if codes else ([0] * SIDE, [0] * SIDE)
-        sigs, cum = hit
+        if usage is not None and self.role_share and play_type in SHARE_PLAYS:
+            self._ctx = (role, situation_key(play_type, down, ytg, yl), play_type)
+            toks, grps, cds = self._sample_usage(key, lineup, usage, rng)
+            pad = SIDE - len(toks)
+            if codes:
+                return toks + [0] * pad, grps + [0] * pad, cds + [-1] * pad
+            return toks + [0] * pad, grps + [0] * pad
+        sigs, cum = self._cum[key]
         sig = sigs[min(int(np.searchsorted(cum, rng.random() * cum[-1])), len(sigs) - 1)]
         toks, grps = [], []
         for code in sig:
@@ -291,7 +465,10 @@ def inference_meta(ld: LineupData, schedule_coaches: pd.DataFrame, recent_season
     agg = pg[pg.player_id.isin(keep)].sort_values(["season", "week"]).groupby("player_id").agg(
         name=("name", "last"), group=("group", "last"), position=("position", "last"),
         team=("team", "last"), last_season=("season", "last"), games=("career_games", "last"))
-    players = {pid: [name, group, pos, team, int(last), int(games) + 1] for pid, name, group, pos, team, last, games
+    role = role_share_table(pg)
+    _, mult = usage_multipliers(pg, role)
+    players = {pid: [name, group, pos, team, int(last), int(games) + 1, round(mult.get(pid, 1.0), 3)]
+               for pid, name, group, pos, team, last, games
                in zip(agg.index, agg["name"], agg["group"], agg["position"], agg["team"], agg["last_season"],
                       agg["games"])}
     # coach histories: (season, team, wins, losses, ties) per coach-season
@@ -301,7 +478,7 @@ def inference_meta(ld: LineupData, schedule_coaches: pd.DataFrame, recent_season
         hist[coach].append([int(season), team, int((d.result > 0).sum()), int((d.result < 0).sum()),
                             int((d.result == 0).sum())])
     veteran = sorted(set(ld.coaches[ld.coaches.veteran_unknown].coach))
-    return {"lineups": lineups, "players": players, "coach_history": dict(hist), "veteran_coaches": veteran,
+    return {"lineups": lineups, "players": players, "role_share": role, "coach_history": dict(hist), "veteran_coaches": veteran,
             "player_vocab": ld.pvocab.ids, "coach_vocab": ld.cvocab.names}
 
 
@@ -315,7 +492,8 @@ class LineupResolver:
         self.players = meta["players"]
         self.history = meta["coach_history"]
         self.veterans = set(meta.get("veteran_coaches", []))
-        self.sampler = PersonnelSampler(meta.get("personnel_sampler"))
+        self.role_share = meta.get("role_share")
+        self.sampler = PersonnelSampler(meta.get("personnel_sampler"), self.role_share, meta.get("role_inclusion"))
 
     def default(self, team: str) -> dict:
         d = self.meta["lineups"].get(team)
@@ -335,6 +513,20 @@ class LineupResolver:
                 arr[SLOT_IDX[(g, r)]] = self.pvocab.token(pid, g, info[5] if info else 0)
         return arr
 
+    def usage(self, depth_chart: dict[str, list[str]], tokens: np.ndarray,
+              snap_shares: dict[str, float] | None = None) -> np.ndarray | None:
+        """Per-slot usage rates (None for checkpoints without a role table). `snap_shares` sets a
+        player's rate directly (fraction of his unit's snaps, 0-1)."""
+        if not self.role_share:
+            return None
+        pid_at = {SLOT_IDX[(g, r)]: pid for g, ids in (depth_chart or {}).items() for r, pid in enumerate(ids[: DEPTH[g]])}
+        mult = lambda sl: (self.players.get(pid_at.get(sl), [None] * 7) + [1.0])[6] or 1.0
+        r = slot_usage(tokens, self.role_share, mult)
+        for sl, pid in pid_at.items():
+            if snap_shares and pid in snap_shares and tokens[sl] > 0:
+                r[sl] = float(np.clip(snap_shares[pid], 0.0, 1.0))
+        return r
+
     def coach_inputs(self, coach: str | None, team: str, season: int) -> tuple[int, list[float]]:
         if not coach:
             return 0, coach_feature_vector(None)
@@ -353,8 +545,9 @@ class LineupResolver:
         info = self.players.get(pid)
         if info is None:
             return {"id": pid, "name": "NEW PLAYER" if pid == NEW_LABEL else pid, "status": "new"}
-        name, group, pos, team, last_season, games = info
+        name, group, pos, team, last_season, games = info[:6]
         tok = self.pvocab.token(pid, group, games)
         status = "new" if tok <= N_GROUPS else "limited history" if tok <= 2 * N_GROUPS else "known"
         return {"id": pid, "name": name, "group": group, "position": pos, "team": team,
-                "last_season": last_season, "career_games": games, "status": status}
+                "last_season": last_season, "career_games": games, "status": status,
+                "usage_multiplier": info[6] if len(info) > 6 else 1.0}

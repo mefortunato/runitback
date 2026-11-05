@@ -220,6 +220,8 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
     if ld is not None:
         lm = inference_meta(ld, pd.read_parquet(_lineup_dir(dirs) / "coach_games.parquet"))
         lm["personnel_sampler"] = fit_personnel_sampler(train_items).to_dict()
+        from .model.lineups import fit_role_inclusion
+        lm["role_inclusion"] = fit_role_inclusion(ld, plays[plays.game_id.isin(train_g.game_id)])
         meta["lineup_meta"] = lm
         log.info("personnel sampler: %d situations", len(lm["personnel_sampler"]))
     best, ckpt = float("inf"), out_dir / "model.pt"

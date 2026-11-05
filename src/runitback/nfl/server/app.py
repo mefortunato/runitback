@@ -117,6 +117,8 @@ class TeamLineup(BaseModel):
     Groups: QB RB WR TE OL DL LB DB K P LS. Groups left out keep the team's most recent game."""
     coach: str | None = None
     depth_chart: dict[str, list[str]] | None = None
+    # optional: fraction of his unit's snaps a player plays (0-1); default from his recent snap counts
+    snap_shares: dict[str, float] | None = None
 
 
 class NewGame(BaseModel):

@@ -24,8 +24,11 @@ MAX_PLAYS = 330  # safety cap on plays per game (real games: 130-240)
 class GameLineups:
     """Resolved model inputs for both teams: depth-chart slot tokens and coach token/features."""
 
-    def __init__(self, home_tokens, away_tokens, home_coach=(0, None), away_coach=(0, None), spec=None):
+    def __init__(self, home_tokens, away_tokens, home_coach=(0, None), away_coach=(0, None), spec=None,
+                 usage=None):
         self.tokens = np.stack([home_tokens, away_tokens]).astype(np.int64)      # (2, S)
+        # per-slot usage rates (2, S) for picking who is on the field; None = league rotation by slot
+        self.usage = None if usage is None or usage[0] is None else np.stack(usage).astype(float)
         zero = [0.0] * (N_COACH_CONT // 2)
         self.coach = [(home_coach[0], home_coach[1] or zero), (away_coach[0], away_coach[1] or zero)]
         self.spec = spec  # the user-facing {"home": {...}, "away": {...}} it was built from
@@ -59,6 +62,8 @@ class Simulator:
                 d["coach"] = o["coach"] or None
             if o.get("depth_chart"):
                 d["depth_chart"] = d["depth_chart"] | {g: list(v) for g, v in o["depth_chart"].items()}
+            if o.get("snap_shares"):
+                d["snap_shares"] = dict(o["snap_shares"])
             out[side] = {"team": team, **d}
         return out
 
@@ -68,9 +73,11 @@ class Simulator:
             return None
         spec = self.lineup_spec(home, away, override)
         r = self.lineups
-        return GameLineups(r.tokens(spec["home"]["depth_chart"]), r.tokens(spec["away"]["depth_chart"]),
-                           r.coach_inputs(spec["home"]["coach"], home, season),
-                           r.coach_inputs(spec["away"]["coach"], away, season), spec)
+        toks = [r.tokens(spec[side]["depth_chart"]) for side in ("home", "away")]
+        usage = [r.usage(spec[side]["depth_chart"], t, spec[side].get("snap_shares"))
+                 for side, t in zip(("home", "away"), toks)]
+        return GameLineups(toks[0], toks[1], r.coach_inputs(spec["home"]["coach"], home, season),
+                           r.coach_inputs(spec["away"]["coach"], away, season), spec, usage)
 
     def ratings_for(self, home: str, away: str, season: int, week: int | None = None,
                     override: dict | None = None, strength_scale: float | None = None) -> tuple[dict, dict] | None:
@@ -138,8 +145,9 @@ class Simulator:
             rng = np.random.default_rng(int(torch.randint(2**31, (1,), generator=gen)))
             for i, (s, n) in enumerate(zip(states, names)):
                 for k, (role, side) in enumerate((("off", s.pos), ("def", 1 - s.pos))):
-                    t, g, c = self.lineups.sampler.sample(role, n, s.down, s.ytg, s.yl, lineups.tokens[side], rng,
-                                                          codes=True)
+                    t, g, c = self.lineups.sampler.sample(
+                        role, n, s.down, s.ytg, s.yl, lineups.tokens[side], rng, codes=True,
+                        usage=None if lineups.usage is None else lineups.usage[side])
                     pers[i, k * SIDE:(k + 1) * SIDE] = t
                     grp[i, k * SIDE:(k + 1) * SIDE] = g
                     if k == 0:
