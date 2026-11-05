@@ -9,9 +9,16 @@ export interface State {
   home_score: number; away_score: number; home_timeouts: number; away_timeouts: number;
   over: boolean;
 }
-export interface Outcome { play_type: string; result: string; yards: number; elapsed: number }
+export interface Outcome { play_type: string; result: string; yards: number; elapsed: number; who?: number | null }
 export interface Play { n: number; before: State; outcome: Outcome; text: string; after: State }
+export interface PlayerStatLine {
+  slot: number; id: string | null; name: string; role: string;
+  targets: number; receptions: number; receiving_yards: number; receiving_tds: number;
+  carries: number; rushing_yards: number; rushing_tds: number;
+}
+export type PlayerStats = Record<"home" | "away", PlayerStatLine[]>;
 export interface Game { id: string; state: State; plays: Play[]; winprob: WinProb[]; legal_play_types: string[];
+  player_stats?: PlayerStats | null;
   new_plays?: Play[]; lineups?: Record<"home" | "away", { team: string; coach: string | null;
     depth_chart: Record<string, string[]> }> | null }
 export type PlayerStatus = "known" | "new" | "limited history";
@@ -67,7 +74,7 @@ export interface SeasonRequest {
 const call = <T,>(path: string, init?: RequestInit) => http<T>(`/api/nfl${path}`, init);
 
 export const api = {
-  teams: () => call<{ teams: string[]; seasons: number[]; lineups?: boolean }>("/teams"),
+  teams: () => call<{ teams: string[]; seasons: number[]; lineups?: boolean; player_stats?: boolean }>("/teams"),
   teamLineup: (team: string, season: number) => call<TeamLineupView>(`/teams/${team}/lineup?season=${season}`),
   players: (q: string, group?: string) =>
     call<{ players: PlayerInfo[] }>(`/players?q=${encodeURIComponent(q)}${group ? `&group=${group}` : ""}&limit=12`),

@@ -52,10 +52,13 @@ def test_interactive_session(tiny_sim):
     server.set_sim(tiny_sim)
     c = TestClient(server.app)
     assert c.get("/api/teams").json()["seasons"] == [2025]
+    assert c.get("/api/teams").json()["player_stats"] is False
     g = c.post("/api/games", json={"home": "KC", "away": "BUF", "season": 2025, "seed": 3}).json()
     assert g["state"]["phase"] == "kickoff" and g["legal_play_types"][0] == "kickoff"
+    assert g["player_stats"] is None
     r = c.post(f"/api/games/{g['id']}/step", json={}).json()
     assert len(r["new_plays"]) == 1 and r["plays"][0]["outcome"]["play_type"] == "kickoff"
+    assert r["player_stats"] is None
     assert c.post(f"/api/games/{g['id']}/step", json={"play_type": "field_goal"}).status_code in (200, 422)
     r = c.post(f"/api/games/{g['id']}/step", json={"count": 5}).json()
     n = len(r["plays"])

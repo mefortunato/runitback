@@ -14,6 +14,7 @@ from ...core.scheduler import MODEL_SCHEDULER, ModelScheduler  # noqa: F401  (Mo
 from ..engine.rules import GameState, Outcome, apply_outcome, legal_types, new_game
 from ..sim.api import simulate_games, summarize
 from ..sim.describe import describe
+from ..sim.stats import player_stats
 from ..paths import checkpoint_path, data_dir
 from ..sim.season import FIRST_SEASON, LAST_SEASON, generate_schedule, playoff_game_count, simulate_season
 from ..sim.sampler import Simulator
@@ -47,9 +48,12 @@ def set_sim(sim: Simulator) -> None:
 
 
 class Session:
-    def __init__(self, state: GameState, seed: int, ratings=None, lineups=None):
+    def __init__(self, state: GameState, seed: int, ratings=None, lineups=None,
+                 player_names: dict[str, str] | None = None):
         self.ratings = ratings
         self.lineups = lineups
+        # None means the model cannot attribute plays; an empty dict still supports generic players.
+        self.player_names = player_names
         self.history: list[tuple[GameState, Outcome]] = []
         self.log: list[dict] = []
         self.state = state
@@ -63,7 +67,10 @@ class Session:
         with self.lock:
             return {"state": self.state.to_dict(), "plays": self.log.copy(), "winprob": self.wp.copy(),
                     "legal_play_types": [] if self.state.over else legal_types(self.state),
-                    "lineups": self.lineups.spec if self.lineups is not None else None}
+                    "lineups": self.lineups.spec if self.lineups is not None else None,
+                    "player_stats": player_stats(
+                        self.history, self.lineups.spec if self.lineups is not None else None, self.player_names
+                    ) if self.player_names is not None else None}
 
 
 class TeamLineup(BaseModel):
@@ -146,7 +153,8 @@ def health():
 @router.get("/teams")
 def teams():
     sim = get_sim()
-    return {"teams": TEAMS, "seasons": sim.seasons, "lineups": sim.lineups is not None}
+    return {"teams": TEAMS, "seasons": sim.seasons, "lineups": sim.lineups is not None,
+            "player_stats": sim.model.has_who}
 
 
 def _lineup_resolver():
@@ -213,7 +221,13 @@ def create_game(req: NewGame):
     sim = get_sim()
     s = Session(new_game(home, away, req.season, req.game_type, rng=random.Random(seed)), seed,
                 sim.ratings_for(home, away, req.season),
-                _resolve_lineups(sim, home, away, req.season, req.lineups))
+                _resolve_lineups(sim, home, away, req.season, req.lineups),
+                player_names={} if sim.model.has_who else None)
+    if s.player_names is not None and s.lineups is not None and sim.lineups is not None:
+        for team in s.lineups.spec.values():
+            for ids in team["depth_chart"].values():
+                for pid in ids:
+                    s.player_names[pid] = sim.lineups.describe(pid)["name"]
     if len(SESSIONS) >= MAX_SESSIONS:
         SESSIONS.pop(next(iter(SESSIONS)))
     gid = uuid.uuid4().hex[:12]
