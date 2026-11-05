@@ -40,6 +40,7 @@ def refresh_checkpoint(ckpt: Path, out: Path, raw_dir: Path, processed_dir: Path
 
     ck = torch.load(ckpt, map_location="cpu", weights_only=False)
     summary: dict = {"checkpoint": str(ckpt), "out": str(out)}
+    before = _data_marks(ck)
 
     ratings = build_ratings(seasons, raw_dir, processed_dir)
     ck["ratings"] = RatingsTable(ratings).to_records()
@@ -69,6 +70,10 @@ def refresh_checkpoint(ckpt: Path, out: Path, raw_dir: Path, processed_dir: Path
     ck["refreshed"] = {"at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
                        "from_checkpoint": str(ckpt), "seasons": [start, end]} | {
         k: summary[k] for k in ("ratings_through", "lineups_through") if k in summary}
+    after = _data_marks(ck)
+    summary["previous"] = {k: f"{v[0]} week {v[1]}" for k, v in before.items() if v and k != "games"}
+    # anything new since the checkpoint's data? (the weekly job skips publishing when not)
+    summary["changed"] = any(after.get(k) != before.get(k) for k in after)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(out.suffix + ".part")
     torch.save(ck, tmp)
@@ -77,3 +82,15 @@ def refresh_checkpoint(ckpt: Path, out: Path, raw_dir: Path, processed_dir: Path
     summary["bytes"] = out.stat().st_size
     log.info("refreshed %s -> %s: %s", ckpt, out, summary)
     return summary
+
+
+def _data_marks(ck: dict) -> dict:
+    """Latest (season, week) in the checkpoint's ratings and default lineups."""
+    marks: dict = {"ratings": None, "lineups": None, "games": 0}
+    if ck.get("ratings"):
+        marks["ratings"] = max((int(r["season"]), int(r["week"])) for r in ck["ratings"])
+        marks["games"] = len({r["game_id"] for r in ck["ratings"]})  # catches late games in the same week
+    lm = ck.get("lineup_meta") or {}
+    if lm.get("lineups"):
+        marks["lineups"] = max((int(d["season"]), int(d["week"])) for d in lm["lineups"].values())
+    return marks

@@ -31,12 +31,15 @@ def _log():
 
 @nfl.command()
 def download(start: int = 1999, end: int = 2026, force: bool = False,
-             players: bool = typer.Option(True, help="also download snap counts, participation, players and coaches")):
-    """Download play-by-play via SportsDataverse, plus player and coach data from nflverse."""
+             players: bool = typer.Option(True, help="also download snap counts, participation, players and coaches"),
+             refresh_latest: bool = typer.Option(True, help="re-download the last season even if cached "
+                                                              "(it may still be in progress)")):
+    """Download play-by-play via SportsDataverse, plus player and coach data from nflverse. Cached seasons
+    are kept unless --force."""
     from .nfl.data.download import download_season
     _log()
     for s in range(start, end + 1):
-        typer.echo(download_season(s, DATA / "raw", force))
+        typer.echo(download_season(s, DATA / "raw", force or (refresh_latest and s == end)))
     if players:
         from .nfl.data.players import download_players
         download_players(list(range(start, end + 1)), DATA / "raw", force)
@@ -127,8 +130,30 @@ def refresh_lineups(ckpt: Path = DEFAULT_CKPT,
     typer.echo(json.dumps(summary, indent=1))
 
 
+@nfl.command("register-release")
+def register_release(version: str = typer.Argument(..., help="new version, e.g. v0.2.0 (also the release tag)"),
+                     ckpt: Path = typer.Option(..., help="the checkpoint attached to that release"),
+                     file: Path = typer.Option(None, help="releases.json to edit (default: the installed package's; "
+                                                          "pass src/runitback/nfl/releases.json in a checkout)")):
+    """Add a published checkpoint to nfl/releases.json and make it the latest (what the Docker image bakes in)."""
+    from .nfl.release import RELEASES_FILE
+    from .nfl.release import register_release as run
+    path = file or RELEASES_FILE
+    rel = run(version, ckpt, path)
+    typer.echo(json.dumps({"latest": rel["latest"], "file": str(path), **rel["models"][version]}, indent=1))
+
+
+@nfl.command("next-version")
+def next_version(after: str = typer.Option(None, help="version to bump (default: the latest in --file)"),
+                 file: Path = typer.Option(None, help="releases.json to read (default: the installed package's)")):
+    """Print the next patch version after the latest release (for weekly refreshes)."""
+    from .nfl.release import RELEASES_FILE, load_releases, next_patch_version
+    typer.echo(next_patch_version(after or load_releases(file or RELEASES_FILE)["latest"]))
+
+
 @nfl.command("fetch-model")
-def fetch_model(version: str = "v0.1.0", dest: Path = DEFAULT_CKPT, force: bool = False):
+def fetch_model(version: str = typer.Option(None, help="release version (default: the latest in nfl/releases.json)"),
+                dest: Path = DEFAULT_CKPT, force: bool = False):
     """Download a released, pre-trained model (no data download or training needed)."""
     from .nfl.release import fetch_model as run
     typer.echo(f"model ready: {run(dest, version, force)}")

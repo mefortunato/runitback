@@ -376,6 +376,9 @@ def test_refresh_lineups_rebuilds_data_but_keeps_weights(lineup_sim, tmp_path):
     out = tmp_path / "refreshed.pt"
     s = refresh_checkpoint(ck, out, RAW, tmp_path / "processed", 2025, 2025, download=False)
     assert s["sha256"] == sha256(out) and s["ratings_through"].startswith("2025")
+    assert s["changed"] and s["previous"] == {"lineups": "2025 week 1"}
+    again = refresh_checkpoint(out, tmp_path / "again.pt", RAW, tmp_path / "processed", 2025, 2025, download=False)
+    assert not again["changed"]  # nothing new: the weekly job skips publishing
     new = torch.load(out, weights_only=False)
     assert all(torch.equal(new["state_dict"][k], v) for k, v in m.state_dict().items())      # weights untouched
     lm = new["lineup_meta"]

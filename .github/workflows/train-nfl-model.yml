@@ -1,0 +1,145 @@
+name: Train NFL model
+
+# Retrain the NFL model on all data and publish it: a GitHub release with the checkpoint, plus a PR that
+# makes it the deployed model (merging that PR runs the Cloud Run deploy). Started by hand.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version for the new model, e.g. v0.2.0 (also the release tag)"
+        required: true
+      epochs:
+        description: "Training epochs"
+        default: "10"
+      gate:
+        description: "First train with a held-out split and stop if its validation loss is above max_val_nll"
+        type: boolean
+        default: false
+      max_val_nll:
+        description: "Gate threshold: next-play validation loss (team-only model ~5.84, lineup models ~5.73-5.84)"
+        default: "5.95"
+      calibrate:
+        description: "Calibrate the team-strength scale (adds ~15 min)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write        # create the release, push the release branch
+  pull-requests: write   # open the PR that deploys the model
+
+concurrency:
+  group: nfl-model-release
+  cancel-in-progress: false
+
+# explicit bash = -eo pipefail, so a failing command piped into tail/tee still fails the step
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      VERSION: ${{ inputs.version }}
+      EPOCHS: ${{ inputs.epochs }}
+      GH_TOKEN: ${{ github.token }}
+      # the production recipe: lineups, player usage, who gets the ball
+      TRAIN_FLAGS: --who --prev-lineup-prob 0.3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the version is new
+        run: |
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must look like v0.2.0"; exit 1; }
+          if jq -e --arg v "$VERSION" '.models[$v]' src/runitback/nfl/releases.json >/dev/null; then
+            echo "::error::$VERSION is already in nfl/releases.json"; exit 1
+          fi
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "::error::release $VERSION already exists"; exit 1
+          fi
+
+      - uses: ./.github/actions/setup-nfl
+
+      - name: Download data
+        run: runitback nfl download --start 1999 --end "$NFL_SEASON"
+
+      - name: Preprocess
+        run: runitback nfl preprocess --start 1999 --end "$NFL_SEASON" 2>&1 | tail -5
+
+      - name: Quality gate (held-out training run)
+        if: inputs.gate
+        run: |
+          val=$((NFL_SEASON - 1))
+          runitback nfl train --out runs/nfl/gate --val-season "$val" --epochs "$EPOCHS" --threads "$(nproc)" \
+            $TRAIN_FLAGS 2>&1 | grep -v " step " | tail -20
+          python - <<'PY'
+          import json, os
+          hist = json.load(open("runs/nfl/gate/history.json"))
+          best = min(h["val_total"] for h in hist)
+          limit = float(os.environ["MAX_VAL_NLL"])
+          print(f"held-out next-play loss {best:.4f} (limit {limit})")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(f"Quality gate: held-out next-play loss **{best:.4f}** (limit {limit})\n\n")
+          if best > limit:
+              raise SystemExit(f"::error::held-out loss {best:.4f} is above {limit}; not publishing")
+          PY
+        env:
+          MAX_VAL_NLL: ${{ inputs.max_val_nll }}
+
+      - name: Train on all data
+        run: |
+          runitback nfl train --out runs/nfl/prod --epochs "$EPOCHS" --threads "$(nproc)" $TRAIN_FLAGS \
+            2>&1 | tee runs-train.log | grep -v " step "
+
+      - name: Calibrate team-strength scale
+        if: inputs.calibrate
+        run: |
+          runitback nfl calibrate --ckpt runs/nfl/prod/model.pt --season "$((NFL_SEASON - 1))" \
+            --games 60 --sims 60 --write 2>&1 | tail -12
+
+      - name: Smoke test the checkpoint
+        run: |
+          python - <<'PY'
+          from runitback.nfl import Simulator, simulate_games
+          sim = Simulator.load("runs/nfl/prod/model.pt")
+          r = simulate_games(sim, "KC", "BUF", sim.seasons[-1], n=20, seed=0)
+          assert r.n == 20 and 10 < r.home_score_mean + r.away_score_mean < 80, r
+          print("lineups:", sim.lineups is not None, "| sample total", r.home_score_mean + r.away_score_mean)
+          PY
+
+      - name: Release notes
+        run: |
+          python - <<'PY' > notes.md
+          import json, os, torch
+          ck = torch.load("runs/nfl/prod/model.pt", map_location="cpu", weights_only=False)
+          cfg = ck["config"]; lm = ck.get("lineup_meta") or {}
+          last = max(((r["season"], r["week"]) for r in ck.get("ratings") or []), default=None)
+          print(f"NFL model **{os.environ['VERSION']}**, trained by "
+                f"[this workflow run]({os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
+                f"/actions/runs/{os.environ['GITHUB_RUN_ID']}) from commit {os.environ['GITHUB_SHA'][:7]}.\n")
+          print(f"- Data through: {last[0]} week {last[1]}" if last else "- Data: unknown")
+          print(f"- Training: {os.environ['EPOCHS']} epochs, flags `{os.environ['TRAIN_FLAGS']}`, "
+                f"d_model {cfg['d_model']}, {cfg['n_layers']} layers")
+          print(f"- Lineups: {'yes' if lm else 'no'}; who-gets-the-ball head: {bool(cfg.get('who_head'))}; "
+                f"players with embeddings: {len(lm.get('player_vocab', []))}")
+          print(f"- Team-strength scale: {ck.get('strength_scale', 1.0)}")
+          hist = ck.get("history") or []
+          if hist and "val_total" in hist[-1]:
+              print(f"- Final validation loss: {hist[-1]['val_total']:.4f}")
+          PY
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish release and open the deploy PR
+        run: scripts/ci/publish_nfl_release.sh "$VERSION" runs/nfl/prod/model.pt notes.md
+
+      - name: Keep logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nfl-train-${{ inputs.version }}
+          path: |
+            runs-train.log
+            runs/nfl/*/history.json
+            notes.md
+          if-no-files-found: ignore

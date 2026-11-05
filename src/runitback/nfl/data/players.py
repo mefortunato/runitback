@@ -76,8 +76,9 @@ def download_players(seasons: list[int], raw_dir: Path, force: bool = False) -> 
     """Download snap counts, participation, the player directory and schedules into raw_dir/players."""
     d = raw_dir / "players"
     d.mkdir(parents=True, exist_ok=True)
-    _fetch(f"{BASE}/players/players.parquet", d / "players.parquet", force)
-    _fetch(f"{BASE}/schedules/games.csv", d / "schedules.parquet", force)
+    # the player directory and schedules change every week and are small: always refresh them
+    _fetch(f"{BASE}/players/players.parquet", d / "players.parquet", True)
+    _fetch(f"{BASE}/schedules/games.csv", d / "schedules.parquet", True)
     last = max(seasons)
     for s in seasons:
         recent = s >= last - 1  # the current and previous season are still being updated
