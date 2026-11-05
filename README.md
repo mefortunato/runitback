@@ -583,6 +583,37 @@ Interactive endpoints (all under `/api/nfl`): `POST /games`, `POST /games/{id}/s
 `POST /seasons`, `GET /seasons/{id}`. The same NFL routes are still served without the `/nfl`
 prefix (`/api/simulate`, ...) for clients written before the NBA was added.
 
+### Publishing a model to the deployed app
+
+The Docker image bakes in the release that `src/runitback/nfl/release.py` marks as `LATEST`.
+Merging code doesn't change the deployed model; publishing a release does:
+
+```bash
+runitback nfl train --out runs/nfl/prod --epochs 10 --who --prev-lineup-prob 0.3   # all data, no hold-out
+runitback nfl calibrate --ckpt runs/nfl/prod/model.pt --write
+sha256sum runs/nfl/prod/model.pt
+```
+
+Attach the file to a GitHub release (e.g. tag `v0.2.0`, asset `runitback-nfl-model-v0.2.0.pt`), add it
+to `MODELS` in `src/runitback/nfl/release.py` with its SHA-256, and point `LATEST` at it. Merging that
+change to `main` deploys it.
+
+**Weekly refresh, no retraining.** A checkpoint carries pre-game team ratings and, for lineup models,
+each team's default depth chart (its most recent game), the player directory (career games, usage
+multipliers, recent-usage features) and head-coach records. All of these are frozen when it's built.
+`refresh-lineups` downloads the latest nflverse data and rebuilds them. The model's weights,
+vocabularies and fitted tables stay as trained, and new players and coaches use its NEW / OTHER tokens.
+It takes under a minute:
+
+```bash
+runitback nfl refresh-lineups --ckpt runs/nfl/prod/model.pt --out runs/nfl/prod/model-refreshed.pt
+```
+
+It prints how current the data is, any teams whose latest game is older (byes), and the new file's
+SHA-256. Publish the refreshed file as a new release (e.g. `v0.2.1`) as above. Retrain when the
+season rolls over or player vocabularies go stale: players without an embedding fall back to
+NEW / OTHER.
+
 ### Deploy to Google Cloud Run
 
 The repository includes a Docker image that builds the web app, installs the CPU version of PyTorch,

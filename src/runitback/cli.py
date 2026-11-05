@@ -109,6 +109,24 @@ def simulate(home: str, away: str, season: int = 2026, n: int = 1000, game_type:
     _write_result(res, out, scores)
 
 
+@nfl.command("refresh-lineups")
+def refresh_lineups(ckpt: Path = DEFAULT_CKPT,
+                    out: Path = typer.Option(None, help="where to write the refreshed checkpoint (default: overwrite --ckpt)"),
+                    start: int = typer.Option(1999, help="first season (ratings, career and coach records need history)"),
+                    end: int = typer.Option(None, help="last season (default: the current NFL season)"),
+                    download: bool = typer.Option(True, help="download the latest nflverse data first")):
+    """Update a checkpoint's ratings, default depth charts, player usage and coach records from the latest
+    data, without retraining. Prints the new file's SHA-256 for publishing a release."""
+    import datetime as dt
+
+    from .nfl.refresh import refresh_checkpoint
+    _log()
+    today = dt.date.today()
+    end = end or (today.year if today.month >= 9 else today.year - 1)  # seasons are named by their start year
+    summary = refresh_checkpoint(ckpt, out or ckpt, DATA / "raw", DATA / "processed", start, end, download)
+    typer.echo(json.dumps(summary, indent=1))
+
+
 @nfl.command("fetch-model")
 def fetch_model(version: str = "v0.1.0", dest: Path = DEFAULT_CKPT, force: bool = False):
     """Download a released, pre-trained model (no data download or training needed)."""

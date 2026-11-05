@@ -358,3 +358,30 @@ def test_who_head_uses_usage_features():
     with torch.no_grad():
         c0, c1 = m.who_candidates(pers, grp, u0), m.who_candidates(pers, grp, u1)
     assert torch.allclose(c0[0, :3], c1[0, :3]) and not torch.allclose(c0[0, 3], c1[0, 3])
+
+
+RAW = Path(__file__).resolve().parents[2] / "data" / "nfl" / "raw"
+
+
+@pytest.mark.skipif(not (RAW / "pbp_2025.parquet").exists() or not (RAW / "players" / "players.parquet").exists(),
+                    reason="raw data not downloaded")
+def test_refresh_lineups_rebuilds_data_but_keeps_weights(lineup_sim, tmp_path):
+    from runitback.nfl.refresh import refresh_checkpoint
+    from runitback.nfl.release import sha256
+    m = lineup_sim.model
+    meta = lineup_sim.meta["lineup_meta"]
+    ck = tmp_path / "model.pt"
+    torch.save({"state_dict": m.state_dict(), "config": m.cfg.to_dict(), "team_seasons": lineup_sim.ts.keys,
+                "lineup_meta": meta, "ratings": None}, ck)
+    out = tmp_path / "refreshed.pt"
+    s = refresh_checkpoint(ck, out, RAW, tmp_path / "processed", 2025, 2025, download=False)
+    assert s["sha256"] == sha256(out) and s["ratings_through"].startswith("2025")
+    new = torch.load(out, weights_only=False)
+    assert all(torch.equal(new["state_dict"][k], v) for k, v in m.state_dict().items())      # weights untouched
+    lm = new["lineup_meta"]
+    assert lm["player_vocab"] == meta["player_vocab"] and lm["personnel_sampler"] == meta["personnel_sampler"]
+    assert len(lm["lineups"]) == 32 and lm["lineups"]["KC"]["season"] == 2025   # rebuilt from the data
+    assert new["ratings"] and new["refreshed"]["seasons"] == [2025, 2025]
+    sim = Simulator.load(out)
+    assert sim.lineups.default("KC")["depth_chart"]["QB"]
+    assert simulate_games(sim, "KC", "BUF", 2025, n=2, seed=0).n == 2
