@@ -249,6 +249,10 @@ rollouts produce stat lines. `scripts/player_stats_eval.py` simulates the 150 he
 carries and rushing yards with actual stat lines and with leak-free baselines: role average,
 the player's shrunk exponentially weighted form, and form adjusted for the opponent.
 
+For these models, the NFL game UI shows live rushing and receiving player stats for both teams,
+including targets, receptions, carries, yards and touchdowns. Stats use the game's depth charts
+and follow steps and undo. Models without the who head do not show player stats.
+
 RMSE, RB/WR/TE player-games who played (about 3,100–3,500). The pre-game depth chart is this
 game's active players ranked by their previous-game role:
 

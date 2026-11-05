@@ -8,6 +8,7 @@ import {
 } from "./api";
 import Field from "./Field";
 import LineupEditor, { lineupFromView } from "./LineupEditor";
+import PlayerStats from "./PlayerStats";
 import SeasonSimulator from "./SeasonSimulator";
 
 const CALLABLE: Record<string, string> = {
@@ -216,6 +217,7 @@ export default function NflApp() {
                 <label className="inline"><input type="checkbox" checked={liveWp} onChange={(e) => setLiveWp(e.target.checked)} /> Live win prob</label>
               </div>
             </section>
+            {game.player_stats && <PlayerStats stats={game.player_stats} home={s.home} away={s.away} />}
             <section className="card">
               <WinProbChart data={game.winprob} home={s.home} away={s.away} total={game.plays.length} />
             </section>

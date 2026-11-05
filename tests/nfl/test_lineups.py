@@ -140,6 +140,7 @@ def test_lineup_endpoints(lineup_sim):
     server.set_sim(lineup_sim)
     c = TestClient(server.app)
     assert c.get("/api/teams").json()["lineups"] is True
+    assert c.get("/api/teams").json()["player_stats"] is False  # depth charts alone cannot attribute plays
     d = c.get("/api/teams/KC/lineup").json()
     assert d["coach"] == "Andy Reid" and d["coach_info"]["career_games"] == 34
     assert [p["id"] for p in d["depth_chart"]["QB"]] == ["kc_QB1", "kc_QB2"]
@@ -258,6 +259,37 @@ def test_who_head_attributes_runs_and_targets(who_sim):
                 + [("OL", i) for i in range(5)]}
     assert {o.who for o in plays if o.who is not None} <= on_field and all(o.who < N_SLOTS for o in runs)
     assert SLOTS[runs[0].who][0] in ("QB", "RB", "WR", "TE", "OL")
+
+
+def test_player_stats_follow_steps_undo_and_game_lineup_overrides(who_sim, monkeypatch):
+    from runitback.nfl.engine.rules import Outcome
+
+    monkeypatch.setattr(server, "_sim", who_sim)
+    c = TestClient(server.app)
+    assert c.get("/api/teams").json()["player_stats"] is True
+    g = c.post("/api/games", json={"home": "KC", "away": "BUF", "season": 2025, "seed": 3,
+                                   "lineups": {t: {"depth_chart": {"WR": ["kc_WR2"]}} for t in ("KC", "BUF")}}).json()
+    assert g["player_stats"] == {"home": [], "away": []}
+    outcomes = iter([Outcome("kickoff", "kick_received", 75, 5),
+                     Outcome("pass", "complete", 15, 10, SLOT_IDX[("WR", 0)]),
+                     Outcome("pass", "incomplete", 0, 5, SLOT_IDX[("WR", 0)]),
+                     Outcome("run", "run", -3, 10, SLOT_IDX[("QB", 0)])])
+    monkeypatch.setattr(who_sim, "sample_step", lambda *args, **kwargs: [next(outcomes)])
+    r = c.post(f"/api/games/{g['id']}/step", json={"count": 4}).json()
+    side = "home" if r["plays"][1]["before"]["pos"] == "KC" else "away"
+    lines = r["player_stats"][side]
+    assert len(lines) == 2
+    qb, wr = lines
+    assert qb["role"] == "QB1" and qb["rushing_yards"] == -3
+    assert wr["name"] == "kc_WR2" and wr["role"] == "WR1"  # overridden chart, not current defaults
+    assert wr["targets"] == 2 and wr["receptions"] == 1 and wr["receiving_yards"] == 15
+    assert c.get(f"/api/games/{g['id']}").json()["player_stats"] == r["player_stats"]
+    r = c.post(f"/api/games/{g['id']}/undo").json()
+    assert r["player_stats"][side] == [wr]
+    r = c.post(f"/api/games/{g['id']}/undo").json()
+    assert r["player_stats"][side][0]["targets"] == 1
+    r = c.post(f"/api/games/{g['id']}/undo").json()
+    assert r["player_stats"] == {"home": [], "away": []}
 
 
 def test_who_loss_term(who_sim):
