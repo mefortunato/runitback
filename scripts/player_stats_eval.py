@@ -29,7 +29,9 @@ import torch
 from runitback.nfl.data.ratings import scale_ratings
 from runitback.nfl.engine.rules import new_game
 from runitback.nfl.evaluate import load_lineup_data
-from runitback.nfl.model.lineups import N_SLOTS, SLOT_IDX, SLOTS, role_share_table, slot_usage, usage_multipliers
+from runitback.nfl.model.lineups import (
+    N_SLOTS, N_USAGE, SLOT_IDX, SLOTS, role_share_table, slot_usage, usage_multipliers,
+)
 from runitback.nfl.sim.sampler import GameLineups, Simulator
 from runitback.nfl.train import split_games
 
@@ -167,7 +169,17 @@ def simulate(source: str) -> pd.DataFrame:
         if use_usage:
             usage = [slot_usage(t_, ROLE, lambda sl, m_=m_: MULT_BEFORE.get((g.game_id, m_.get(sl)), 1.0))
                      for t_, m_ in zip(toks, maps)]
-        lu = GameLineups(toks[0], toks[1], ld.coach(g.game_id, "home"), ld.coach(g.game_id, "away"), usage=usage)
+        # recent-usage features of each depth-chart player as of this game (earlier games only)
+        feats = []
+        for m_ in maps:
+            f_ = np.zeros((N_SLOTS, N_USAGE), np.float32)
+            for sl, pid in m_.items():
+                v = ld.usage.get((g.game_id, pid))
+                if v is not None:
+                    f_[sl] = v
+            feats.append(f_)
+        lu = GameLineups(toks[0], toks[1], ld.coach(g.game_id, "home"), ld.coach(g.game_id, "away"), usage=usage,
+                         features=feats)
         rg = ratings[ratings.game_id == g.game_id].set_index("side")
         pre = tuple(scale_ratings({k: float(rg.at[sd, f"pre_{k}"]) for k in ("off_epa", "def_epa", "elo")},
                                   sim.strength_scale) for sd in ("home", "away"))

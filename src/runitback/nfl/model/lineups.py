@@ -35,6 +35,7 @@ N_SLOTS = len(SLOTS)
 SIDE = 11              # players per side in per-play personnel
 N_PERS = 2 * SIDE
 N_COACH_CONT = 2 * len(COACH_STATS)
+N_USAGE = 6            # recent-usage features per offensive candidate (data.players.USAGE_FEATURES)
 WHO_NONE = SIDE        # "who got the ball" class for nobody (sacks, throwaways, non-scrimmage plays)
 NEW_LABEL = "NEW"      # depth-chart entry for a new / unknown player
 
@@ -108,6 +109,8 @@ class LineupData:
                  players: pd.DataFrame, pvocab: PlayerVocab, cvocab: CoachVocab):
         self.pg, self.personnel, self.coaches, self.players = player_games, personnel, coaches, players
         self.pvocab, self.cvocab = pvocab, cvocab
+        self.usage: dict[tuple[str, str], np.ndarray] = {}
+        self.usage_latest: dict[str, list[float]] = {}
         pg = player_games[player_games.depth < player_games.group.map(DEPTH)]
         self.pg_tokens = pg.assign(
             slot=[SLOT_IDX[(g, int(d))] for g, d in zip(pg.group, pg.depth)],
@@ -150,7 +153,19 @@ class LineupData:
         players = pd.read_parquet(d / "players.parquet")
         pvocab = pvocab or build_player_vocab(pg, train_game_ids)
         cvocab = cvocab or build_coach_vocab(coaches, train_game_ids)
-        return cls(pg, pers, coaches, players, pvocab, cvocab)
+        ld = cls(pg, pers, coaches, players, pvocab, cvocab)
+        if (d / "usage.parquet").exists():
+            ld.set_usage(pd.read_parquet(d / "usage.parquet"))
+        if (d / "usage_latest.parquet").exists():
+            u = pd.read_parquet(d / "usage_latest.parquet")
+            ld.usage_latest = {p: [float(x) for x in f] for p, f in zip(u.player_id, u.features)}
+        return ld
+
+    def set_usage(self, usage: pd.DataFrame) -> None:
+        """Leak-free recent usage per (game, player) for the who head's candidates."""
+        from ..data.players import USAGE_FEATURES
+        vals = usage[USAGE_FEATURES].to_numpy(np.float32)
+        self.usage = {(g, p): v for g, p, v in zip(usage.game_id, usage.player_id, vals)}
 
     def lineup(self, game_id: str, team: str) -> np.ndarray:
         """Slot tokens of a team's depth chart in a game (all zeros = unknown lineup)."""
@@ -478,7 +493,8 @@ def inference_meta(ld: LineupData, schedule_coaches: pd.DataFrame, recent_season
         hist[coach].append([int(season), team, int((d.result > 0).sum()), int((d.result < 0).sum()),
                             int((d.result == 0).sum())])
     veteran = sorted(set(ld.coaches[ld.coaches.veteran_unknown].coach))
-    return {"lineups": lineups, "players": players, "role_share": role, "coach_history": dict(hist), "veteran_coaches": veteran,
+    usage = {pid: ld.usage_latest[pid] for pid in players if pid in ld.usage_latest}
+    return {"lineups": lineups, "players": players, "role_share": role, "usage": usage, "coach_history": dict(hist), "veteran_coaches": veteran,
             "player_vocab": ld.pvocab.ids, "coach_vocab": ld.cvocab.names}
 
 
@@ -526,6 +542,16 @@ class LineupResolver:
             if snap_shares and pid in snap_shares and tokens[sl] > 0:
                 r[sl] = float(np.clip(snap_shares[pid], 0.0, 1.0))
         return r
+
+    def usage_features(self, depth_chart: dict[str, list[str]]) -> np.ndarray:
+        """(S, N_USAGE) recent-usage features per depth-chart slot (zeros: unknown or new player)."""
+        f = np.zeros((N_SLOTS, N_USAGE), np.float32)
+        table = self.meta.get("usage") or {}
+        for g, ids in (depth_chart or {}).items():
+            for r, pid in enumerate(ids[: DEPTH.get(g, 0)]):
+                if pid in table:
+                    f[SLOT_IDX[(g, r)]] = table[pid]
+        return f
 
     def coach_inputs(self, coach: str | None, team: str, season: int) -> tuple[int, list[float]]:
         if not coach:

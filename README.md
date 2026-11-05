@@ -283,8 +283,34 @@ game's active players ranked by their previous-game role:
   55% of RB carries vs 66% actual. Given the real 22 and the real plays the head does well, so the
   gap is how it allocates in simulated contexts. It has no recent per-player usage inputs (carry
   share, target share), only career-static embeddings.
-- **Next step:** feed each candidate's recent usage (carries per snap, targets per route, from
-  earlier games) into the who head, and retrain weekly so embeddings track form.
+- **Recent usage features in the who head (2026-11-05).** Each on-field candidate gets six leak-free
+  features from his earlier games (`usage.parquet`, `data.players.build_usage`): EWMA share of team
+  carries, share of team targets, snap share, shrunk yards per carry and per target, and history
+  length. They're added to his embedding in the who head. Retrained on the same split (`--who`
+  turns them on automatically when `usage.parquet` exists); validation who-loss drops from 1.203 to
+  1.189. Given the real plays and players, the head improves on RB carries (RMSE 1.35 → 1.17), WR
+  targets (1.95 → 1.85) and TE targets (1.49 → 1.44).
+
+  Simulated stat lines from the pre-game depth chart (usage sampler), old → new model, vs form+opponent:
+
+  | | old | new | form + opp | blend vs form + opp |
+  |---|---|---|---|---|
+  | WR targets | 2.79 | **2.63** | 2.37 | 2.34 (significant) |
+  | WR receiving yards | 29.4 | **28.1** | 26.5 | 26.3 (significant) |
+  | TE targets | 2.05 | **1.99** | 1.80 | 1.78 (significant) |
+  | TE receiving yards | 19.7 | **19.1** | 18.0 | 17.9 (n.s.) |
+  | RB carries | 5.19 | **5.07** | 4.19 | 4.16 (n.s.) |
+  | RB rushing yards | 29.2 | **28.8** | 25.1 | 25.2 (n.s.) |
+
+  Every model-alone change is significant (paired bootstrap; `scripts/compare_samplers.py`), and
+  usage is less flat: WR1 targets 6.2 → 6.6 (actual 7.0), TE1 3.9 → 4.2 (4.7), WR3 3.8 → 3.5 (3.4).
+  It still trails the form baseline alone. RB1 carries are still short (12.3 vs 14.8): QBs take 15.5%
+  of simulated runs vs 12.5% actual, and RBs 80% vs 84%.
+- **Where the remaining gap is:** given the real 22 and the real plays, the head beats form easily
+  (WR targets 1.85 vs 2.37). In simulation it doesn't. The difference is the sampled game
+  context: play volume, play-calling mix and packages. Each simulated game also draws one
+  realization, so stat lines inherit the variance of whole-game simulation. A straight blend of the
+  two is the most accurate option today.
 
 ## Quick start (pre-trained model)
 

@@ -317,3 +317,37 @@ def test_usage_mode_follows_player_snap_shares(lineup_sim):
     assert u[SLOT_IDX[("RB", 0)]] == 0.95 and 0 < u[SLOT_IDX[("RB", 1)]] < 0.95
     r.role_share = None
     assert r.usage(spec, toks) is None
+
+
+def test_usage_features_are_leak_free():
+    from runitback.nfl.data.players import USAGE_FEATURES, usage_features_vector
+    assert usage_features_vector(None) == [0.0] * len(USAGE_FEATURES)
+    st = {"carry_share": 0.6, "target_share": 0.1, "snap_share": 0.7, "carries": 15, "rush_yds": 70,
+          "targets": 3, "rec_yds": 20, "n": 5}
+    v = usage_features_vector(st)
+    assert v[0] == 0.6 and abs(v[3] - (74.3 / 16) / 10) < 1e-9
+
+
+@pytest.mark.skipif(not (PROCESSED / "usage.parquet").exists(), reason="usage features not built")
+def test_usage_parquet_uses_only_earlier_games():
+    u = pd.read_parquet(PROCESSED / "usage.parquet")
+    pg = pd.read_parquet(PROCESSED / "player_games.parquet", columns=["game_id", "player_id", "season", "week"])
+    d = u.merge(pg, on=["game_id", "player_id"]).sort_values(["season", "week"])
+    first = d.groupby("player_id").head(1)
+    assert (first.history == 0).all() and (first.carry_share == 0).all()  # nothing known before a debut
+
+
+def test_who_head_uses_usage_features():
+    torch.manual_seed(0)
+    ts = TeamSeasonVocab(["KC_2025", "BUF_2025"])
+    meta = tiny_lineup_meta()
+    m = PlayTransformer(ModelConfig(feature_sizes(len(ts)), d_model=32, n_layers=1, n_heads=2,
+                                    n_cont=len(CONT_FEATURES), n_players=len(PlayerVocab(meta["player_vocab"])),
+                                    n_coaches=5, player_dim=8, who_head=True, n_usage=6)).eval()
+    pers = torch.arange(1, 23)[None] + 30
+    grp = torch.ones(1, 22, dtype=torch.long)
+    u0 = torch.zeros(1, 11, 6)
+    u1 = u0.clone(); u1[0, 3, 0] = 0.8  # player 4 now has an 80% carry share
+    with torch.no_grad():
+        c0, c1 = m.who_candidates(pers, grp, u0), m.who_candidates(pers, grp, u1)
+    assert torch.allclose(c0[0, :3], c1[0, :3]) and not torch.allclose(c0[0, 3], c1[0, 3])

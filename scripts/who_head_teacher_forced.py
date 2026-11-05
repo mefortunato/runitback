@@ -40,7 +40,7 @@ with torch.no_grad():
         b = collate([it]); f = b["feats"]
         h = m.encode(f); p = m.personnel(f)
         t = b["type"]
-        cand = m.who_candidates(f["pers"], f["pers_grp"])
+        cand = m.who_candidates(f["pers"], f["pers_grp"], f.get("pers_usage"))
         lg = m.who_logits(h, t, p, cand).masked_fill(~m.who_mask(t, f["pers"]), -1e9)
         pr = torch.softmax(lg, -1)[0].numpy()
         gp = vp[vp.game_id == gid].reset_index(drop=True)

@@ -11,7 +11,9 @@ from ..vocab import (
     NONE_RESULTS, SPOT_RESULTS,
 )
 from .features import CONT_FEATURES, FEATURES, TeamSeasonVocab
-from .lineups import N_COACH_CONT, N_GROUPS, N_PERS, N_SLOTS, SIDE, SLOT_GROUP, WHO_NONE, LineupData, other_token
+from .lineups import (
+    N_COACH_CONT, N_GROUPS, N_PERS, N_SLOTS, N_USAGE, SIDE, SLOT_GROUP, WHO_NONE, LineupData, other_token,
+)
 
 LINEUP_PLAY_KEYS = ("f_off_coach", "f_def_coach", "f_coach_cont", "pers", "pers_grp")
 
@@ -52,6 +54,7 @@ def encode_lineups(p: pd.DataFrame, pos: np.ndarray, home: np.ndarray, away: np.
     grp = np.zeros((n, N_PERS), dtype=np.int8)
     slots = np.full((n, N_PERS), -2, dtype=np.int16)  # -2 = no personnel for this play
     who = np.full(n, -1, dtype=np.int8)  # 0..10 = offensive player on the field, 11 = nobody, -1 = unknown
+    use = np.zeros((n, SIDE, N_USAGE), dtype=np.float16) if ld.usage else None
     ptype = p.play_type.to_numpy()
     if "play_id" in p.columns and len(ld.personnel):
         pe = ld.personnel.set_index(["game_id", "play_id"])
@@ -69,6 +72,11 @@ def encode_lineups(p: pd.DataFrame, pos: np.ndarray, home: np.ndarray, away: np.
                     who[i] = off_ids.index(ball) if ball in off_ids else -1
                 elif ptype[i] == "pass":
                     who[i] = WHO_NONE
+            if use is not None:
+                for j, pid in enumerate(off_ids):
+                    v = ld.usage.get((gid, pid))
+                    if v is not None:
+                        use[i, j] = v
             for k, ids in enumerate(sides):
                 t, g, sl = ld.personnel_tokens(gid, list(ids))
                 m = len(t)
@@ -76,7 +84,7 @@ def encode_lineups(p: pd.DataFrame, pos: np.ndarray, home: np.ndarray, away: np.
                 grp[i, k * SIDE: k * SIDE + m] = g
                 slots[i, k * SIDE: k * SIDE + m] = sl
     return dict(f_off_coach=off_coach, f_def_coach=def_coach, f_coach_cont=coach_cont.astype(np.float32),
-                pers=pers, pers_grp=grp, pers_slot=slots, who=who)
+                pers=pers, pers_grp=grp, pers_slot=slots, who=who) | ({} if use is None else {"pers_usage": use})
 
 
 def encode_games(plays: pd.DataFrame, games: pd.DataFrame, ts: TeamSeasonVocab, max_len: int,
@@ -165,6 +173,8 @@ def encode_games(plays: pd.DataFrame, games: pd.DataFrame, ts: TeamSeasonVocab, 
             arrays["pers"][:] = 0
             arrays["pers_grp"][:] = 0
             arrays["who"][:] = -1
+            if "pers_usage" in arrays:
+                arrays["pers_usage"][:] = 0
     bounds = np.flatnonzero(np.r_[first, True])
     out = []
     for a, b in zip(bounds[:-1], bounds[1:]):
@@ -255,6 +265,11 @@ def _collate_lineups(games, pad, rng, unk_lineup_prob, unk_pers_prob, other_play
         if "who" in g:
             who[i, : len(g["who"])] = g["who"]
     who[(pers[..., :SIDE] == 0).all(-1)] = -1  # personnel hidden or unknown: no target
-    return {"who": torch.as_tensor(who),"lineup": torch.as_tensor(lineup), "pers": torch.as_tensor(pers, dtype=torch.long),
+    extra = {}
+    if "pers_usage" in games[0]:
+        u = pad("pers_usage", torch.float32, (SIDE, N_USAGE))
+        u[torch.as_tensor(pers[..., :SIDE] == 0)] = 0
+        extra["pers_usage"] = u
+    return extra | {"who": torch.as_tensor(who),"lineup": torch.as_tensor(lineup), "pers": torch.as_tensor(pers, dtype=torch.long),
             "pers_grp": torch.as_tensor(grp), "off_coach": pad("f_off_coach"), "def_coach": pad("f_def_coach"),
             "coach_cont": pad("f_coach_cont", torch.float32, (N_COACH_CONT,))}

@@ -25,10 +25,12 @@ class GameLineups:
     """Resolved model inputs for both teams: depth-chart slot tokens and coach token/features."""
 
     def __init__(self, home_tokens, away_tokens, home_coach=(0, None), away_coach=(0, None), spec=None,
-                 usage=None):
+                 usage=None, features=None):
         self.tokens = np.stack([home_tokens, away_tokens]).astype(np.int64)      # (2, S)
         # per-slot usage rates (2, S) for picking who is on the field; None = league rotation by slot
         self.usage = None if usage is None or usage[0] is None else np.stack(usage).astype(float)
+        # per-slot recent-usage features (2, S, N_USAGE) for the who head; None = none known
+        self.features = None if features is None else np.stack(features).astype(np.float32)
         zero = [0.0] * (N_COACH_CONT // 2)
         self.coach = [(home_coach[0], home_coach[1] or zero), (away_coach[0], away_coach[1] or zero)]
         self.spec = spec  # the user-facing {"home": {...}, "away": {...}} it was built from
@@ -76,8 +78,9 @@ class Simulator:
         toks = [r.tokens(spec[side]["depth_chart"]) for side in ("home", "away")]
         usage = [r.usage(spec[side]["depth_chart"], t, spec[side].get("snap_shares"))
                  for side, t in zip(("home", "away"), toks)]
+        feats = [r.usage_features(spec[side]["depth_chart"]) for side in ("home", "away")]
         return GameLineups(toks[0], toks[1], r.coach_inputs(spec["home"]["coach"], home, season),
-                           r.coach_inputs(spec["away"]["coach"], away, season), spec, usage)
+                           r.coach_inputs(spec["away"]["coach"], away, season), spec, usage, feats)
 
     def ratings_for(self, home: str, away: str, season: int, week: int | None = None,
                     override: dict | None = None, strength_scale: float | None = None) -> tuple[dict, dict] | None:
@@ -194,7 +197,16 @@ class Simulator:
         p, pers, grp, codes = self._personnel(states, names, lineups, gen)
         who_codes = [None] * len(states)
         if m.has_who and pers is not None:
-            cand = m.who_candidates(pers, grp)
+            uf = None
+            if getattr(m, "who_usage", None) is not None:
+                uf = np.zeros((len(states), SIDE, m.cfg.n_usage), np.float32)
+                if lineups is not None and lineups.features is not None:
+                    for i, s_ in enumerate(states):
+                        for j, c in enumerate(codes[i]):
+                            if 0 <= c < N_SLOTS:
+                                uf[i, j] = lineups.features[s_.pos, c]
+                uf = torch.as_tensor(uf)
+            cand = m.who_candidates(pers, grp, uf)
             wm = m.who_mask(tt, pers).numpy()
             w = self._sample(m.who_logits(h, tt, p, cand), wm, temperature, gen)
             wt = torch.as_tensor(w)

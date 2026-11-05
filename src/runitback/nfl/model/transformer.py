@@ -30,6 +30,7 @@ class ModelConfig:
     player_dim: int = 0  # player/coach embedding width, projected to d_model (0 = d_model)
     lineup_dropout: float = 0.0  # dropout on the lineup/coach context and the personnel vector
     who_head: bool = False  # predict which offensive player gets the ball (needs lineups)
+    n_usage: int = 0  # recent-usage features per who-head candidate (0 = embeddings only)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -108,6 +109,8 @@ class PlayTransformer(nn.Module):
             self.who_out = nn.Linear(d, d)
             self.who_none_emb = nn.Parameter(torch.zeros(d))
             self.who_unk = nn.Parameter(torch.zeros(d))
+            self.who_usage = nn.Sequential(nn.Linear(cfg.n_usage, d), nn.GELU(), nn.Linear(d, d)) \
+                if cfg.n_usage else None
         self.pos = nn.Embedding(cfg.max_len, d)
         self.cont = nn.Linear(cfg.n_cont, d) if cfg.n_cont else None
         self.in_ln = nn.LayerNorm(d)
@@ -158,9 +161,13 @@ class PlayTransformer(nn.Module):
     def has_who(self) -> bool:
         return getattr(self, "who_ctx", None) is not None
 
-    def who_candidates(self, pers: torch.Tensor, grp: torch.Tensor) -> torch.Tensor:
-        """(.., 22) personnel -> (.., 11, d): the possession team's players on the field."""
-        return self.lineup.player(pers[..., :SIDE]) + self.lineup.group(grp[..., :SIDE])
+    def who_candidates(self, pers: torch.Tensor, grp: torch.Tensor, usage: torch.Tensor | None = None) -> torch.Tensor:
+        """(.., 22) personnel -> (.., 11, d): the possession team's players on the field, with their
+        recent usage (.., 11, n_usage) when the model takes it."""
+        c = self.lineup.player(pers[..., :SIDE]) + self.lineup.group(grp[..., :SIDE])
+        if getattr(self, "who_usage", None) is not None and usage is not None:
+            c = c + self.who_usage(usage)
+        return c
 
     def who_mask(self, t: torch.Tensor, pers: torch.Tensor) -> torch.Tensor:
         """(.., 12) legal choices: runs need a ball carrier, passes may target nobody (sack, throwaway),
@@ -224,7 +231,7 @@ class PlayTransformer(nn.Module):
         who_part = None
         if self.has_who and "who" in batch["feats"]:
             f = batch["feats"]
-            cand = self.who_candidates(f["pers"], f["pers_grp"])
+            cand = self.who_candidates(f["pers"], f["pers_grp"], f.get("pers_usage"))
             who = f["who"]
             logits = self.who_logits(h, t, p, cand).masked_fill(~self.who_mask(t, f["pers"]), NEG)
             m = (who >= 0) & ((t == PT["run"]) | (t == PT["pass"])) & (valid > 0)

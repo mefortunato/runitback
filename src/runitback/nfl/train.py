@@ -19,6 +19,7 @@ from .model.features import TeamSeasonVocab, feature_sizes
 from .model.lineups import (
     CoachVocab, LineupData, PersonnelSampler, PlayerVocab, inference_meta, signature, situation_key,
 )
+from .model.lineups import N_USAGE
 from .vocab import PLAY_TYPES
 from .model.transformer import ModelConfig, PlayTransformer
 
@@ -194,7 +195,8 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
         cfg = ModelConfig(feature_sizes=feature_sizes(len(ts)), d_model=d_model, n_layers=n_layers,
                           n_heads=n_heads, dropout=dropout, n_cont=len(CONT_FEATURES) if ratings is not None else 0,
                           n_players=len(ld.pvocab) if ld else 0, n_coaches=len(ld.cvocab) if ld else 0,
-                          player_dim=player_dim, lineup_dropout=lineup_dropout, who_head=who_head and ld is not None)
+                          player_dim=player_dim, lineup_dropout=lineup_dropout, who_head=who_head and ld is not None,
+                          n_usage=N_USAGE if (who_head and ld is not None and ld.usage) else 0)
     if lookup_ratings is None:
         lookup_ratings = ratings  # only synthetic data: better than no pre-game ratings at all
     train_items = encode_games(plays[plays.game_id.isin(train_g.game_id)], train_g, ts, cfg.max_len, ratings, ld)

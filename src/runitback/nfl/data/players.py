@@ -252,6 +252,72 @@ def schedule_coach_rows(schedule: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([h, a], ignore_index=True).dropna(subset=["coach"])
 
 
+# ------------------------------------------------------------------------------- recent usage
+USAGE_FEATURES = ["carry_share", "target_share", "snap_share", "ypc", "ypt", "history"]
+USAGE_ALPHA = 0.25
+
+
+def usage_features_vector(st: dict | None) -> list[float]:
+    """Scaled recent-usage features from an EWMA state (None = no history: all zeros)."""
+    if st is None:
+        return [0.0] * len(USAGE_FEATURES)
+    ypc = (st["rush_yds"] + 4.3) / (st["carries"] + 1.0)   # shrunk toward league yards per carry
+    ypt = (st["rec_yds"] + 7.5) / (st["targets"] + 1.0)    # ... and per target
+    return [st["carry_share"], st["target_share"], st["snap_share"], ypc / 10, ypt / 10,
+            float(np.log1p(st["n"]) / 3)]
+
+
+def build_usage(pbp_dir: Path, pg: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, list[float]]]:
+    """Leak-free recent usage per player-game (features use only the player's earlier games) and each
+    player's features after all games. Shares are of the team's designed runs / targets / snaps."""
+    seasons = sorted(pg.season.unique())
+    frames = []
+    for s in seasons:
+        f = pbp_dir / f"pbp_{s}.parquet"
+        if not f.exists():
+            continue
+        d = pd.read_parquet(f, columns=["game_id", "posteam", "play_type", "receiver_player_id", "receiving_yards",
+                                        "rusher_player_id", "rushing_yards"])
+        d["posteam"] = d.posteam.map(_team)
+        run = d[(d.play_type == "run") & d.rusher_player_id.notna()]
+        pas = d[(d.play_type == "pass") & d.receiver_player_id.notna()]
+        team = pd.concat([run.groupby(["game_id", "posteam"]).size().rename("team_carries"),
+                          pas.groupby(["game_id", "posteam"]).size().rename("team_targets")], axis=1).fillna(0)
+        rp = run.groupby(["game_id", "rusher_player_id"]).agg(carries=("rushing_yards", "size"),
+                                                             rush_yds=("rushing_yards", lambda x: x.fillna(0).sum()))
+        tp = pas.groupby(["game_id", "receiver_player_id"]).agg(targets=("receiving_yards", "size"),
+                                                               rec_yds=("receiving_yards", lambda x: x.fillna(0).sum()))
+        rp.index.names = tp.index.names = ["game_id", "player_id"]
+        frames.append((team.reset_index().rename(columns={"posteam": "team"}),
+                       rp.join(tp, how="outer").fillna(0).reset_index()))
+    team = pd.concat([f[0] for f in frames]); prod = pd.concat([f[1] for f in frames])
+    d = pg[["game_id", "season", "week", "team", "player_id", "group", "offense_snaps"]].merge(
+        prod, on=["game_id", "player_id"], how="left").merge(team, on=["game_id", "team"], how="left").fillna(0)
+    tmax = d.groupby(["game_id", "team"]).offense_snaps.transform("max")
+    d["snap"] = np.where(tmax > 0, d.offense_snaps / tmax.clip(lower=1), 0.0)
+    d["cs"] = np.where(d.team_carries > 0, d.carries / d.team_carries.clip(lower=1), 0.0)
+    d["ts"] = np.where(d.team_targets > 0, d.targets / d.team_targets.clip(lower=1), 0.0)
+    d = d.sort_values(["season", "week", "game_id"])
+    keys = ["carry_share", "target_share", "snap_share", "carries", "rush_yds", "targets", "rec_yds"]
+    state: dict[str, dict] = {}
+    rows = []
+    for gid, pid, cs, ts, sn, c, ry, t, ty in zip(d.game_id, d.player_id, d.cs, d.ts, d.snap, d.carries,
+                                                  d.rush_yds, d.targets, d.rec_yds):
+        st = state.get(pid)
+        rows.append([gid, pid, *usage_features_vector(st)])
+        new = dict(zip(keys, (cs, ts, sn, c, ry, t, ty)))
+        if st is None:
+            state[pid] = new | {"n": 1}
+        else:
+            for k in keys:
+                st[k] = (1 - USAGE_ALPHA) * st[k] + USAGE_ALPHA * new[k]
+            st["n"] += 1
+    out = pd.DataFrame(rows, columns=["game_id", "player_id", *USAGE_FEATURES])
+    out[USAGE_FEATURES] = out[USAGE_FEATURES].astype(np.float32)
+    latest = {pid: [round(x, 4) for x in usage_features_vector(st)] for pid, st in state.items()}
+    return out, latest
+
+
 def load_schedule(raw: Path) -> pd.DataFrame:
     s = pd.read_parquet(raw / "schedules.parquet")
     s = s.assign(home=s.home_team.map(_team), away=s.away_team.map(_team))
@@ -270,6 +336,10 @@ def build_players(seasons: list[int], raw_dir: Path, out_dir: Path) -> None:
     dates = schedule[["game_id", "gameday"]].rename(columns={"gameday": "game_date"})
     pg = build_player_games(raw, [s for s in seasons if s >= SNAPS_FIRST], directory, dates)
     pg.to_parquet(out_dir / "player_games.parquet")
+    usage, latest = build_usage(raw_dir, pg)
+    usage.to_parquet(out_dir / "usage.parquet")
+    pd.DataFrame({"player_id": list(latest), "features": list(latest.values())}).to_parquet(
+        out_dir / "usage_latest.parquet")
     pers = build_personnel(raw, [s for s in seasons if s >= PARTICIPATION_FIRST], schedule)
     pers.to_parquet(out_dir / "personnel.parquet")
     coaches = build_coaches(schedule)
