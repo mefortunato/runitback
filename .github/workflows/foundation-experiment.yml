@@ -1,0 +1,231 @@
+# The NFL play-by-play foundation experiment (experiments/nfl/foundation.yaml), spread over as
+# many parallel jobs as GitHub allows:
+#
+#   data ─► foundation (5 seasons) ─┬─► arms (6 configurations × 5 seasons) ─┬─► report
+#                                   └─► consistency (5 seasons) ─────────────┘
+#
+# Each season's foundation model never sees that season (validation: the previous season's
+# weeks 15+); its game embeddings' PCA is fit on earlier games only. The report job scores every
+# arm against the committed `prod` baseline and commits the results to the branch it ran on.
+# Fold and fine-tuned models are kept as the `foundation-models` artifact.
+#
+# Runs when this file or the experiment's configuration changes on a claude/ branch, or by hand.
+name: Foundation experiment
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - .github/workflows/foundation-experiment.yml
+      - experiments/nfl/foundation.yaml
+
+permissions:
+  contents: write # the report job commits the results
+
+concurrency:
+  group: foundation-experiment-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - name: Play-by-play (runitback) and games with lines (wager model)
+        run: |
+          runitback nfl download --start 1999 --end 2026 & pbp=$!
+          runitback-wager nfl download --output_file data/nfl/raw.csv & games=$!
+          wait $pbp && wait $games
+          runitback nfl preprocess --start 1999 --end 2026
+          runitback-wager nfl process --games data/nfl/raw.csv --output_file data/nfl/games.csv
+          ls -la data/nfl data/nfl/processed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nfl-data
+          path: |
+            data/nfl/processed
+            data/nfl/games.csv
+          retention-days: 7
+
+  foundation:
+    needs: data
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        season: [2021, 2022, 2023, 2024, 2025]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl }
+      - name: Train the foundation model (never sees ${{ matrix.season }})
+        run: |
+          S=${{ matrix.season }}
+          runitback nfl train --out runs/foundation/fold$S --val-season $((S-1)) --val-week 15 \
+            --epochs 10 --who --prev-lineup-prob 0.3 --threads $(nproc)
+      - name: Game embeddings (PCA on games before ${{ matrix.season }})
+        run: |
+          S=${{ matrix.season }}
+          runitback nfl embed --ckpt runs/foundation/fold$S/model.pt --out runs/foundation/fold$S/emb \
+            --before-season $S --dim 16 --dim 32 --dim 64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fold${{ matrix.season }}
+          path: runs/foundation/fold${{ matrix.season }}
+          retention-days: 30
+
+  arms:
+    needs: foundation
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        # longest first: the fine-tuned arms also fit the frozen one
+        config: [pbp32_ft, pbp32_ft_noaux, pbp32, pbp16, pbp64, pbp32_only]
+        season: [2021, 2022, 2023, 2024, 2025]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl }
+      - uses: actions/download-artifact@v4
+        with: { name: "fold${{ matrix.season }}", path: "runs/foundation/fold${{ matrix.season }}" }
+      - name: Backtest ${{ matrix.config }} on ${{ matrix.season }}
+        run: python scripts/foundation_arm.py ${{ matrix.config }} ${{ matrix.season }} --threads $(nproc)
+      - name: Collect
+        run: |
+          mkdir -p out/experiments/nfl/foundation/${{ matrix.config }}
+          cp experiments/nfl/foundation/${{ matrix.config }}/${{ matrix.season }}.csv \
+            out/experiments/nfl/foundation/${{ matrix.config }}/
+          for d in runs/foundation/fold${{ matrix.season }}/ft_*; do
+            [ -d "$d" ] && mkdir -p out/runs/foundation/fold${{ matrix.season }} && cp -r "$d" out/runs/foundation/fold${{ matrix.season }}/
+          done
+          find out -type f | head -20
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arm-${{ matrix.config }}-${{ matrix.season }}
+          path: out
+          retention-days: 30
+
+  consistency:
+    needs: foundation
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        season: [2021, 2022, 2023, 2024, 2025]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl }
+      - uses: actions/download-artifact@v4
+        with: { name: "fold${{ matrix.season }}", path: "runs/foundation/fold${{ matrix.season }}" }
+      - name: Generator rollouts of every ${{ matrix.season }} game
+        run: |
+          python scripts/foundation_consistency.py simulate --season ${{ matrix.season }} --sims 100 \
+            --threads $(nproc) --out out/experiments/nfl/foundation/generator
+      - uses: actions/upload-artifact@v4
+        with:
+          name: generator-${{ matrix.season }}
+          path: out
+          retention-days: 30
+
+  report:
+    needs: [arms, consistency]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "${{ github.ref_name }}" }
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl }
+      - name: Gather every job's results
+        uses: actions/download-artifact@v4
+        with: { pattern: "{arm,generator}-*", path: results, merge-multiple: true }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "fold*", path: models }
+      - name: Score
+        run: |
+          cp -r results/experiments/. experiments/
+          python - <<'EOF'
+          import yaml
+          from runitback.wager.experiments import ablate
+          cfg = yaml.safe_load(open("experiments/nfl/foundation.yaml"))
+          # every cell is cached by now: this only scores (a missing one would be refit; skip it)
+          import pathlib
+          have = {n: c for n, c in cfg["configs"].items()
+                  if all(pathlib.Path(f"experiments/nfl/foundation/{n}/{s}.csv").exists() for s in cfg["seasons"])}
+          print("complete configurations:", list(have))
+          ablate("data/nfl/games.csv", "nfl", have, cfg["seasons"], "experiments/nfl/foundation", cfg["baseline"], 1, 1)
+          EOF
+          python scripts/foundation_report.py experiments/nfl/foundation --baseline prod \
+            --out experiments/nfl/foundation/report.md
+          ls experiments/nfl/foundation/generator/*.csv >/dev/null 2>&1 && \
+            python scripts/foundation_consistency.py compare --wager experiments/nfl/foundation/prod \
+              $(ls -d experiments/nfl/foundation/pbp32* | head -3) --out experiments/nfl/foundation/consistency.csv \
+            || echo "no generator rollouts to compare"
+          cat experiments/nfl/foundation/ablation.md
+          echo "## Foundation experiment" >> "$GITHUB_STEP_SUMMARY"
+          cat experiments/nfl/foundation/ablation.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the models
+        run: |
+          mkdir -p bundle
+          cp -r models/. bundle/
+          cp -r results/runs/foundation/. bundle/ 2>/dev/null || true
+          du -sh bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: foundation-models
+          path: bundle
+          retention-days: 90
+      - name: Commit the results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add experiments/nfl/foundation
+          git diff --cached --quiet && { echo "nothing new"; exit 0; }
+          git commit -m "Foundation experiment results (run ${{ github.run_id }})"
+          for i in 1 2 3 4; do
+            git pull --rebase origin "${{ github.ref_name }}" && git push origin "HEAD:${{ github.ref_name }}" && exit 0
+            sleep $((2 ** i))
+          done
+          exit 1
