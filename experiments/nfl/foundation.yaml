@@ -17,3 +17,14 @@ configs:
     model: {pbp: runs/foundation/fold{season}/emb/pbp_32.parquet, pbp_dim: 32, pbp_only: true}
   prod_seed1:                   # the baseline with another seed: the noise floor
     fit: {seed: 1}
+  # --- fine-tuned foundation: the top trunk block trains on the wager loss (after the pbp32 fit)
+  pbp32_ft:                     # + the next-play loss, so the generator stays coherent
+    model: {pbp: runs/foundation/fold{season}/emb/pbp_32.parquet, pbp_dim: 32}
+    fit: {pbp_finetune: {foundation: "runs/foundation/fold{season}/model.pt",
+                         embed_dir: "runs/foundation/fold{season}/emb", data_dir: data/nfl/processed,
+                         layers: 1, epochs: 4, aux_weight: 1.0, out: aux}}
+  pbp32_ft_noaux:               # wager loss only: the generator is free to drift
+    model: {pbp: runs/foundation/fold{season}/emb/pbp_32.parquet, pbp_dim: 32}
+    fit: {pbp_finetune: {foundation: "runs/foundation/fold{season}/model.pt",
+                         embed_dir: "runs/foundation/fold{season}/emb", data_dir: data/nfl/processed,
+                         layers: 1, epochs: 4, aux_weight: 0.0, out: noaux}}
