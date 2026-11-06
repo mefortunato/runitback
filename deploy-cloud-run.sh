@@ -12,6 +12,18 @@ SERVICE="${CLOUD_RUN_SERVICE:-runitback}"
 REGION="${CLOUD_RUN_REGION:-us-central1}"
 PROJECT="${GOOGLE_CLOUD_PROJECT:-$(gcloud config get-value project 2>/dev/null || true)}"
 AUTH_FLAGS=()
+PREDICTIONS_FLAGS=()
+# Optional: mount the predictions data bucket (see README, "Predictions data")
+if [[ -n "${PREDICTIONS_BUCKET:-}" ]]; then
+  PREDICTIONS_FLAGS=(
+    --execution-environment gen2
+    --clear-volumes
+    --add-volume "name=predictions,type=cloud-storage,bucket=$PREDICTIONS_BUCKET,readonly=true,mount-options=implicit-dirs;metadata-cache-ttl-secs=60"
+    --clear-volume-mounts
+    --add-volume-mount "volume=predictions,mount-path=/mnt/predictions"
+    --update-env-vars RUNITBACK_PREDICTIONS=/mnt/predictions
+  )
+fi
 
 if [[ "${CLOUD_RUN_ALLOW_UNAUTHENTICATED:-false}" == "true" ]]; then
   AUTH_FLAGS+=(--allow-unauthenticated)
@@ -28,4 +40,5 @@ gcloud run deploy "$SERVICE" \
   --project "$PROJECT" \
   --region "$REGION" \
   --max 1 \
-  "${AUTH_FLAGS[@]}"
+  "${AUTH_FLAGS[@]}" \
+  "${PREDICTIONS_FLAGS[@]}"

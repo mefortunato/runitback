@@ -22,7 +22,9 @@ def _app(tmp_path, monkeypatch, predictions=True):
 
 def test_predictions_data_and_sport_pages(tmp_path, monkeypatch):
     c = _app(tmp_path, monkeypatch)
-    assert c.get("/data/sports.json").json() == [{"sport": "nfl"}]
+    r = c.get("/data/sports.json")
+    assert r.json() == [{"sport": "nfl"}]
+    assert r.headers["cache-control"] == "no-cache"
     assert c.get("/data/nfl/upcoming.json").status_code == 404   # not exported: the page says so
     for page in ("/nfl", "/nfl/rankings", "/nfl/games/2025_01_KC_BAL", "/nfl/generator", "/nba"):
         assert c.get(page).text == "<html>app</html>"

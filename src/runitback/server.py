@@ -37,7 +37,18 @@ def sports():
 
 PREDICTIONS = os.environ.get("RUNITBACK_PREDICTIONS")
 if PREDICTIONS and Path(PREDICTIONS).is_dir():
+    # In production a Cloud Storage bucket mounted read-only into the Cloud Run service, which the
+    # Refresh predictions workflow rewrites several times a week (see README, "Predictions data").
     app.mount("/data", StaticFiles(directory=PREDICTIONS), name="predictions")
+
+
+@app.middleware("http")
+async def revalidate_predictions(request, call_next):
+    """Browsers revalidate /data on every load (cheap: an ETag check), so a refresh shows at once."""
+    response = await call_next(request)
+    if request.url.path.startswith("/data/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 WEB = Path(os.environ.get("RUNITBACK_WEB", Path(__file__).resolve().parents[2] / "web" / "dist"))
 if WEB.exists():

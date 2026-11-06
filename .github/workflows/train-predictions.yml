@@ -1,0 +1,83 @@
+# Train the wager model (spread / moneyline / total), run its walk-forward backtest (the
+# performance page, Beat the model, past power rankings) and publish the result as the
+# `predictions-webdata` release asset that Refresh predictions exports from. Ported from
+# sportsml's Train workflow, NFL only for now.
+#
+# Runs monthly during the season and on demand, e.g. after changing the model. Backtest
+# seasons are reused from the previous release, or from the `predictions-backtest-cache`
+# release that every build adds its seasons and models to (here or on any machine:
+# `runitback-wager web build --cache release:predictions-backtest-cache`), while the model
+# and its code are unchanged; a routine run only trains the model for upcoming games
+# (~15 min), a full backtest (after a model change, or with refresh_backtest) ~1 hour.
+name: Train predictions
+
+on:
+  workflow_dispatch:
+    inputs:
+      refresh_backtest:
+        description: Backtest every season again instead of reusing the last release's
+        type: boolean
+        default: false
+      reuse_model_days:
+        description: >-
+          Use the backtest cache's model if trained at most this many days ago, instead of
+          training (0: train)
+        type: number
+        default: 0
+  schedule:
+    - cron: "41 7 1 * *" # the 1st of each month
+
+permissions:
+  contents: write # the predictions-webdata and backtest cache releases
+  actions: write # start Refresh predictions
+
+concurrency:
+  group: train-predictions
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
+      MLFLOW_DISABLE_AGENT_HINT: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - name: Fetch the previous build (its backtest seasons can be reused)
+        run: |
+          mkdir webdata
+          if gh release download predictions-webdata --pattern webdata.tar.gz; then
+            tar -xzf webdata.tar.gz -C webdata && rm webdata.tar.gz
+          else
+            echo "no previous predictions-webdata release: backtesting every season"
+          fi
+      - name: Download, train, backtest
+        run: >
+          runitback-wager web build --sports '[nfl]' --output_dir webdata
+          --cache release:predictions-backtest-cache
+          --refresh_backtest ${{ inputs.refresh_backtest || false }}
+          --reuse_model_days ${{ inputs.reuse_model_days || 0 }}
+      - name: Publish the predictions-webdata release asset
+        run: |
+          tar -czf webdata.tar.gz -C webdata .
+          gh release view predictions-webdata >/dev/null 2>&1 || gh release create predictions-webdata \
+            --title "Predictions web data (trained wager model and backtest)" --latest=false \
+            --notes "Written by the Train predictions workflow; Refresh predictions exports from it."
+          gh release upload predictions-webdata webdata.tar.gz --clobber
+      - name: Refresh the published predictions
+        # Refresh waits for this exact asset: a download right after the upload can still be
+        # served the previous one
+        run: >
+          gh workflow run refresh-predictions.yml --ref "${{ github.ref_name }}"
+          -f webdata_sha256="$(sha256sum webdata.tar.gz | cut -d' ' -f1)"
