@@ -1,0 +1,32 @@
+[
+  {
+    "id": "e1", "sport_key": "americanfootball_nfl",
+    "commence_time": "2024-11-04T01:20:00Z",
+    "home_team": "Kansas City Chiefs", "away_team": "Buffalo Bills",
+    "bookmakers": [
+      {"key": "draftkings", "title": "DraftKings", "last_update": "2024-11-03T15:00:00Z",
+       "markets": [
+         {"key": "h2h", "outcomes": [{"name": "Buffalo Bills", "price": 120}, {"name": "Kansas City Chiefs", "price": -142}]},
+         {"key": "spreads", "outcomes": [{"name": "Buffalo Bills", "price": -110, "point": 2.5}, {"name": "Kansas City Chiefs", "price": -110, "point": -2.5}]},
+         {"key": "totals", "outcomes": [{"name": "Over", "price": -108, "point": 46.5}, {"name": "Under", "price": -112, "point": 46.5}]}
+       ]},
+      {"key": "fanduel", "title": "FanDuel", "last_update": "2024-11-03T15:02:00Z",
+       "markets": [
+         {"key": "h2h", "outcomes": [{"name": "Buffalo Bills", "price": 125}, {"name": "Kansas City Chiefs", "price": -148}]},
+         {"key": "spreads", "outcomes": [{"name": "Buffalo Bills", "price": -105, "point": 3.0}, {"name": "Kansas City Chiefs", "price": -115, "point": -3.0}]},
+         {"key": "totals", "outcomes": [{"name": "Over", "price": -110, "point": 46.0}, {"name": "Under", "price": -110, "point": 46.0}]}
+       ]}
+    ]
+  },
+  {
+    "id": "e2", "sport_key": "americanfootball_nfl",
+    "commence_time": "2024-11-03T18:00:00Z",
+    "home_team": "Dallas Cowboys", "away_team": "Atlanta Falcons",
+    "bookmakers": [
+      {"key": "betmgm", "title": "BetMGM", "last_update": "2024-11-03T14:00:00Z",
+       "markets": [
+         {"key": "h2h", "outcomes": [{"name": "Atlanta Falcons", "price": -150}, {"name": "Dallas Cowboys", "price": 130}]}
+       ]}
+    ]
+  }
+]
