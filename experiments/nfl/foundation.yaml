@@ -6,3 +6,14 @@ seasons: [2021, 2022, 2023, 2024, 2025]
 baseline: prod
 configs:
   prod: {}                      # sportsml's production NFL transformer (Sport.transformer defaults)
+  # --- play-by-play foundation arms (runitback nfl embed: runs/foundation/fold<season>/emb)
+  pbp32:                        # frozen foundation: box score + PBP game embedding (32 PCs)
+    model: {pbp: runs/foundation/fold{season}/emb/pbp_32.parquet, pbp_dim: 32}
+  pbp16:
+    model: {pbp: runs/foundation/fold{season}/emb/pbp_16.parquet, pbp_dim: 16}
+  pbp64:
+    model: {pbp: runs/foundation/fold{season}/emb/pbp_64.parquet, pbp_dim: 64}
+  pbp32_only:                   # PBP embedding instead of the box score (result + location kept)
+    model: {pbp: runs/foundation/fold{season}/emb/pbp_32.parquet, pbp_dim: 32, pbp_only: true}
+  prod_seed1:                   # the baseline with another seed: the noise floor
+    fit: {seed: 1}
