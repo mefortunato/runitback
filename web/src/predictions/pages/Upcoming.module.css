@@ -1,0 +1,54 @@
+.heading {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-end;
+	gap: 16px;
+	flex-wrap: wrap;
+	margin-bottom: 16px;
+}
+.legend {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-wrap: wrap;
+	margin: 0;
+}
+.key {
+	display: inline-block;
+	width: 10px;
+	height: 10px;
+	margin-left: 6px;
+}
+.key.vegas {
+	background: var(--vegas);
+	transform: rotate(45deg);
+}
+.key.model {
+	background: var(--accent);
+	border-radius: 50%;
+}
+.key.edge {
+	background: var(--accent-soft);
+	width: 18px;
+	border-radius: 3px;
+}
+.dates {
+	display: flex;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+.dates a:hover {
+	text-decoration: none;
+}
+.sort {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-wrap: wrap;
+	margin-bottom: 16px;
+}
+.games {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(min(100%, 480px), 1fr));
+	gap: 16px;
+}

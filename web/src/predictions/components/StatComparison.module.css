@@ -1,0 +1,77 @@
+.head {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+	gap: 12px;
+	align-items: center;
+	padding-bottom: 10px;
+	border-bottom: 1px solid var(--border);
+}
+.head > div {
+	min-width: 0;
+}
+/* long team names truncate rather than run into the middle column */
+.head :global(.team-badge) {
+	max-width: 100%;
+}
+.head .right {
+	text-align: right;
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+}
+.center {
+	text-align: center;
+}
+.row {
+	display: grid;
+	grid-template-columns: 70px 1fr 70px;
+	align-items: center;
+	gap: 10px;
+	padding: 6px 0;
+	border-bottom: 1px solid var(--border);
+}
+.row:last-child {
+	border-bottom: 0;
+}
+.row.record .label {
+	font-weight: 600;
+}
+.label {
+	text-align: center;
+	font-size: 0.85rem;
+	color: var(--muted);
+}
+.value {
+	font-weight: 600;
+}
+.value.best {
+	color: var(--good);
+}
+.right {
+	text-align: right;
+}
+.bars {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 2px;
+	height: 5px;
+	margin-top: 3px;
+}
+.half {
+	display: flex;
+}
+.half.left {
+	justify-content: flex-end;
+}
+.bar {
+	display: block;
+	height: 100%;
+	background: var(--border);
+	border-radius: 0 3px 3px 0;
+}
+.half.left .bar {
+	border-radius: 3px 0 0 3px;
+}
+.bar.best {
+	background: var(--good);
+}

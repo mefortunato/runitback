@@ -1,0 +1,122 @@
+.calc {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+.head {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+.root h2 {
+	margin: 0;
+}
+.head button {
+	padding: 4px 12px;
+}
+.actions {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+.root select {
+	font: inherit;
+	font-size: 0.85rem;
+	padding: 4px 6px;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: var(--surface);
+	color: var(--text);
+}
+.inputs {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 10px;
+}
+.root fieldset {
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 8px 10px;
+	margin: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	min-width: 0;
+}
+.root legend {
+	font-weight: 700;
+	font-size: 0.85rem;
+	padding: 0 4px;
+}
+.root label {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 8px;
+	font-size: 0.85rem;
+}
+.root input {
+	width: 90px;
+	font: inherit;
+	font-variant-numeric: tabular-nums;
+	padding: 4px 6px;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: var(--surface);
+	color: var(--text);
+	text-align: right;
+}
+.scroll {
+	overflow-x: auto;
+}
+.root table {
+	width: 100%;
+	border-collapse: collapse;
+}
+.root th,
+.root td {
+	padding: 4px 6px;
+	text-align: left;
+	white-space: nowrap;
+	border-bottom: 1px solid var(--border);
+}
+.root thead th {
+	color: var(--muted);
+	font-weight: 600;
+	font-size: 0.75rem;
+}
+.root tr.group th {
+	font-weight: 700;
+	padding-top: 10px;
+}
+.num {
+	text-align: right;
+}
+.be {
+	display: block;
+	font-size: 0.75rem;
+}
+.root tr.value td {
+	background: var(--good-soft);
+}
+.root tr.value .ev {
+	color: var(--good);
+	font-weight: 700;
+}
+.note {
+	margin: 0;
+}
+@media (max-width: 480px) {
+	th,
+	td {
+		padding: 4px 3px;
+	}
+	td {
+		white-space: normal;
+	}
+	td.num {
+		white-space: nowrap;
+	}
+}

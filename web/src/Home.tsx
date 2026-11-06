@@ -8,9 +8,9 @@ interface Sport { id: string; name: string; model_available: boolean }
 const SPORTS = [
   {
     id: "nfl", name: "NFL", to: "/nfl", unit: "play",
-    blurb: "Every snap, kickoff, punt, kick and timeout. Call plays yourself, watch win probability move, forecast a matchup, or simulate a full season with schedule, tiebreakers and playoffs.",
+    blurb: "Spread, moneyline and over/under predictions for every game, checked against Vegas. And every snap, kickoff, punt, kick and timeout: call plays yourself, watch win probability move, forecast a matchup, or simulate a full season with schedule, tiebreakers and playoffs.",
     outcome: ["play type", "result", "yards", "clock"],
-    facts: ["nflverse play-by-play, 1999 to today", "Engine replays 99.55% of real plays exactly", "Game, forecast and season simulators"],
+    facts: ["nflverse play-by-play, 1999 to today", "Engine replays 99.55% of real plays exactly", "Predictions, rankings and a walk-forward backtest", "Game, forecast and season simulators"],
   },
   {
     id: "nba", name: "NBA", to: "/nba", unit: "event",

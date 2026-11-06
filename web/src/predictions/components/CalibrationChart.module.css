@@ -1,0 +1,62 @@
+.chart {
+	position: relative;
+	max-width: 460px;
+}
+.root svg {
+	display: block;
+	width: 100%;
+	height: auto;
+}
+.grid {
+	stroke: var(--border);
+}
+.diagonal {
+	stroke: var(--muted);
+	stroke-opacity: 0.6;
+}
+.tick,
+.axis {
+	fill: var(--muted);
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+}
+.line {
+	fill: none;
+	stroke-width: 2;
+	stroke-linejoin: round;
+}
+.hit {
+	fill: transparent;
+}
+.dot {
+	stroke: var(--surface);
+	stroke-width: 2;
+	pointer-events: none;
+}
+.tooltip {
+	position: absolute;
+	transform: translate(14px, -50%);
+	pointer-events: none;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	box-shadow: var(--shadow);
+	padding: 8px 10px;
+	font-size: 0.8rem;
+	white-space: nowrap;
+}
+.tooltip.flip {
+	transform: translate(calc(-100% - 14px), -50%);
+}
+.tip-head {
+	font-weight: 600;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.swatch {
+	display: inline-block;
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+}

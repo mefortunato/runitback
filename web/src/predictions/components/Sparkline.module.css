@@ -1,0 +1,12 @@
+.axis {
+	stroke: var(--border);
+}
+.win {
+	fill: var(--good);
+}
+.loss {
+	fill: var(--bad);
+}
+.tie {
+	fill: var(--muted);
+}

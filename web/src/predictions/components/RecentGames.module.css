@@ -1,0 +1,37 @@
+.title {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin-bottom: 8px;
+	gap: 8px;
+}
+.root table {
+	width: 100%;
+	border-collapse: collapse;
+}
+.root th {
+	text-align: left;
+	font-weight: 500;
+	padding: 4px 4px;
+}
+.root td {
+	padding: 5px 4px;
+	border-top: 1px solid var(--border);
+}
+.opp {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.right {
+	text-align: right;
+}
+.ats {
+	font-weight: 700;
+}
+.ats.good {
+	color: var(--good);
+}
+.ats.bad {
+	color: var(--bad);
+}

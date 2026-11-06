@@ -1,0 +1,58 @@
+.books {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.head {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 8px;
+}
+.root h2 {
+	margin: 0;
+}
+.scroll {
+	overflow-x: auto;
+}
+.root table {
+	width: 100%;
+	border-collapse: collapse;
+}
+.root th,
+.root td {
+	padding: 4px 6px;
+	white-space: nowrap;
+	border-bottom: 1px solid var(--border);
+	text-align: left;
+}
+.root thead th {
+	color: var(--muted);
+	font-weight: 600;
+	font-size: 0.75rem;
+}
+.num {
+	text-align: right;
+}
+.root td.best {
+	background: var(--good-soft);
+	font-weight: 700;
+}
+.root tr.consensus td {
+	font-weight: 600;
+	border-bottom: none;
+}
+.note {
+	margin: 0;
+}
+.movement {
+	display: flex;
+	gap: 16px;
+	align-items: center;
+	flex-wrap: wrap;
+}
+.trend {
+	fill: none;
+	stroke: var(--accent);
+	stroke-width: 2;
+}

@@ -1,0 +1,55 @@
+.game {
+	/* a grid item: the wide market table scrolls instead of widening it */
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	color: inherit;
+	transition: border-color 0.15s;
+}
+.game:hover {
+	text-decoration: none;
+	border-color: var(--accent);
+}
+.top {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-start;
+	gap: 8px;
+}
+.score {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	min-width: 0;
+	flex: 1;
+	max-width: 300px;
+}
+.line {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	color: var(--muted);
+}
+.line.won {
+	color: var(--text);
+	font-weight: 700;
+}
+.points {
+	font-size: 1.15rem;
+	font-weight: 700;
+}
+.meta {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 2px;
+	text-align: right;
+}
+.verdicts {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-wrap: wrap;
+}

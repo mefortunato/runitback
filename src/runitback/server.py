@@ -1,7 +1,10 @@
 """The combined Run It Back server: NFL and NBA APIs plus the web app.
 
 Routes: /api/nfl/... and /api/nba/... for each sport (the NFL routes are also served at /api/...
-for clients written before the NBA was added), and the single-page web app for every other path.
+for clients written before the NBA was added), /data/... for the precomputed predictions pages'
+JSON (`runitback-wager web export`; from $RUNITBACK_PREDICTIONS when set, so the data can be
+refreshed without rebuilding the web app, else from the web build) and the single-page web app for
+every other path.
 Run with `runitback serve` or `uvicorn runitback.server:app`.
 """
 from __future__ import annotations
@@ -32,6 +35,10 @@ def sports():
     ]}
 
 
+PREDICTIONS = os.environ.get("RUNITBACK_PREDICTIONS")
+if PREDICTIONS and Path(PREDICTIONS).is_dir():
+    app.mount("/data", StaticFiles(directory=PREDICTIONS), name="predictions")
+
 WEB = Path(os.environ.get("RUNITBACK_WEB", Path(__file__).resolve().parents[2] / "web" / "dist"))
 if WEB.exists():
     if (WEB / "assets").is_dir():
@@ -44,4 +51,7 @@ if WEB.exists():
             raise HTTPException(404, "not found")
         f = (WEB / path).resolve()
         inside = f.is_relative_to(WEB.resolve())
+        if path.startswith("data/") and not (inside and f.is_file()):
+            from fastapi import HTTPException
+            raise HTTPException(404, "no such predictions file")  # the pages show "not available"
         return FileResponse(f if path and inside and f.is_file() else WEB / "index.html")

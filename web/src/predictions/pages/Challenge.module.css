@@ -1,0 +1,261 @@
+.intro p {
+	max-width: 720px;
+}
+.tabs {
+	display: flex;
+	gap: 6px;
+	flex-wrap: wrap;
+	margin-bottom: 12px;
+}
+.tabs button {
+	padding: 6px 14px;
+	border-radius: 999px;
+}
+.tabs button.active {
+	border-color: var(--accent);
+	background: var(--accent-soft);
+	font-weight: 700;
+}
+.pick {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	align-items: center;
+	text-align: center;
+}
+/* one line, so revealing the team names never rewraps it */
+.context {
+	max-width: 100%;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.prompt {
+	margin-top: -6px;
+}
+.choices {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 12px;
+	width: 100%;
+	max-width: 720px;
+}
+.choice {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 10px;
+	padding: 12px;
+	border-width: 2px;
+	text-align: left;
+	min-width: 0;
+}
+.choice.static {
+	border: 1px solid var(--border);
+	border-radius: var(--radius, 10px);
+}
+.choice.chosen {
+	border-color: var(--accent);
+	background: var(--accent-soft);
+}
+.choice.won {
+	border-color: var(--good);
+	background: var(--good-soft);
+}
+.choice.lost {
+	border-color: var(--bad);
+	background: var(--bad-soft);
+}
+.choice:disabled {
+	opacity: 1;
+	cursor: default;
+}
+.head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+.names {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	flex: 1;
+	line-height: 1.2;
+}
+.team-name {
+	font-weight: 700;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.where {
+	font-size: 0.75rem;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.line-box {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	line-height: 1.15;
+	flex: none;
+}
+.line {
+	font-size: 1.15rem;
+	font-weight: 800;
+}
+.covers {
+	color: var(--muted);
+	font-size: 0.75rem;
+}
+.glance {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: 4px;
+	padding: 8px 0;
+	border-top: 1px solid var(--border);
+	border-bottom: 1px solid var(--border);
+}
+.glance > span {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	min-width: 0;
+	line-height: 1.2;
+}
+.glance b {
+	font-size: 0.95rem;
+	white-space: nowrap;
+}
+.glance small {
+	color: var(--muted);
+	font-size: 0.7rem;
+}
+.form {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	min-width: 0;
+}
+.form small {
+	font-size: 0.7rem;
+	margin-right: 2px;
+}
+.dot {
+	display: inline-grid;
+	place-items: center;
+	width: 18px;
+	height: 18px;
+	border-radius: 4px;
+	font-size: 0.65rem;
+	font-weight: 700;
+	background: var(--border);
+	color: var(--muted);
+	flex: none;
+}
+.dot.w {
+	background: var(--good-soft);
+	color: var(--good);
+}
+.dot.l {
+	background: var(--bad-soft);
+	color: var(--bad);
+}
+.totals .choice {
+	align-items: center;
+}
+.total-choice {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+.total-icon {
+	font-size: 1.1rem;
+	color: var(--accent);
+}
+.action {
+	min-width: 240px;
+	max-width: 100%;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.reveal {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	align-items: center;
+	width: 100%;
+}
+.final {
+	font-size: 1.15rem;
+}
+.trained {
+	margin: 0;
+	text-align: center;
+}
+.verdicts {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+	justify-content: center;
+}
+.chart {
+	width: 100%;
+	max-width: 640px;
+}
+.advanced > summary {
+	list-style: none;
+	cursor: pointer;
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 12px;
+}
+.advanced > summary::-webkit-details-marker {
+	display: none;
+}
+.advanced > summary:hover {
+	border-color: var(--accent);
+}
+.chevron {
+	transition: transform 0.15s;
+	color: var(--muted);
+}
+.advanced[open] .chevron {
+	transform: rotate(180deg);
+}
+@media (max-width: 520px) {
+	.choices {
+		gap: 8px;
+	}
+	.choice {
+		padding: 10px 8px;
+		gap: 8px;
+	}
+	.head {
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+	.line-box {
+		flex-direction: row;
+		align-items: baseline;
+		gap: 4px;
+		width: 100%;
+	}
+	.glance {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		row-gap: 6px;
+	}
+	.form small:first-child {
+		display: none;
+	}
+	.dot {
+		width: 16px;
+		height: 16px;
+	}
+}

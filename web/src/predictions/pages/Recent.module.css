@@ -1,0 +1,105 @@
+.heading {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-end;
+	gap: 16px;
+	flex-wrap: wrap;
+	margin-bottom: 16px;
+}
+.legend {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-wrap: wrap;
+	margin: 0;
+}
+.key {
+	display: inline-block;
+	width: 10px;
+	height: 10px;
+	margin-left: 6px;
+}
+.key.vegas {
+	background: var(--vegas);
+	transform: rotate(45deg);
+}
+.key.model {
+	background: var(--accent);
+	border-radius: 50%;
+}
+.key.final {
+	background: var(--text);
+	border-radius: 50%;
+}
+.dates {
+	display: flex;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+.dates a:hover {
+	text-decoration: none;
+}
+.summaries {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+	gap: 16px;
+}
+.summary {
+	min-width: 0;
+	overflow-x: auto;
+}
+.summary h2 {
+	font-size: 1rem;
+	margin: 0 0 8px;
+}
+.root table {
+	width: 100%;
+	border-collapse: collapse;
+}
+.root th,
+.root td {
+	padding: 4px 6px;
+	text-align: left;
+	white-space: nowrap;
+	border-bottom: 1px solid var(--border);
+}
+.root thead th {
+	color: var(--muted);
+	font-weight: 600;
+	font-size: 0.75rem;
+}
+.root tbody th {
+	color: var(--muted);
+	font-weight: 600;
+}
+.root tbody tr:last-child th,
+.root tbody tr:last-child td {
+	border-bottom: none;
+}
+.better {
+	color: var(--good);
+	font-weight: 700;
+}
+.win {
+	color: var(--good);
+	font-weight: 600;
+}
+.loss {
+	color: var(--bad);
+	font-weight: 600;
+}
+.note {
+	margin: 12px 0 16px;
+}
+.sort {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-wrap: wrap;
+	margin-bottom: 16px;
+}
+.games {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(min(100%, 480px), 1fr));
+	gap: 16px;
+}
