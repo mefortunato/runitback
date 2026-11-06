@@ -43,6 +43,42 @@ MARKET_TOKEN_COLUMNS = [
 MARKET_RATING_COLUMNS = ["_mkt_rating", "_mkt_opp_rating", "_mkt_rating_gap"]
 
 
+# play-by-play game embeddings (runitback.nfl.embed): ``_pbp_0..`` and a missing-game indicator
+PBP_PREFIX = "_pbp_"
+PBP_MISSING = "_pbp_missing"
+
+
+def pbp_columns(dim: int) -> list[str]:
+    return [f"{PBP_PREFIX}{i}" for i in range(dim)] + [PBP_MISSING] if dim else []
+
+
+def pbp_fold_path(template: str, season: int) -> str:
+    """The embedding table of the foundation model for test season ``season``."""
+    return template.format(season=int(season))
+
+
+def pbp_features(games: pd.DataFrame, schema: GameSchema, path: str, dim: int) -> pd.DataFrame:
+    """Each row's team-game embedding from ``path`` (columns ``game_id``, ``team``, ``_pbp_*``),
+    with ``_pbp_missing`` 1 where the game has none (no play-by-play)."""
+    table = _read_pbp(path)
+    cols = pbp_columns(dim)[:-1]
+    key = pd.MultiIndex.from_arrays([games[schema.game_id], games[schema.team]])
+    out = table[cols].reindex(key)
+    out.index = games.index
+    out[PBP_MISSING] = out[cols[0]].isna().astype(np.float32)
+    return out
+
+
+_PBP_CACHE: dict[str, pd.DataFrame] = {}
+
+
+def _read_pbp(path: str) -> pd.DataFrame:
+    if path not in _PBP_CACHE:
+        table = pd.read_parquet(path)
+        _PBP_CACHE[path] = table.set_index(["game_id", "team"])
+    return _PBP_CACHE[path]
+
+
 def efficiency_columns(sport: str | None) -> list[str]:
     """The ``_eff_*`` columns ``sport``'s efficiency function derives."""
     from ...core.sport import get_sport
@@ -58,14 +94,25 @@ def extra_columns(
     efficiency: bool = False,
     sport: str | None = None,
     market_rating: bool = False,
+    pbp_dim: int = 0,
+    pbp_only: bool = False,
 ) -> list[str]:
     return (
         (STRENGTH_COLUMNS if opponent_strength else [])
         + (ELO_MARGIN_COLUMNS if elo_margin else [])
         + (MARKET_TOKEN_COLUMNS if market_tokens else [])
-        + (efficiency_columns(sport) if efficiency else [])
+        + (efficiency_columns(sport) if efficiency and not pbp_only else [])
         + (MARKET_RATING_COLUMNS if market_rating else [])
+        + pbp_columns(pbp_dim)
     )
+
+
+def base_token_columns(schema: GameSchema, pbp_only: bool = False) -> list[str]:
+    """Box score, result and location; only result and location with ``pbp_only`` (the
+    play-by-play embedding stands in for the box score)."""
+    location = [schema.location] if schema.location else []
+    stats = [] if pbp_only else list(schema.stats)
+    return list(dict.fromkeys([*stats, schema.target, *location]))
 
 
 def market_line(games: pd.DataFrame, schema: GameSchema) -> pd.Series:
@@ -235,6 +282,9 @@ class SequenceFeatures:
     efficiency: bool = False
     sport: str | None = None
     market_rating: bool = False
+    pbp: str | None = None  # this fold's embedding table (resolved path)
+    pbp_dim: int = 0
+    pbp_only: bool = False
 
     @classmethod
     def fit(
@@ -248,9 +298,12 @@ class SequenceFeatures:
         efficiency: bool = False,
         sport: str | None = None,
         market_rating: bool = False,
+        pbp: str | None = None,
+        pbp_dim: int = 0,
+        pbp_only: bool = False,
     ) -> SequenceFeatures:
         location = [schema.location] if schema.location else []
-        tokens = list(dict.fromkeys([*schema.stats, schema.target, *location]))
+        tokens = base_token_columns(schema, pbp_only)
         features = cls(
             token_columns=[],
             context_columns=[],
@@ -264,10 +317,13 @@ class SequenceFeatures:
             efficiency=efficiency,
             sport=sport,
             market_rating=market_rating,
+            pbp=pbp if pbp_dim else None,
+            pbp_dim=pbp_dim if pbp else 0,
+            pbp_only=pbp_only,
         )
         extra = extra_columns(
             opponent_strength, elo_margin, market_tokens, efficiency, sport,
-            market_rating,
+            market_rating, features.pbp_dim, pbp_only,
         )  # fmt: skip
         if extra:
             tokens += extra
@@ -297,7 +353,9 @@ class SequenceFeatures:
             parts.append(market_features(games, self.schema))
         if getattr(self, "market_rating", False):
             parts.append(market_ratings(games, self.schema))
-        if efficiency:
+        if getattr(self, "pbp", None) and getattr(self, "pbp_dim", 0):
+            parts.append(pbp_features(games, self.schema, self.pbp, self.pbp_dim))
+        if efficiency and not getattr(self, "pbp_only", False):
             from ...core.sport import get_sport
 
             fn = get_sport(self.sport).efficiency

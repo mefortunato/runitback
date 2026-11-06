@@ -82,6 +82,20 @@ def train(out: Path = RUNS / "prod",
 
 
 @nfl.command()
+def embed(ckpt: Path = typer.Option(..., help="foundation (play-by-play) checkpoint"),
+          out: Path = typer.Option(..., help="output directory"),
+          before_season: int = typer.Option(..., help="fit the projection on games before this season "
+                                                      "(the walk-forward fold's test season)"),
+          dim: list[int] = typer.Option([32], help="projection widths; repeat for several"),
+          data: Path = DATA / "processed"):
+    """Per-team-game embeddings from the play-by-play model, for the wager models (runitback.wager)."""
+    _log()
+    from .nfl.embed import embed_fold
+    for d in dim:
+        typer.echo(embed_fold(ckpt, data, out, before_season, d))
+
+
+@nfl.command()
 def evaluate(ckpt: Path = RUNS / "eval" / "model.pt", sims: int = 200, out: Path = RUNS / "eval" / "report.json",
              strength_scale: float = typer.Option(None, help="override the checkpoint's calibrated scale")):
     """Next-play metrics vs baseline and full-game simulation metrics on the held-out games."""

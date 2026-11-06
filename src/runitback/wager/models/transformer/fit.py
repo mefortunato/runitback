@@ -21,7 +21,13 @@ from ..lightning import (
     reset_parameters,
     seed_and_reset,
 )
-from .data import SequenceData, SequenceFeatures, extra_columns
+from .data import (
+    SequenceData,
+    SequenceFeatures,
+    base_token_columns,
+    extra_columns,
+    pbp_fold_path,
+)
 from .model import (
     PairHead,
     SequenceEncoder,
@@ -39,6 +45,11 @@ TOKEN_KEYS = (
     "opponent_strength", "elo_margin", "market_tokens", "efficiency",
     "market_rating",
 )  # fmt: skip
+# Play-by-play embedding options (not booleans): ``pbp`` is the embedding table's path with a
+# ``{season}`` placeholder for the walk-forward fold (the test season), ``pbp_dim`` its width and
+# ``pbp_only`` drops the box-score stats from the tokens (runitback.nfl.embed).
+PBP_KEYS = ("pbp", "pbp_dim", "pbp_only")
+PBP_DEFAULTS = {"pbp": None, "pbp_dim": 32, "pbp_only": False}
 # Settings that are not model init args.
 FIT_KEYS = ("ensemble", "batch_size", "patience", "max_epochs")
 
@@ -51,12 +62,16 @@ def transformer_dims(
     efficiency: bool = False,
     sport: str | None = None,
     market_rating: bool = False,
+    pbp: str | None = None,
+    pbp_dim: int = 0,
+    pbp_only: bool = False,
 ) -> dict[str, int]:
     """Token / context feature counts a TransformerModel needs for ``schema``."""
     location = [schema.location] if schema.location else []
-    tokens = list(dict.fromkeys([*schema.stats, schema.target, *location]))
+    tokens = base_token_columns(schema, pbp_only)
     tokens += extra_columns(
-        opponent_strength, elo_margin, market_tokens, efficiency, sport, market_rating
+        opponent_strength, elo_margin, market_tokens, efficiency, sport, market_rating,
+        pbp_dim if pbp else 0, pbp_only,
     )
     return {
         "token_dim": len(tokens),
@@ -84,6 +99,13 @@ def token_options(sport: str, model=None, **given) -> dict[str, bool]:
         if value is None:
             value = built.get(key, settings.get(key, False))
         out[key] = bool(value)
+    for key in PBP_KEYS:
+        value = given.get(key)
+        if value is None:
+            value = built.get(key, settings.get(key, PBP_DEFAULTS[key]))
+        out[key] = value
+    out["pbp_dim"] = int(out["pbp_dim"] or 0)
+    out["pbp_only"] = bool(out["pbp_only"])
     return out
 
 
@@ -124,7 +146,7 @@ def transformer_config(
         sport,
         opponent_strength=opponent_strength,
         elo_margin=elo_margin,
-        **{k: overrides.pop(k) for k in TOKEN_KEYS if k in overrides},
+        **{k: overrides.pop(k) for k in (*TOKEN_KEYS, *PBP_KEYS) if k in overrides},
     )
     dims = transformer_dims(spec.schema.with_features(context), **tokens, sport=sport)
     settings = {
@@ -144,7 +166,7 @@ def transformer_config(
     antisymmetric = bool(settings.get("antisymmetric", False))
     output_keys = (
         "total_weight", "stats_weight", "distribution", "antisymmetric",
-        *TOKEN_KEYS, *FIT_KEYS,
+        *TOKEN_KEYS, *PBP_KEYS, *FIT_KEYS,
     )  # fmt: skip
     settings = {k: v for k, v in settings.items() if k not in output_keys}
     extra, weights = output_targets(spec.schema, total_weight, stats_weight)
@@ -241,6 +263,7 @@ def fit_transformer(
     seed: int | None = 0,
     overwrite: bool = False,
     print_metrics: bool = True,
+    pbp_finetune: dict | None = None,
 ) -> dict:
     """Train a transformer over each team's recent games and save it.
 
@@ -288,6 +311,9 @@ def fit_transformer(
             and serve their average (None: the sport's ``ensemble``
             setting, else 1).
         seed: Seed for weight initialization and batch order (None: random).
+        pbp_finetune: After fitting, fine-tune the play-by-play foundation model's top
+            blocks together with the wager model (needs the ``pbp`` token option; settings
+            in :mod:`.pbp_finetune`).
 
     Returns:
         ``{"predictor", "metrics", "split", "model"}``
@@ -322,6 +348,10 @@ def fit_transformer(
     )
     template = copy.deepcopy(model)
     train_games = games[games[schema.season].isin(split.train)]
+    fold = max([*split.train, *split.val]) + 1
+    if tokens.get("pbp"):
+        # the foundation model of the season after the training data (never trained on it)
+        tokens = tokens | {"pbp": pbp_fold_path(tokens["pbp"], fold)}
     features = SequenceFeatures.fit(
         train_games, schema, model.encoder.history, **tokens, sport=sport
     )
@@ -387,6 +417,14 @@ def fit_transformer(
         )
         members.append(best_model(fit_trainer, member).eval())
     best = members[0] if len(members) == 1 else TransformerEnsemble(members).eval()
+    if pbp_finetune:
+        if not features.pbp or len(members) > 1:
+            raise ValueError("pbp_finetune needs the pbp token option and a single model")
+        from .pbp_finetune import finetune
+
+        best, data, features = finetune(
+            best, data, features, games, schema, rows, pbp_finetune, fold, extra
+        )
 
     predicted = np.concatenate(list(rows.values()))
     with torch.no_grad():
