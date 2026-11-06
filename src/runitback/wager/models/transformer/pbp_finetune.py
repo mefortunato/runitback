@@ -85,8 +85,18 @@ class PBPTokens(torch.nn.Module):
             x = b(x, None, self.first + i)
         return self.ln_f(x)
 
-    def forward(self, games: torch.Tensor, sides: torch.Tensor, chunk: int = 256) -> torch.Tensor:
-        """games: (G,) indices into the state list; sides: (G,) 0 home / 1 away -> (G, dim)."""
+    def _project(self, x, home, valid, sides):
+        v = self.pool(self.trunk(x), home, valid)                           # (n, 2, 2d)
+        v = v[torch.arange(len(x)), sides]
+        return ((v - self.mean) / self.std) @ self.comp.T
+
+    def forward(self, games: torch.Tensor, sides: torch.Tensor, chunk: int = 64) -> torch.Tensor:
+        """games: (G,) indices into the state list; sides: (G,) 0 home / 1 away -> (G, dim).
+        With gradients, each chunk is checkpointed: only the pooled vectors are kept, and the
+        top blocks' activations are recomputed in the backward pass (a batch touches ~1,500
+        games of ~180 plays, far too many activations to hold)."""
+        from torch.utils.checkpoint import checkpoint
+
         out = []
         for i in range(0, len(games), chunk):
             idx = games[i: i + chunk].tolist()
@@ -100,9 +110,11 @@ class PBPTokens(torch.nn.Module):
                 x[k, : len(h)] = h.float()
                 home[k, : len(h)] = is_home
                 valid[k, : len(h)] = 1
-            v = self.pool(self.trunk(x), home, valid)                       # (n, 2, 2d)
-            v = v[torch.arange(len(idx)), sides[i: i + chunk]]
-            out.append(((v - self.mean) / self.std) @ self.comp.T)
+            sd = sides[i: i + chunk]
+            if torch.is_grad_enabled():
+                out.append(checkpoint(self._project, x, home, valid, sd, use_reentrant=False))
+            else:
+                out.append(self._project(x, home, valid, sd))
         return torch.cat(out)
 
 
