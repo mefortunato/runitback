@@ -127,3 +127,54 @@ mean gap of 8.6 points.
    jointly on margin and total, or post-hoc scale points.
 4. **Rerun** with `git push` after editing `foundation.yaml`, or dispatch "Foundation experiment"
    once it is on `main`. The models are kept as the run's `foundation-models` artifact for 90 days.
+
+## Personnel: does knowing who plays this week help?
+
+The wager model's history (box scores plus the frozen `pbp32` game embeddings) describes the
+teams as they played; the only signal about *this* week's players was the injury features
+(`inj_<unit>`, expected missing snap share per unit). `experiments/nfl/lineups.yaml` adds the game
+being predicted's **projected lineup**, built only from what is known before kickoff
+(`runitback nfl lineup-features`): the team's published depth chart for the week (else its
+previous game's), minus players listed Out/Doubtful or off the active roster, with the next
+player in each position group moved up. The projected QB1 is right in 95% of 2025 games (88% in
+2024), and in 70% (41%) of games where the starter changed, against 18% for the previous game's
+lineup alone. Each fold's foundation model turns the lineup into features for both teams:
+
+| arm | adds to `pbp32` (production) |
+|---|---|
+| `pbp32_lp` | the projected players' embeddings, pooled by the foundation's lineup encoder (as offense and defense) |
+| `pbp32_lp_lu` | + how that pooled lineup differs from the lineups behind the history games |
+| `pbp32_lp_cf` | + the history re-embedded as if the projected lineup had played it, minus as played |
+| `pbp32_noinj` | production without the injury features |
+| `pbp32_lp_noinj` | the projected lineup in place of the injury features |
+
+**Short answer: no arm beats production, and none should be adopted yet.**
+- **`pbp32_lp` (the pooled projected lineup) passes on all three markets and is a wash**:
+  Δ Brier moneyline −0.0009 ± 0.0023, spread +0.0014 ± 0.0027, total +0.0009 ± 0.0027.
+- **The history-relative arms hurt totals.** `lp_lu` (+0.0030 ± 0.0023) and `lp_cf`
+  (+0.0036 ± 0.0025) fail the bar on totals, worst on high-turnover games (+0.008). The extra
+  16–64 context columns look like noise the head overfits on 1,400 test games a fold.
+- **On the games where personnel moved, the lineup leans the right way but within noise.** Where
+  the starting QB changed (352 games), `pbp32_lp` is −0.0018 ± 0.0045 (moneyline),
+  −0.0028 ± 0.0054 (spread), −0.0031 ± 0.0053 (total); the other arms are worse there than
+  production (`subsets.md`). Roughly 4× the test games would be needed to tell.
+- **The injury features don't carry much either.** Dropping them (`pbp32_noinj`) costs
+  +0.0005 / +0.0025 / +0.0007, all within noise, and the projected lineup roughly replaces them
+  (`pbp32_lp_noinj`). Personnel news is largely in the closing line already, which every arm still
+  trails (+0.006–0.008 Brier vs the market).
+
+**QB-swap check** (are the player embeddings informative at all?): rolling out the 2025 fold's
+generator with named QBs in every home team's QB1 slot. Pending: `.github/workflows/qb-swap.yml`,
+results in `lineups/qb_swap.*.csv`.
+
+Results: `lineups/ablation.md`, `lineups/report.md` (per market, pass/fail), `lineups/subsets.md`
+(QB changed / QB projected to change / top-quartile turnover / steady), and the per-game change
+flags in `lineups/changes/<season>.csv`.
+
+**Next steps for personnel**
+1. Keep `pbp32` in production; don't wire projected lineups in yet (it would also need live
+   depth charts and injury reports in the refresh workflow).
+2. Get more signal per parameter: a single scalar per side (e.g. the foundation's predicted
+   point-margin change from swapping the projected lineup in, via rollouts or the trunk) instead
+   of 16–64 columns, and train on more seasons (lineup data starts in 2013).
+3. Score on the subsets with more seasons (2016–2025) to see whether the QB-change lean is real.
