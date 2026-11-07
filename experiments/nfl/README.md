@@ -245,20 +245,52 @@ markets (+0.0018 / +0.0013 / −0.0003), `ponts_pbp32` fails moneyline and sprea
 arms fail spread (`playersonly/report.md`, `subsets.md`). Dropping team identity costs a little
 accuracy that the players don't yet make back.
 
+**Player effects (`experiments/nfl/playereffects.yaml`): the simulator now ranks the players.**
+`--player-effects` adds the passer head's result / yards logits (from the QB's embedding) to the
+play heads on pass plays, and the ball-carrier head's on runs, in training and in the rollouts, so
+a player's quality goes straight into his plays. `pe` is the players-only setup above plus player
+effects; `te` is production's setup (team identity and ratings kept) plus the passer / carrier
+targets and player effects. QB swap, 120 games of 2025 (Δ home win, ± 95% CI; margin in points):
+
+| home QB1 | production | `po` | `pe` | `te` |
+|---|---|---|---|---|
+| Mahomes | +0.009 | +0.012 | **+0.080 ± 0.013** (+2.5) | **+0.112 ± 0.015** (+3.6) |
+| J. Allen | +0.013 | +0.022 | +0.028 ± 0.014 (+0.9) | +0.060 ± 0.013 (+1.9) |
+| C. Rush | +0.008 | +0.009 | −0.056 ± 0.013 (−1.6) | −0.091 ± 0.014 (−3.0) |
+| T. Siemian | +0.009 | +0.008 | −0.084 ± 0.013 (−2.4) | −0.109 ± 0.015 (−3.6) |
+| B. Rypien | +0.004 | +0.011 | −0.160 ± 0.014 (−5.1) | −0.163 ± 0.016 (−5.7) |
+| unknown "new QB" | −0.005 | −0.040 | −0.133 ± 0.013 (−4.4) | −0.130 ± 0.013 (−4.3) |
+
+(The `nr` / `nrts` / `qb` / `qbnr` / `ponts` runs were all within ±0.02 for every named QB.) Mahomes
+vs Siemian is now 0.16 (`pe`) to 0.22 (`te`) of win probability, 4.9 to 7.2 points of margin, in the
+right order and about the size the market gives a starter-to-backup swap; the passer probe still
+reads 0.62 (`pe`) / 0.57 (`te`) correlation with actual completion rate. The local half-run of `pe`
+(60 games) agreed (+0.096 / −0.069). Keeping team identity (`te`) gives the larger, more market-like
+spread, so the team tokens don't swamp the players once the players have a direct path.
+
+Wager arms (Δ Brier vs `pbp32`, moneyline / spread / total): `pe_pbp32` +0.0012 / +0.0009 / −0.0008,
+`te_pbp32` +0.0012 / +0.0011 / +0.0014, `te_pbp32_lp` +0.0007 / +0.0013 / −0.0000 all pass;
+`pe_pbp32_lp` fails spread (+0.0057 ± 0.0033). None beats `pbp32` on any market outright. On the
+QB-changed and QB-projected subsets most arms lean better on spread (e.g. `te_pbp32_lp` −0.0027 /
+−0.0039, `pe_pbp32` −0.0021 / −0.0015) but every CI includes 0 (`playereffects/report.md`,
+`subsets.md`). So the foundation now responds to personnel the way it should, at no measurable cost
+to the wager models; the payoff should come at inference, when a lineup changes after the
+historical games the wager model learned from (an injured starter, a traded QB), which the
+backtest over ordinary weeks barely samples.
+
 Results: `lineups/ablation.md`, `lineups/report.md` (per market, pass/fail), `lineups/subsets.md`
 (QB changed / QB projected to change / top-quartile turnover / steady), and the per-game change
 flags in `lineups/changes/<season>.csv`.
 
 **Next steps for personnel**
-1. Keep `pbp32` in production; don't wire projected lineups in yet (it would also need live
-   depth charts and injury reports in the refresh workflow).
-2. **Make the foundation learn who matters first**, re-checking with the QB swap (now ~15 min on
-   Actions) before rerunning the wager arms. Removing the ratings didn't do it (above); next to
-   try: a per-player target (the QB's EPA per dropback, a pass-completion head conditioned on the
-   passer's embedding) so the embedding is pushed to rank players; lower lineup dropout and a
-   bigger player embedding; and checking the lineup encoder's pooling isn't averaging the QB away
-   among 20+ slots (a separate QB slot input).
-3. Get more signal per parameter: a single scalar per side (e.g. the foundation's predicted
-   point-margin change from swapping the projected lineup in, via rollouts or the trunk) instead
-   of 16–64 columns, and train on more seasons (lineup data starts in 2013).
-4. Score on the subsets with more seasons (2016–2025) to see whether the QB-change lean is real.
+1. Keep `pbp32` in production for now; the candidate replacement is `te` (passes everywhere, ranks
+   QBs). Switching needs projected lineups in the refresh workflow (live depth charts and injury
+   reports) so a mid-week QB change reaches the prediction.
+2. Test the inference-time payoff directly: score `te` vs `pbp32` on games where the starting QB
+   changed from the previous week, using the projected (not the actual) lineup, over 2016–2025 to
+   get enough of them, and against the market's line move for those games.
+3. Extend player effects beyond the ball handler (pass rush / coverage on pass plays, the offensive
+   line on runs) so non-QB injuries move the rollouts too, and re-check with a swap of other
+   positions (WR1, LT, edge rusher).
+4. Get more signal per parameter for the wager model: a single scalar per side (the foundation's
+   predicted margin change from swapping the projected lineup in) instead of 16–64 columns.
