@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        config: [pbp32_pv]
+        config: [pbp32_pv_e4, pbp32_e4, pbp32_pv]
         season: [2021, 2022, 2023, 2024, 2025]
     steps:
       - uses: actions/checkout@v5
@@ -54,6 +54,11 @@ jobs:
           github-token: ${{ github.token }}
       - name: Backtest ${{ matrix.config }} on ${{ matrix.season }}
         run: |
+          if [ -f experiments/nfl/playervalues/${{ matrix.config }}/${{ matrix.season }}.csv ]; then
+            mkdir -p out/${{ matrix.config }}
+            cp experiments/nfl/playervalues/${{ matrix.config }}/${{ matrix.season }}.csv out/${{ matrix.config }}/
+            exit 0     # already committed
+          fi
           python scripts/foundation_arm.py ${{ matrix.config }} ${{ matrix.season }} --threads $(nproc) \
             --experiment experiments/nfl/playervalues.yaml --output-dir experiments/nfl/playervalues
           mkdir -p out/${{ matrix.config }}
@@ -89,12 +94,20 @@ jobs:
           import pathlib
           from runitback.wager.experiments import ablate
           R, seasons = pathlib.Path("experiments/nfl/playervalues"), [2021, 2022, 2023, 2024, 2025]
-          names = ["pbp32", "pbp32_pv", "pvg", "pvgg", "ens", "ens_pv", "pvg_mkt", "pvgg_mkt"]
+          names = ["pbp32", "pbp32_pv", "pbp32_e4", "pbp32_pv_e4", "pvg", "pvgg", "ens", "ens_pv", "pvg_mkt", "pvgg_mkt"]
           have = {n: {} for n in names if all((R / n / f"{s}.csv").exists() for s in seasons)}
           print("complete configurations:", list(have))
           ablate("data/nfl/games.csv", "nfl", have, seasons, str(R), "pbp32", 1, 1)
           PY
           python scripts/foundation_report.py $R --baseline pbp32 --out $R/report.md
+          # the 4-seed averages against each other
+          E=$R/e4; rm -rf $E; mkdir -p $E; cp -r $R/pbp32_e4 $R/pbp32_pv_e4 $R/changes $E/ 2>/dev/null || true
+          if [ -d $E/pbp32_e4 ] && [ -d $E/pbp32_pv_e4 ]; then
+            python -c "from runitback.wager.experiments import ablate; ablate('data/nfl/games.csv', 'nfl', {'pbp32_e4': {}, 'pbp32_pv_e4': {}}, [2021, 2022, 2023, 2024, 2025], '$E', 'pbp32_e4', 1, 1)"
+            python scripts/foundation_report.py $E --baseline pbp32_e4 --out $E/report.md
+            python scripts/lineup_report.py $E --baseline pbp32_e4 --out $E/subsets.md
+            rm -rf $E/pbp32_e4 $E/pbp32_pv_e4 $E/changes
+          fi
           python scripts/lineup_report.py $R --baseline pbp32 --out $R/subsets.md
           rm -rf $R/pbp32 $R/changes
           { echo "## Player-values experiment"; cat $R/ablation.md; echo; cat $R/report.md; echo; cat $R/subsets.md; } >> "$GITHUB_STEP_SUMMARY"

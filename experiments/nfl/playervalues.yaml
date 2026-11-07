@@ -12,3 +12,11 @@ configs:
   pbp32_pv:
     model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
             lineup: "experiments/nfl/playervalues/pv.parquet", lineup_set: pv}
+  # 4-seed averages of both, so the comparison is not within the seed-to-seed noise (~±0.002)
+  pbp32_e4:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+    fit: {ensemble: 4}
+  pbp32_pv_e4:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "experiments/nfl/playervalues/pv.parquet", lineup_set: pv}
+    fit: {ensemble: 4}
