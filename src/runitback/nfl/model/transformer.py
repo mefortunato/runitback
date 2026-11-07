@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from ...core.transformer import Block, KVCache, mlp
 from ..vocab import N_ELAPSED, N_YARDS, PLAY_TYPES, RESULTS
 from .features import FEATURES
-from .lineups import N_COACH_CONT, N_GROUPS, N_SLOTS, SIDE, SLOT_GROUP, WHO_NONE
+from .lineups import GROUP_IDX, N_COACH_CONT, N_GROUPS, N_SLOTS, SIDE, SLOT_GROUP, WHO_NONE
 from ..vocab import PT, RS
 
 NEG = -1e9
@@ -31,6 +31,9 @@ class ModelConfig:
     lineup_dropout: float = 0.0  # dropout on the lineup/coach context and the personnel vector
     who_head: bool = False  # predict which offensive player gets the ball (needs lineups)
     n_usage: int = 0  # recent-usage features per who-head candidate (0 = embeddings only)
+    # weight of the passer target: each pass play's result and yards predicted from the on-field
+    # QB's player embedding alone, so the embedding has to carry how good he is (0 = off)
+    qb_weight: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -111,6 +114,10 @@ class PlayTransformer(nn.Module):
             self.who_unk = nn.Parameter(torch.zeros(d))
             self.who_usage = nn.Sequential(nn.Linear(cfg.n_usage, d), nn.GELU(), nn.Linear(d, d)) \
                 if cfg.n_usage else None
+        if cfg.n_players and cfg.qb_weight > 0:
+            nR_, nY_ = len(RESULTS), N_YARDS
+            self.qb_res = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, nR_))
+            self.qb_yds = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, nY_))
         self.pos = nn.Embedding(cfg.max_len, d)
         self.cont = nn.Linear(cfg.n_cont, d) if cfg.n_cont else None
         self.in_ln = nn.LayerNorm(d)
@@ -200,6 +207,21 @@ class PlayTransformer(nn.Module):
         m[..., RS["sack"]] &= ~(pas & (who >= 0) & (who < SIDE))
         return m
 
+    def passer_loss(self, f, t, r, y, valid, result_mask, yards_mask) -> torch.Tensor | None:
+        """The passer target: NLL of each pass play's result, and of its yards given the result,
+        from the possession team's on-field QB's embedding alone (no game state), so the
+        embedding must encode the QB's completion / sack / interception / yardage profile."""
+        off, grp = f["pers"][..., :SIDE], f["pers_grp"][..., :SIDE]
+        is_qb = grp == GROUP_IDX["QB"] + 1
+        qb = (off * is_qb).max(-1).values                                 # (B, T); 0 = no QB known
+        m = (qb > 0) & (t == PT["pass"]) & (valid > 0)
+        if not m.any():
+            return None
+        e = self.lineup.player(qb[m])                                     # (N, d)
+        lr = self.qb_res(e).masked_fill(~result_mask[m], NEG)
+        ly = self.qb_yds(e + self.e_res(r[m]).detach()).masked_fill(~yards_mask[m], NEG)
+        return F.cross_entropy(lr, r[m]) + F.cross_entropy(ly, y[m])
+
     def new_cache(self, batch: int) -> KVCache:
         c = self.cfg
         return KVCache(c.n_layers, batch, c.n_heads, c.max_len, c.d_model // c.n_heads,
@@ -257,6 +279,11 @@ class PlayTransformer(nn.Module):
         if who_part is not None:
             total = total + who_part
             logs["who"] = who_part.item()
+        if getattr(self, "qb_res", None) is not None and "pers" in batch["feats"]:
+            q = self.passer_loss(batch["feats"], t, r, y, valid, batch["result_mask"], batch["yards_mask"])
+            if q is not None:
+                total = total + self.cfg.qb_weight * q
+                logs["qb"] = q.item()
         if box_weight > 0:
             from .boxscore import batch_box, box_loss
             pred, real = batch_box(self, h, p, batch)
