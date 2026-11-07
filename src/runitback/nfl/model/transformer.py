@@ -9,8 +9,8 @@ import torch.nn.functional as F
 
 from ...core.transformer import Block, KVCache, mlp
 from ..vocab import N_ELAPSED, N_YARDS, PLAY_TYPES, RESULTS
-from .features import FEATURES
-from .lineups import GROUP_IDX, N_COACH_CONT, N_GROUPS, N_SLOTS, SIDE, SLOT_GROUP, WHO_NONE
+from .features import FEATURES, TEAM_FEATURES
+from .lineups import DEF_UNIT, GROUP_IDX, OFF_UNIT, N_COACH_CONT, N_GROUPS, N_SLOTS, SIDE, SLOT_GROUP, WHO_NONE
 from ..vocab import PT, RS
 
 NEG = -1e9
@@ -34,6 +34,14 @@ class ModelConfig:
     # weight of the passer target: each pass play's result and yards predicted from the on-field
     # QB's player embedding alone, so the embedding has to carry how good he is (0 = off)
     qb_weight: float = 0.0
+    # the same for the player who got the ball (runs, targets): his play's result and yards from his
+    # embedding and the play type alone (needs the who head; 0 = off)
+    carrier_weight: float = 0.0
+    # players-only foundation: no team identity (franchise, team-season and season tokens, ratings,
+    # coach records). The offense is pooled from the possession team's offensive and specialist
+    # players plus its head coach, the defense from the other team's defensive players plus its
+    # head coach, so team strength can only come from who plays.
+    players_only: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -49,7 +57,7 @@ class LineupEncoder(nn.Module):
     the number of WRs, TEs, DBs... on the field is visible), or a learned UNKNOWN vector.
     """
 
-    def __init__(self, n_players: int, d: int, player_dim: int = 0):
+    def __init__(self, n_players: int, d: int, player_dim: int = 0, split: bool = False):
         super().__init__()
         pd_ = player_dim or d
         emb = nn.Embedding(n_players, pd_, padding_idx=0)
@@ -66,16 +74,33 @@ class LineupEncoder(nn.Module):
         self.unk_pers = nn.Parameter(torch.zeros(d))
         self.register_buffer("slot_group", F.one_hot(torch.as_tensor(SLOT_GROUP), N_GROUPS).float(),
                              persistent=False)
+        self.split = split
+        if split:
+            unit = lambda n: nn.Sequential(nn.Linear(n * d, d), nn.GELU(), nn.LayerNorm(d))
+            self.off_unit, self.def_unit = unit(len(OFF_UNIT)), unit(len(DEF_UNIT))
+            self.unk_off, self.unk_def = nn.Parameter(torch.zeros(d)), nn.Parameter(torch.zeros(d))
 
-    def teams(self, lineup: torch.Tensor) -> torch.Tensor:
-        """lineup (B, K, S) slot tokens -> (B, K, d)."""
+    def group_pools(self, lineup: torch.Tensor) -> torch.Tensor:
+        """lineup (B, K, S) slot tokens -> (B, K, G, d): each position group's weighted mean."""
         x = self.player(lineup) + self.slot.weight                      # (B,K,S,d)
         w = F.softplus(self.slot_w) * (lineup > 0)                       # (B,K,S)
         wg = w[..., None] * self.slot_group                              # (B,K,S,G)
         num = torch.einsum("bksg,bksd->bkgd", wg, x)
         den = wg.sum(2)[..., None]                                       # (B,K,G,1)
-        pooled = torch.where(den > 0, num / den.clamp(min=1e-6), self.missing)
-        v = self.team_proj(pooled.flatten(-2))
+        return torch.where(den > 0, num / den.clamp(min=1e-6), self.missing)
+
+    def units(self, lineup: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """lineup (B, K, S) -> each team's offense (offensive + specialist groups) and defense
+        (defensive groups) vectors, (B, K, d) each; an all-empty depth chart maps to UNKNOWN."""
+        pooled = self.group_pools(lineup)
+        known = (lineup > 0).any(-1, keepdim=True)
+        off = self.off_unit(pooled[:, :, OFF_UNIT].flatten(-2))
+        dfn = self.def_unit(pooled[:, :, DEF_UNIT].flatten(-2))
+        return torch.where(known, off, self.unk_off), torch.where(known, dfn, self.unk_def)
+
+    def teams(self, lineup: torch.Tensor) -> torch.Tensor:
+        """lineup (B, K, S) slot tokens -> (B, K, d)."""
+        v = self.team_proj(self.group_pools(lineup).flatten(-2))
         known = (lineup > 0).any(-1, keepdim=True)
         return torch.where(known, v, self.unk_team)
 
@@ -97,7 +122,8 @@ class PlayTransformer(nn.Module):
         self.cfg = cfg
         d = cfg.d_model
         self.emb = nn.ModuleDict({f: nn.Embedding(cfg.feature_sizes[f], d) for f in FEATURES})
-        self.lineup = LineupEncoder(cfg.n_players, d, cfg.player_dim) if cfg.n_players else None
+        self.lineup = LineupEncoder(cfg.n_players, d, cfg.player_dim, split=cfg.players_only) \
+            if cfg.n_players else None
         if cfg.n_players:
             cd = cfg.player_dim or d
             coach = lambda: nn.Embedding(max(cfg.n_coaches, 3), d) if cd == d else nn.Sequential(
@@ -118,6 +144,9 @@ class PlayTransformer(nn.Module):
             nR_, nY_ = len(RESULTS), N_YARDS
             self.qb_res = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, nR_))
             self.qb_yds = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, nY_))
+        if cfg.n_players and cfg.who_head and cfg.carrier_weight > 0:
+            self.car_res = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, len(RESULTS)))
+            self.car_yds = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, N_YARDS))
         self.pos = nn.Embedding(cfg.max_len, d)
         self.cont = nn.Linear(cfg.n_cont, d) if cfg.n_cont else None
         self.in_ln = nn.LayerNorm(d)
@@ -133,8 +162,8 @@ class PlayTransformer(nn.Module):
 
     # -- trunk
     def encode(self, feats: dict[str, torch.Tensor], cache: KVCache | None = None) -> torch.Tensor:
-        x = sum(self.emb[f](feats[f]) for f in FEATURES)
-        if self.cont is not None:
+        x = sum(self.emb[f](feats[f]) for f in FEATURES if not (self.cfg.players_only and f in TEAM_FEATURES))
+        if self.cont is not None and not self.cfg.players_only:
             x = x + self.cont(feats["cont"])
         if self.lineup is not None:
             x = x + self.lineup_context(feats)
@@ -150,12 +179,27 @@ class PlayTransformer(nn.Module):
 
     def lineup_context(self, feats: dict[str, torch.Tensor]) -> torch.Tensor:
         """Possession team's lineup (as offense) + opponent's lineup (as defense) + both coaches."""
-        teams = self.lineup.teams(feats["lineup"])                      # (B, 2, d): home, away
         home = feats["is_home"].bool()[..., None]                       # (B, T, 1)
+        if self.lineup.split:
+            o, dv = self.lineup.units(feats["lineup"])                  # (B, 2, d) each: home, away
+            off = torch.where(home, o[:, :1], o[:, 1:])
+            dfn = torch.where(home, dv[:, 1:], dv[:, :1])
+            return self.lineup_drop(off + dfn + self.off_coach(feats["off_coach"]) + self.def_coach(feats["def_coach"]))
+        teams = self.lineup.teams(feats["lineup"])                      # (B, 2, d): home, away
         off = torch.where(home, teams[:, :1], teams[:, 1:])
         dfn = torch.where(home, teams[:, 1:], teams[:, :1])
         return self.lineup_drop(self.lineup.as_off(off) + self.lineup.as_def(dfn) + self.off_coach(feats["off_coach"])
                                 + self.def_coach(feats["def_coach"]) + self.coach_cont(feats["coach_cont"]))
+
+    def lineup_vectors(self, lineup: torch.Tensor) -> torch.Tensor:
+        """(N, S) depth charts -> (N, 2d): a team's vector as offense and as defense (players only:
+        its offense unit and its defense unit)."""
+        t = torch.stack([lineup, torch.zeros_like(lineup)], 1)
+        if self.lineup.split:
+            o, dv = self.lineup.units(t)
+            return torch.cat([o[:, 0], dv[:, 0]], -1)
+        v = self.lineup.teams(t)[:, 0]
+        return torch.cat([self.lineup.as_off(v), self.lineup.as_def(v)], -1)
 
     def personnel(self, feats: dict[str, torch.Tensor]) -> torch.Tensor | int:
         """Per-play on-field vector added to the result/yards/clock heads (0 without lineups)."""
@@ -222,6 +266,21 @@ class PlayTransformer(nn.Module):
         ly = self.qb_yds(e + self.e_res(r[m]).detach()).masked_fill(~yards_mask[m], NEG)
         return F.cross_entropy(lr, r[m]) + F.cross_entropy(ly, y[m])
 
+    def carrier_loss(self, f, t, r, y, who, m, result_mask, yards_mask) -> torch.Tensor | None:
+        """The ball-carrier target: NLL of the play's result and yards from the embedding of the
+        player who got the ball and the play type alone (no game state)."""
+        m = m & (who < SIDE)
+        if not m.any():
+            return None
+        tok = torch.gather(f["pers"][..., :SIDE], -1, who.clamp(0, SIDE - 1)[..., None]).squeeze(-1)
+        m = m & (tok > 0)
+        if not m.any():
+            return None
+        e = self.lineup.player(tok[m]) + self.e_type(t[m]).detach()
+        lr = self.car_res(e).masked_fill(~result_mask[m], NEG)
+        ly = self.car_yds(e + self.e_res(r[m]).detach()).masked_fill(~yards_mask[m], NEG)
+        return F.cross_entropy(lr, r[m]) + F.cross_entropy(ly, y[m])
+
     def new_cache(self, batch: int) -> KVCache:
         c = self.cfg
         return KVCache(c.n_layers, batch, c.n_heads, c.max_len, c.d_model // c.n_heads,
@@ -251,6 +310,7 @@ class PlayTransformer(nn.Module):
         valid = batch["valid"]
         t, r, y, e = batch["type"], batch["result"], batch["yards"], batch["elapsed"]
         who_part = None
+        total_extra, extra_logs = [], {}
         if self.has_who and "who" in batch["feats"]:
             f = batch["feats"]
             cand = self.who_candidates(f["pers"], f["pers_grp"], f.get("pers_usage"))
@@ -259,6 +319,11 @@ class PlayTransformer(nn.Module):
             m = (who >= 0) & ((t == PT["run"]) | (t == PT["pass"])) & (valid > 0)
             nll = F.cross_entropy(logits.flatten(0, 1), who.clamp(min=0).flatten(), reduction="none").view_as(who)
             who_part = (nll * m).sum() / m.sum().clamp(min=1)
+            if getattr(self, "car_res", None) is not None:
+                c = self.carrier_loss(f, t, r, y, who, m, batch["result_mask"], batch["yards_mask"])
+                if c is not None:
+                    total_extra.append(self.cfg.carrier_weight * c)
+                    extra_logs["carrier"] = c.item()
             p = p + self.lineup_drop(self.who_vec(who, t, cand))
             rm = batch["result_mask"] & self.who_result_mask(t, who, batch["result_mask"].shape[-1])
             batch = dict(batch, result_mask=rm | F.one_hot(r, rm.shape[-1]).bool())
@@ -279,6 +344,9 @@ class PlayTransformer(nn.Module):
         if who_part is not None:
             total = total + who_part
             logs["who"] = who_part.item()
+        for x_ in total_extra:
+            total = total + x_
+        logs |= extra_logs
         if getattr(self, "qb_res", None) is not None and "pers" in batch["feats"]:
             q = self.passer_loss(batch["feats"], t, r, y, valid, batch["result_mask"], batch["yards_mask"])
             if q is not None:

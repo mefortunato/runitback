@@ -244,9 +244,7 @@ def _team_history(order: pd.DataFrame, n: int) -> dict[tuple[str, str], list[str
 @torch.no_grad()
 def _lineup_vectors(model, tokens: np.ndarray) -> np.ndarray:
     """(N, S) depth charts -> (N, 2d): the foundation's lineup vector as offense and as defense."""
-    t = torch.from_numpy(np.stack([tokens, np.zeros_like(tokens)], 1))          # (N, 2, S)
-    v = model.lineup.teams(t)[:, 0]
-    return torch.cat([model.lineup.as_off(v), model.lineup.as_def(v)], -1).numpy()
+    return model.lineup_vectors(torch.from_numpy(tokens)).numpy()
 
 
 def _pca(x: np.ndarray, fit: np.ndarray, dim: int) -> tuple[np.ndarray, dict]:

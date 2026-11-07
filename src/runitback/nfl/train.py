@@ -146,7 +146,7 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
           use_lineups: bool = True, unk_lineup_prob: float = 0.1, unk_pers_prob: float = 0.15,
           other_player_prob: float = 0.03, player_dim: int = 0, lineup_dropout: float = 0.0,
           prev_lineup_prob: float = 0.0, box_weight: float = 0.0, who_head: bool = False,
-          qb_weight: float = 0.0) -> Path:
+          qb_weight: float = 0.0, carrier_weight: float = 0.0, players_only: bool = False) -> Path:
     """Train a model on one or more data directories. With `init`, fine-tune that checkpoint: its
     architecture and team-season vocabulary are kept (team-seasons it has not seen use the unknown
     embedding) and d_model/n_layers/n_heads/dropout are ignored."""
@@ -161,6 +161,8 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
         torch.backends.cudnn.allow_tf32 = True
     rng = np.random.default_rng(seed)
     out_dir.mkdir(parents=True, exist_ok=True)
+    if players_only:
+        use_ratings = False  # team strength comes only from the players
     games, plays, ratings, lookup_ratings = load_data(data_dir, use_ratings)
     games = games[games.season >= min_season]
     train_g, val_g = split_games(games, val_season, val_week)
@@ -195,7 +197,9 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
                           n_players=len(ld.pvocab) if ld else 0, n_coaches=len(ld.cvocab) if ld else 0,
                           player_dim=player_dim, lineup_dropout=lineup_dropout, who_head=who_head and ld is not None,
                           n_usage=N_USAGE if (who_head and ld is not None and ld.usage) else 0,
-                          qb_weight=qb_weight if ld is not None else 0.0)
+                          qb_weight=qb_weight if ld is not None else 0.0,
+                          carrier_weight=carrier_weight if (ld is not None and who_head) else 0.0,
+                          players_only=players_only and ld is not None)
     if lookup_ratings is None:
         lookup_ratings = ratings  # only synthetic data: better than no pre-game ratings at all
     train_items = encode_games(plays[plays.game_id.isin(train_g.game_id)], train_g, ts, cfg.max_len, ratings, ld)

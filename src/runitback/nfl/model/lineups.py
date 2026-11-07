@@ -32,6 +32,10 @@ SLOTS = [(g, r) for g in GROUPS for r in range(DEPTH[g])]
 SLOT_IDX = {s: i for i, s in enumerate(SLOTS)}
 SLOT_GROUP = np.array([GROUP_IDX[g] for g, _ in SLOTS])
 N_SLOTS = len(SLOTS)
+# players-only foundation units (group indices): the possession team's offense and specialists,
+# the other team's defense
+OFF_UNIT = [GROUP_IDX[g] for g in ("QB", "RB", "WR", "TE", "OL", "K", "P", "LS")]
+DEF_UNIT = [GROUP_IDX[g] for g in ("DL", "LB", "DB")]
 SIDE = 11              # players per side in per-play personnel
 N_PERS = 2 * SIDE
 N_COACH_CONT = 2 * len(COACH_STATS)

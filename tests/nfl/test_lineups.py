@@ -420,3 +420,31 @@ def test_refresh_lineups_rebuilds_data_but_keeps_weights(lineup_sim, tmp_path):
     sim = Simulator.load(out)
     assert sim.lineups.default("KC")["depth_chart"]["QB"]
     assert simulate_games(sim, "KC", "BUF", 2025, n=2, seed=0).n == 2
+
+
+def test_players_only_model_ignores_team_identity_and_follows_the_players():
+    from runitback.nfl.model.lineups import SLOT_IDX as SI
+    torch.manual_seed(0)
+    meta = tiny_lineup_meta()
+    n = len(PlayerVocab(meta["player_vocab"]))
+    m = PlayTransformer(ModelConfig(feature_sizes(3), d_model=32, n_layers=1, n_heads=2, n_players=n,
+                                    n_coaches=5, player_dim=8, players_only=True)).eval()
+    B, T = 1, 4
+    feats = {f: torch.zeros(B, T, dtype=torch.long) for f in m.emb}
+    feats["is_home"] = torch.ones(B, T, dtype=torch.long)
+    lineup = torch.zeros(B, 2, len(SI), dtype=torch.long)
+    lineup[:, :, SI[("QB", 0)]] = n - 1
+    lineup[:, :, SI[("DL", 0)]] = n - 2
+    feats |= {"lineup": lineup, "off_coach": torch.ones(B, T, dtype=torch.long),
+              "def_coach": torch.ones(B, T, dtype=torch.long), "coach_cont": torch.randn(B, T, 4 * 2)}
+    with torch.no_grad():
+        h = m.encode(feats)
+        other = dict(feats, off_team=feats["off_team"] + 1, off_ts=feats["off_ts"] + 1, season=feats["season"] + 1,
+                     coach_cont=torch.randn(B, T, 4 * 2))
+        assert torch.allclose(h, m.encode(other))                       # team identity is ignored
+        qb = lineup.clone()
+        qb[:, 0, SI[("QB", 0)]] = n - 3                                 # a different home QB
+        assert not torch.allclose(h, m.encode(dict(feats, lineup=qb)))  # the home offense changes
+        dl = lineup.clone()
+        dl[:, 0, SI[("DL", 0)]] = n - 3                                 # the home defense is off the field
+        assert torch.allclose(h, m.encode(dict(feats, lineup=dl)))      # (home has the ball throughout)

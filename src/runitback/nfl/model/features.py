@@ -15,6 +15,8 @@ FEATURES = [
     "off_team", "def_team", "off_ts", "def_ts", "season", "game_type",
     "prev_type", "prev_result", "prev_yards", "prev_elapsed",
 ]
+# team identity: left out of a players-only model (ModelConfig.players_only)
+TEAM_FEATURES = ("off_team", "def_team", "off_ts", "def_ts", "season")
 # Continuous team-strength inputs, from the possession team's point of view.
 CONT_FEATURES = ["off_off_epa", "off_def_epa", "def_off_epa", "def_def_epa", "elo_diff"]
 
