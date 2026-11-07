@@ -46,6 +46,15 @@ class ModelConfig:
     # per-player effect on top of the situation), so what the embeddings learn about a player
     # moves the simulated plays; needs qb_weight / carrier_weight > 0 for the heads to exist
     player_effects: bool = False
+    # additive per-player effects for all 22 on the field (every position, both sides): each
+    # player's contribution to the play's result and yards logits, from his embedding, his role
+    # (side, position group, ball handler or not) and the play type, summed over the players. A
+    # changed player moves the prediction by exactly his own term, at every position.
+    all_effects: bool = False
+    effect_dim: int = 64
+    # weight of the lineup-only target: each play's result and yards from the play type and the
+    # summed player effects alone (no game state), an adjusted plus-minus over the 22 on the field
+    lineup_weight: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -151,6 +160,18 @@ class PlayTransformer(nn.Module):
         if cfg.n_players and cfg.who_head and cfg.carrier_weight > 0:
             self.car_res = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, len(RESULTS)))
             self.car_yds = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, N_YARDS))
+        if cfg.n_players and cfg.all_effects:
+            k, nR_, nT_ = cfg.effect_dim, len(RESULTS), len(PLAY_TYPES)
+            n_roles = 2 * (N_GROUPS + 1) * 2
+            self.fx = nn.ModuleDict(dict(
+                pr=nn.Linear(d, k, bias=False), py=nn.Linear(d, k, bias=False),
+                role_r=nn.Embedding(n_roles, k), role_y=nn.Embedding(n_roles, k),
+                type_r=nn.Embedding(2 * nT_, k), type_y=nn.Embedding(2 * nT_, k),
+                res_y=nn.Embedding(nR_, k),
+                out_r=nn.Linear(k, nR_, bias=False), out_y=nn.Linear(k, N_YARDS, bias=False),
+                base_r=nn.Embedding(nT_, nR_), base_y=nn.Embedding(nT_ * nR_, N_YARDS)))
+            nn.init.zeros_(self.fx.out_r.weight)
+            nn.init.zeros_(self.fx.out_y.weight)
         self.pos = nn.Embedding(cfg.max_len, d)
         self.cont = nn.Linear(cfg.n_cont, d) if cfg.n_cont else None
         self.in_ln = nn.LayerNorm(d)
@@ -282,7 +303,61 @@ class PlayTransformer(nn.Module):
             tok = torch.gather(pers[..., :SIDE], -1, who.clamp(0, SIDE - 1)[..., None]).squeeze(-1)
             m = (who >= 0) & (who < SIDE) & (tok > 0) & ((t == PT["run"]) | (t == PT["pass"]))
             out["car"] = (self.lineup.player(tok) + self.e_type(t), m)
+        if getattr(self, "fx", None) is not None:
+            out["all"] = (pers, grp, t, self.handler_mask(pers, grp, t, who))
         return out
+
+    @property
+    def has_effects(self) -> bool:
+        return bool(self.cfg.player_effects or self.cfg.all_effects)
+
+    @staticmethod
+    def handler_mask(pers, grp, t, who=None) -> torch.Tensor:
+        """(.., 22) the ball handlers of each play: the offense's QB on passes, the player who got
+        the ball on runs / targets."""
+        h = torch.zeros_like(pers, dtype=torch.bool)
+        pas = (t == PT["pass"])[..., None]
+        h[..., :SIDE] = (grp[..., :SIDE] == GROUP_IDX["QB"] + 1) & pas
+        if who is not None:
+            sel = F.one_hot(who.clamp(0, SIDE), SIDE + 1)[..., :SIDE].bool()
+            sel &= ((who >= 0) & (who < SIDE) & ((t == PT["run"]) | (t == PT["pass"])))[..., None]
+            h[..., :SIDE] |= sel
+        return h & (pers > 0)
+
+    def _fx_hidden(self, kind: str, pers, grp, t, handler, r=None) -> torch.Tensor:
+        """Sum over the on-field players of each player's hidden effect, (.., effect_dim); the
+        logits are a linear map of it, so each player's contribution is additive."""
+        fx = self.fx
+        side = (torch.arange(pers.shape[-1], device=pers.device) >= SIDE).long()     # (22,)
+        role = side * (2 * (N_GROUPS + 1)) + grp * 2 + handler.long()
+        ty = t[..., None] * 2 + side
+        e = self.lineup.player(pers)
+        if kind == "r":
+            pre = fx.pr(e) + fx.role_r(role) + fx.type_r(ty)
+        else:
+            pre = fx.py(e) + fx.role_y(role) + fx.type_y(ty) + fx.res_y(r)[..., None, :]
+        return (F.gelu(pre) * (pers > 0)[..., None]).sum(-2)
+
+    def all_result_effect(self, pers, grp, t, handler) -> torch.Tensor:
+        return self.fx.out_r(self._fx_hidden("r", pers, grp, t, handler))
+
+    def all_yards_effect(self, pers, grp, t, handler, r) -> torch.Tensor:
+        return self.fx.out_y(self._fx_hidden("y", pers, grp, t, handler, r))
+
+    def lineup_only_loss(self, f, t, r, y, valid, result_mask, yards_mask) -> torch.Tensor | None:
+        """The lineup-only target: NLL of each play's result and yards given the result from the
+        play type and the 22 players' summed effects alone (no game state)."""
+        pers, grp = f["pers"], f["pers_grp"]
+        m = (pers > 0).any(-1) & (valid > 0)
+        if not m.any():
+            return None
+        pers, grp, t_, r_, y_ = pers[m], grp[m], t[m], r[m], y[m]
+        hd = self.handler_mask(pers, grp, t_, f["who"][m] if self.has_who and "who" in f else None)
+        nR = len(RESULTS)
+        lr = (self.fx.base_r(t_) + self.all_result_effect(pers, grp, t_, hd)).masked_fill(~result_mask[m], NEG)
+        ly = (self.fx.base_y(t_ * nR + r_) + self.all_yards_effect(pers, grp, t_, hd, r_)
+              ).masked_fill(~yards_mask[m], NEG)
+        return F.cross_entropy(lr, r_) + F.cross_entropy(ly, y_)
 
     def result_effect(self, eff) -> torch.Tensor | int:
         fx = 0
@@ -292,6 +367,8 @@ class PlayTransformer(nn.Module):
         if "car" in eff:
             e, m = eff["car"]
             fx = fx + self.car_res(e) * m[..., None]
+        if "all" in eff:
+            fx = fx + self.all_result_effect(*eff["all"])
         return fx
 
     def yards_effect(self, eff, r) -> torch.Tensor | int:
@@ -303,6 +380,8 @@ class PlayTransformer(nn.Module):
         if "car" in eff:
             e, m = eff["car"]
             fx = fx + self.car_yds(e + er) * m[..., None]
+        if "all" in eff:
+            fx = fx + self.all_yards_effect(*eff["all"], r)
         return fx
 
     def carrier_loss(self, f, t, r, y, who, m, result_mask, yards_mask) -> torch.Tensor | None:
@@ -367,7 +446,7 @@ class PlayTransformer(nn.Module):
             rm = batch["result_mask"] & self.who_result_mask(t, who, batch["result_mask"].shape[-1])
             batch = dict(batch, result_mask=rm | F.one_hot(r, rm.shape[-1]).bool())
         fr, fy = 0, 0
-        if self.cfg.player_effects and self.lineup is not None and "pers" in batch["feats"]:
+        if self.has_effects and self.lineup is not None and "pers" in batch["feats"]:
             f = batch["feats"]
             eff = self.effect_inputs(f["pers"], f["pers_grp"], t, f.get("who") if self.has_who else None)
             fr, fy = self.result_effect(eff), self.yards_effect(eff, r)
@@ -396,6 +475,11 @@ class PlayTransformer(nn.Module):
             if q is not None:
                 total = total + self.cfg.qb_weight * q
                 logs["qb"] = q.item()
+        if getattr(self, "fx", None) is not None and self.cfg.lineup_weight > 0 and "pers" in batch["feats"]:
+            q = self.lineup_only_loss(batch["feats"], t, r, y, valid, batch["result_mask"], batch["yards_mask"])
+            if q is not None:
+                total = total + self.cfg.lineup_weight * q
+                logs["lineup"] = q.item()
         if box_weight > 0:
             from .boxscore import batch_box, box_loss
             pred, real = batch_box(self, h, p, batch)

@@ -77,6 +77,10 @@ def train(out: Path = RUNS / "prod",
                                                          "are pooled from the players and head coaches"),
           player_effects: bool = typer.Option(False, help="add the passer / carrier heads to the play's result "
                                                           "and yards (with --qb-weight / --carrier-weight)"),
+          all_effects: bool = typer.Option(False, help="additive per-player effects for all 22 on the field "
+                                                       "(every position) in the play's result and yards"),
+          lineup_weight: float = typer.Option(0.0, help="weight of the lineup-only target (result and yards "
+                                                         "from the 22 players' effects alone; with --all-effects)"),
           min_season: int = typer.Option(1999, help="first season trained on (players-only: 2013, "
                                                      "where depth charts start)"),
           ratings: bool = typer.Option(True, help="pre-game team-strength ratings as inputs (off: team "
@@ -96,7 +100,7 @@ def train(out: Path = RUNS / "prod",
         other_player_prob=other_player_prob, prev_lineup_prob=prev_lineup_prob, box_weight=box_weight, who_head=who,
         use_ratings=ratings, unk_ts_prob=unk_ts_prob, qb_weight=qb_weight,
         carrier_weight=carrier_weight, players_only=players_only, min_season=min_season,
-        player_effects=player_effects)
+        player_effects=player_effects, all_effects=all_effects, lineup_weight=lineup_weight)
 
 
 @nfl.command()

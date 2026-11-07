@@ -221,7 +221,7 @@ class Simulator:
                 rm[i] = False
                 rm[i, RS[f["result"]]] = True
         eff = {}
-        if m.cfg.player_effects and pers is not None:
+        if m.has_effects and pers is not None:
             eff = m.effect_inputs(pers, grp, tt, wt if m.has_who else None)
         r = self._sample(m.result_logits(h, tt, p) + m.result_effect(eff), rm, temperature, gen)
         rt = torch.as_tensor(r)

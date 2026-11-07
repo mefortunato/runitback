@@ -474,3 +474,53 @@ def test_player_effects_add_the_passers_head_to_pass_plays_only():
         other[:, 0] = n - 3                                            # another QB changes the pass play
         fx2 = m.result_effect(m.effect_inputs(other, grp, t, who))
         assert not torch.allclose(fx[0], fx2[0]) and torch.allclose(fx[1], fx2[1])
+
+
+def test_all_effects_are_additive_per_player_at_every_position():
+    from runitback.nfl.model.lineups import GROUP_IDX as GI, WHO_NONE
+    from runitback.nfl.vocab import PT, RESULTS, RS
+    torch.manual_seed(0)
+    n = len(PlayerVocab(tiny_lineup_meta()["player_vocab"]))
+    m = PlayTransformer(ModelConfig(feature_sizes(3), d_model=32, n_layers=1, n_heads=2, n_players=n, n_coaches=5,
+                                    player_dim=8, who_head=True, all_effects=True, lineup_weight=1.0, effect_dim=8))
+    for p_ in (m.fx.out_r.weight, m.fx.out_y.weight):      # zero at init; give them a value to test
+        torch.nn.init.normal_(p_)
+    m.eval()
+    groups = ["QB", "RB", "WR", "WR", "WR", "TE", "OL", "OL", "OL", "OL", "OL",
+              "DL", "DL", "DL", "DL", "LB", "LB", "DB", "DB", "DB", "DB", "LB"]
+    grp = torch.tensor([[GI[g] + 1 for g in groups]] * 2)
+    pers = torch.arange(1, 23).repeat(2, 1) + 2 * N_GROUPS
+    t = torch.tensor([PT["pass"], PT["run"]])
+    who = torch.tensor([2, 1])
+    with torch.no_grad():
+        hd = m.handler_mask(pers, grp, t, who)
+        assert hd[0, 0] and hd[0, 2] and not hd[0, 1] and hd[1, 1] and hd.sum() == 3   # QB + target; carrier
+        base = m.all_result_effect(pers, grp, t, hd)
+        for i in (6, 12, 19):                               # a lineman, a pass rusher, a corner
+            other = pers.clone()
+            other[:, i] = n - 1
+            fx = m.all_result_effect(other, grp, t, hd)
+            assert not torch.allclose(base, fx)
+            one = pers.clone() * 0
+            one[:, i], two = pers[:, i], pers.clone() * 0
+            two[:, i] = n - 1
+            # the change is exactly that one player's own term
+            assert torch.allclose(base - fx, m.all_result_effect(one, grp, t, hd) - m.all_result_effect(two, grp, t, hd),
+                                  atol=1e-5)
+        empty = m.all_result_effect(pers * 0, grp, t, hd)
+        assert empty.abs().sum() == 0                       # unknown personnel: no effect
+    m.train()
+    B, T = 1, 2
+    feats = {f: torch.zeros(B, T, dtype=torch.long) for f in m.emb}
+    feats["phase"] = torch.full((B, T), 2)
+    feats |= {"pers": pers[None], "pers_grp": grp[None], "who": torch.tensor([[2, WHO_NONE]]),
+              "lineup": torch.zeros(B, 2, N_SLOTS, dtype=torch.long), "off_coach": torch.zeros(B, T, dtype=torch.long),
+              "def_coach": torch.zeros(B, T, dtype=torch.long), "coach_cont": torch.zeros(B, T, 2 * 4)}
+    batch = {"feats": feats, "valid": torch.ones(B, T), "type": t[None], "result": torch.tensor([[RS["complete"], RS["run"]]]),
+             "yards": torch.full((B, T), 105), "elapsed": torch.full((B, T), 5),
+             "type_mask": torch.ones(B, T, 11, dtype=torch.bool), "result_mask": torch.ones(B, T, len(RESULTS), dtype=torch.bool),
+             "yards_mask": torch.ones(B, T, 200, dtype=torch.bool), "elapsed_mask": torch.ones(B, T, 61, dtype=torch.bool)}
+    loss, logs = m.loss(batch)
+    assert "lineup" in logs and torch.isfinite(loss)
+    loss.backward()
+    assert m.fx.pr.weight.grad.abs().sum() > 0 and m.fx.out_r.weight.grad.abs().sum() > 0
