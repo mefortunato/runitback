@@ -88,9 +88,11 @@ def pool_sides(h: torch.Tensor, is_home: torch.Tensor, valid: torch.Tensor) -> t
 
 
 @torch.no_grad()
-def game_embeddings(ckpt: Path, data_dir: Path, batch_size: int = 32) -> pd.DataFrame:
-    """Raw per-team-game embeddings: game_id, team, season, off_0.., def_0.. (2 * d_model)."""
-    model, items, games = encode_all(ckpt, data_dir)
+def game_embeddings(ckpt: Path, data_dir: Path, batch_size: int = 32, game_ids=None) -> pd.DataFrame:
+    """Raw per-team-game embeddings: game_id, team, season, off_0.., def_0.. (2 * d_model), of every
+    played game (or of the given ones)."""
+    model, items, games = encode_all(ckpt, data_dir, game_ids)
+    items = [it for it in items if len(it["type"])]
     d = model.cfg.d_model
     rows, vecs = [], []
     for i in range(0, len(items), batch_size):
@@ -119,12 +121,19 @@ def reduce(raw: pd.DataFrame, before_season: int, dim: int = 32) -> tuple[pd.Dat
     z = (x - mean) / std
     _, s, vt = np.linalg.svd(z[fit], full_matrices=False)
     comp = vt[:dim]
-    proj = z @ comp.T
     var = (s ** 2) / (s ** 2).sum()
-    out = raw[["game_id", "team", "season"]].copy()
-    for j in range(dim):
-        out[f"{PREFIX}{j}"] = proj[:, j].astype(np.float32)
-    return out, {"mean": mean, "std": std, "components": comp, "explained": var[:dim]}
+    fitted = {"mean": mean, "std": std, "components": comp, "explained": var[:dim]}
+    return project(raw, fitted), fitted
+
+
+def project(raw: pd.DataFrame, proj) -> pd.DataFrame:
+    """Raw embeddings onto a fold's stored projection (``reduce``'s, or its ``pca_<dim>.npz``)."""
+    x = raw.filter(regex=r"^(off|def)_\d+$").to_numpy(np.float64)
+    z = ((x - proj["mean"]) / proj["std"]) @ np.asarray(proj["components"]).T
+    out = raw[["game_id", "team", "season"]].copy().reset_index(drop=True)
+    for j in range(z.shape[1]):
+        out[f"{PREFIX}{j}"] = z[:, j].astype(np.float32)
+    return out
 
 
 @torch.no_grad()
@@ -160,3 +169,22 @@ def embed_fold(ckpt: Path, data_dir: Path, out: Path, before_season: int, dim: i
     log.info("fold %d: %d team-games, %d dims explain %.1f%% of the variance", before_season, len(red), dim,
              100 * proj["explained"].sum())
     return path
+
+
+def update_fold(ckpt: Path, data_dir: Path, out: Path, dim: int = 32) -> tuple[Path, int]:
+    """Add the played games missing from <out>/pbp_<dim>.parquet (e.g. this week's) with the
+    fold's stored projection: earlier rows and the projection stay as they are, so a wager model
+    fit on the table sees the same numbers. Returns the table and how many games were added."""
+    path = out / f"pbp_{dim}.parquet"
+    table = pd.read_parquet(path)
+    with np.load(out / f"pca_{dim}.npz") as f:
+        proj = {k: f[k] for k in f.files}
+    games = pd.read_parquet(data_dir / "games.parquet", columns=["game_id"])
+    played = pd.read_parquet(data_dir / "plays.parquet", columns=["game_id"]).game_id.unique()
+    new = sorted(set(games.game_id) & set(played) - set(table.game_id))
+    if new:
+        add = project(game_embeddings(ckpt, data_dir, game_ids=new), proj)
+        table = pd.concat([table, add], ignore_index=True)
+        table.to_parquet(path)
+    log.info("%s: %d team-games, %d games added", path, len(table), len(new))
+    return path, len(new)

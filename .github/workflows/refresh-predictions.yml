@@ -5,6 +5,10 @@
 # redeployed: the pages pick up the new files within a minute. A failed run leaves the
 # published data in place. Ported from sportsml's Site workflow.
 #
+# The NFL model's history tokens include each game's play-by-play embedding: the games played
+# since the last run are embedded with the model's foundation fold (the `foundation-nfl` release,
+# see Train predictions) before the export.
+#
 # Lines come from The Odds API (ODDS_API_KEY secret; no game within 8 days: no request). The
 # schedule fits its free tier's 150 requests a month: about 23 runs a week in season, more on
 # game days (times in UTC, before each Eastern kickoff window). Without the key the previous
@@ -37,7 +41,7 @@ concurrency:
 jobs:
   export:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     # the Google Cloud settings live with the deploy's; if that environment requires a reviewer,
     # put these secrets in an environment without one (scheduled runs would otherwise wait)
     environment: production
@@ -49,6 +53,7 @@ jobs:
       GCP_DEPLOY_SERVICE_ACCOUNT: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
       PREDICTIONS_BUCKET: ${{ secrets.PREDICTIONS_BUCKET }}
       MLFLOW_DISABLE_AGENT_HINT: "1"
+      RUNITBACK_NFL_FOUNDATION: foundation/nfl
     steps:
       - name: Check configuration
         run: |
@@ -68,7 +73,7 @@ jobs:
       - name: Install
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e ".[wager]"
+          pip install -e ".[data,wager]"
       - name: Fetch the trained model
         env:
           WANT: ${{ inputs.webdata_sha256 }}
@@ -85,6 +90,20 @@ jobs:
             sleep 30
           done
           mkdir webdata && tar -xzf webdata.tar.gz -C webdata
+      - name: Embed the games played since
+        run: |
+          end=$(python -c "import datetime as d; t=d.date.today(); print(t.year if t.month >= 9 else t.year - 1)")
+          runitback nfl download --start 1999 --end "$end"
+          runitback nfl preprocess --start 1999 --end "$end"
+          mkdir -p "$RUNITBACK_NFL_FOUNDATION" folds
+          # the two latest folds: the model's (the current season's, or last season's until the
+          # next Train predictions run after a new season starts)
+          for a in $(gh release view foundation-nfl --json assets -q '.assets[].name' 2>/dev/null | sort | tail -2); do
+            gh release download foundation-nfl --pattern "$a" --dir folds
+            mkdir -p "$RUNITBACK_NFL_FOUNDATION/${a%.tar.gz}"
+            tar -xzf "folds/$a" -C "$RUNITBACK_NFL_FOUNDATION/${a%.tar.gz}"
+          done
+          runitback nfl foundation --root "$RUNITBACK_NFL_FOUNDATION" --existing --threads $(nproc)
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}

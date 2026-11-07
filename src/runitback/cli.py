@@ -82,6 +82,27 @@ def train(out: Path = RUNS / "prod",
 
 
 @nfl.command()
+def foundation(root: Path = typer.Option(Path("foundation/nfl"), help="fold directory (RUNITBACK_NFL_FOUNDATION)"),
+               season: list[int] = typer.Option(None, help="fold (test season); repeat for several. "
+                                                           "Default: the backtest's last 5 and the current"),
+               train: bool = typer.Option(True, help="train a fold that has no model (about an hour each)"),
+               existing: bool = typer.Option(False, help="only add new games to the folds already in --root "
+                                                         "(no training; the daily refresh)"),
+               data: Path = DATA / "processed", threads: int = 0):
+    """Foundation folds for the production wager model: train missing ones, embed new games."""
+    _log()
+    from .nfl.foundation import current_season, prepare
+    if existing:
+        season = sorted(int(d.name[4:]) for d in root.glob("fold*") if (d / "model.pt").exists())
+        train = False
+    elif not season:
+        now = current_season(data)
+        season = list(range(now - 5, now + 1))
+    for s, what in prepare(root, data, season, train=train, threads=threads or None).items():
+        typer.echo(f"fold{s}: {what}")
+
+
+@nfl.command()
 def embed(ckpt: Path = typer.Option(..., help="foundation (play-by-play) checkpoint"),
           out: Path = typer.Option(..., help="output directory"),
           before_season: int = typer.Option(..., help="fit the projection on games before this season "

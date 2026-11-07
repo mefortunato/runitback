@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from runitback.nfl.embed import pool_sides, reduce
+from runitback.nfl.embed import pool_sides, project, reduce
 from runitback.wager.models.transformer.data import PBP_MISSING, pbp_columns, pbp_features
 from runitback.wager.nfl import SCHEMA
 
@@ -22,6 +22,17 @@ def test_projection_is_fit_only_on_earlier_seasons():
     b, _ = reduce(later, 2021, dim=2)
     # ...but not the projection of the games before it
     pd.testing.assert_frame_equal(a[a.season == 2020], b[b.season == 2020])
+
+
+def test_new_games_reuse_the_folds_projection(tmp_path):
+    # the daily refresh projects this week's games with the fold's stored projection: the same
+    # numbers a full re-embedding gives, and the earlier rows stay as they were
+    raw = _raw([2020] * 50 + [2021] * 10)
+    table, proj = reduce(raw, 2021, dim=2)
+    np.savez(tmp_path / "pca.npz", **proj)
+    with np.load(tmp_path / "pca.npz") as f:
+        stored = {k: f[k] for k in f.files}
+    pd.testing.assert_frame_equal(project(raw.iloc[50:], stored), table.iloc[50:].reset_index(drop=True))
 
 
 def test_pool_sides_splits_offense_and_defense():

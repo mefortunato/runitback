@@ -117,8 +117,9 @@ mean gap of 8.6 points.
 ## Recommendation and next steps
 
 1. **Adopt `pbp32` (frozen) for production.** It is at least as good as `prod` on every market,
-   slightly better on margin, and more consistent with the generator. Doing so needs a
-   current-season foundation fold and `runitback nfl embed` in the Train predictions workflow.
+   slightly better on margin, and more consistent with the generator. Done: `runitback nfl
+   foundation` keeps one fold per test season, and the predictions workflows set
+   `RUNITBACK_NFL_FOUNDATION` (README, "Predictions data").
 2. **Drop generator fine-tuning** at this data size.
 3. **Fix the generator's scoring bias** before showing its totals next to the wager model's on the
    game page. A good first step is checking the rollout setup (clock and elapsed sampling,

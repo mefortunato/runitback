@@ -757,6 +757,24 @@ deployments keep needing a merge to `main`:
   switches the service to the second-generation execution environment, which Cloud Storage volumes
   need). Without the secret the app deploys as before and the predictions pages are empty.
 
+The NFL wager model reads the play-by-play generator's frozen game embeddings in its history tokens
+(the `pbp32` arm of [the foundation experiment](experiments/nfl/README.md): at least as good as the
+box-score model on every market). It needs one foundation model per test season, so the backtest
+of each season and the model for upcoming games only use a play-by-play model that never trained on
+the games they predict. `runitback nfl foundation` keeps them in `foundation/nfl/fold<season>/`. It
+trains a missing fold (about an hour; once per season) and adds newly played games to the
+embedding tables. The wager side uses them when `RUNITBACK_NFL_FOUNDATION` names that directory;
+without it, the model is the box-score one. Both workflows set it, and the folds live in the
+`foundation-nfl` release. Locally:
+
+```bash
+runitback nfl foundation                    # trains folds missing from foundation/nfl
+RUNITBACK_NFL_FOUNDATION=foundation/nfl runitback-wager web build --sports '[nfl]' --output_dir webdata
+```
+
+Run the build and export from the directory that holds `foundation/nfl`: the trained model stores
+its embedding table's path relative to it.
+
 One-time setup (the deploy service account is the one the deploy workflow already uses; the Cloud
 Run runtime service account is the service's, by default the Compute Engine default account):
 

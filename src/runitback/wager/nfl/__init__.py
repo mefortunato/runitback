@@ -1,7 +1,15 @@
+import os
+
 from ..core.efficiency import nfl_efficiency
 from ..core.sport import Sport
 from .data.download import download
 from .data.features import SCHEMA
+
+# The play-by-play foundation's frozen game embeddings in the history tokens (experiments/nfl:
+# pbp32, at least as good as the box-score model on every market): on when this names the fold
+# directory `runitback nfl foundation` keeps (one embedding table per test season).
+FOUNDATION = os.environ.get("RUNITBACK_NFL_FOUNDATION", "").rstrip("/")
+PBP = {"pbp": f"{FOUNDATION}/fold{{season}}/pbp_32.parquet", "pbp_dim": 32} if FOUNDATION else {}
 
 SPORT = Sport(
     name="nfl",
@@ -37,5 +45,6 @@ SPORT = Sport(
         "lr": 1.4e-4,
         "weight_decay": 0.04,
         "batch_size": 128,
+        **PBP,
     },
 )

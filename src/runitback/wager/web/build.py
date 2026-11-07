@@ -305,8 +305,13 @@ def build(
         # for college basketball). The season chose when its training
         # stopped, so its key says so. Not for a model from the cache,
         # whose seasons can differ from this table's.
+        # Not with play-by-play embeddings either: the main model's foundation fold (the current
+        # season's) trained on the validation season's early weeks, so that season is backtested
+        # with its own fold like the others (runitback.nfl.foundation).
+        from ..models.transformer.fit import token_options
+
         predictors = {}
-        if stored_model is None:
+        if stored_model is None and not token_options(sport).get("pbp"):
             split = fitted["split"]
             seasons_played = set(played(table, schema)[schema.season].unique())
             for s in missing:
