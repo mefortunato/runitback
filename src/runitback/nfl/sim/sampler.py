@@ -220,12 +220,15 @@ class Simulator:
             if f and f.get("result") in RS and rm[i, RS[f["result"]]]:
                 rm[i] = False
                 rm[i, RS[f["result"]]] = True
-        r = self._sample(m.result_logits(h, tt, p), rm, temperature, gen)
+        eff = {}
+        if m.cfg.player_effects and pers is not None:
+            eff = m.effect_inputs(pers, grp, tt, wt if m.has_who else None)
+        r = self._sample(m.result_logits(h, tt, p) + m.result_effect(eff), rm, temperature, gen)
         rt = torch.as_tensor(r)
         rnames = [RESULTS[k] for k in r]
 
         ym = np.stack([yards_mask(s, n, rn) for s, n, rn in zip(states, names, rnames)])
-        y = self._sample(m.yards_logits(h, tt, rt, p), ym, temperature, gen)
+        y = self._sample(m.yards_logits(h, tt, rt, p) + m.yards_effect(eff, rt), ym, temperature, gen)
         em = np.stack([elapsed_mask(s) for s in states])
         e = self._sample(m.elapsed_logits(h, tt, rt, torch.as_tensor(y), p), em, temperature, gen)
         # who: depth-chart slot code of the possession team's player who got the ball (None = nobody);

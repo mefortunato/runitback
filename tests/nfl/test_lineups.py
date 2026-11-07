@@ -448,3 +448,29 @@ def test_players_only_model_ignores_team_identity_and_follows_the_players():
         dl = lineup.clone()
         dl[:, 0, SI[("DL", 0)]] = n - 3                                 # the home defense is off the field
         assert torch.allclose(h, m.encode(dict(feats, lineup=dl)))      # (home has the ball throughout)
+
+
+def test_player_effects_add_the_passers_head_to_pass_plays_only():
+    from runitback.nfl.model.lineups import GROUP_IDX as GI
+    from runitback.nfl.vocab import PT
+    torch.manual_seed(0)
+    n = len(PlayerVocab(tiny_lineup_meta()["player_vocab"]))
+    m = PlayTransformer(ModelConfig(feature_sizes(3), d_model=32, n_layers=1, n_heads=2, n_players=n, n_coaches=5,
+                                    player_dim=8, who_head=True, qb_weight=1.0, carrier_weight=1.0,
+                                    players_only=True, player_effects=True)).eval()
+    pers = torch.zeros(3, 22, dtype=torch.long)
+    grp = torch.zeros(3, 22, dtype=torch.long)
+    pers[:, 0], grp[:, 0] = n - 1, GI["QB"] + 1                        # the QB
+    pers[:, 1], grp[:, 1] = n - 2, GI["WR"] + 1                        # a receiver
+    t = torch.tensor([PT["pass"], PT["run"], PT["punt"]])
+    who = torch.tensor([1, 1, -1])
+    with torch.no_grad():
+        eff = m.effect_inputs(pers, grp, t, who)
+        assert eff["qb"][1].tolist() == [True, False, False]          # passer effect on passes only
+        assert eff["car"][1].tolist() == [True, True, False]          # carrier on runs and targets
+        fx = m.result_effect(eff)
+        assert fx[2].abs().sum() == 0 and fx[0].abs().sum() > 0
+        other = pers.clone()
+        other[:, 0] = n - 3                                            # another QB changes the pass play
+        fx2 = m.result_effect(m.effect_inputs(other, grp, t, who))
+        assert not torch.allclose(fx[0], fx2[0]) and torch.allclose(fx[1], fx2[1])

@@ -146,7 +146,8 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
           use_lineups: bool = True, unk_lineup_prob: float = 0.1, unk_pers_prob: float = 0.15,
           other_player_prob: float = 0.03, player_dim: int = 0, lineup_dropout: float = 0.0,
           prev_lineup_prob: float = 0.0, box_weight: float = 0.0, who_head: bool = False,
-          qb_weight: float = 0.0, carrier_weight: float = 0.0, players_only: bool = False) -> Path:
+          qb_weight: float = 0.0, carrier_weight: float = 0.0, players_only: bool = False,
+          player_effects: bool = False) -> Path:
     """Train a model on one or more data directories. With `init`, fine-tune that checkpoint: its
     architecture and team-season vocabulary are kept (team-seasons it has not seen use the unknown
     embedding) and d_model/n_layers/n_heads/dropout are ignored."""
@@ -199,7 +200,8 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
                           n_usage=N_USAGE if (who_head and ld is not None and ld.usage) else 0,
                           qb_weight=qb_weight if ld is not None else 0.0,
                           carrier_weight=carrier_weight if (ld is not None and who_head) else 0.0,
-                          players_only=players_only and ld is not None)
+                          players_only=players_only and ld is not None,
+                          player_effects=player_effects and ld is not None)
     if lookup_ratings is None:
         lookup_ratings = ratings  # only synthetic data: better than no pre-game ratings at all
     train_items = encode_games(plays[plays.game_id.isin(train_g.game_id)], train_g, ts, cfg.max_len, ratings, ld)

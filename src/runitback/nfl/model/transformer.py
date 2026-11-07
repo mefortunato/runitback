@@ -42,6 +42,10 @@ class ModelConfig:
     # players plus its head coach, the defense from the other team's defensive players plus its
     # head coach, so team strength can only come from who plays.
     players_only: bool = False
+    # add the passer / ball-carrier heads' outputs to the play's result and yards logits (a
+    # per-player effect on top of the situation), so what the embeddings learn about a player
+    # moves the simulated plays; needs qb_weight / carrier_weight > 0 for the heads to exist
+    player_effects: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -266,6 +270,41 @@ class PlayTransformer(nn.Module):
         ly = self.qb_yds(e + self.e_res(r[m]).detach()).masked_fill(~yards_mask[m], NEG)
         return F.cross_entropy(lr, r[m]) + F.cross_entropy(ly, y[m])
 
+    def effect_inputs(self, pers, grp, t, who=None):
+        """Embeddings behind the per-player effects: the on-field QB on pass plays and the player
+        who got the ball on runs / targets, with masks (None when the model has no such head)."""
+        out = {}
+        if getattr(self, "qb_res", None) is not None:
+            is_qb = grp[..., :SIDE] == GROUP_IDX["QB"] + 1
+            qb = (pers[..., :SIDE] * is_qb).max(-1).values
+            out["qb"] = (self.lineup.player(qb), (qb > 0) & (t == PT["pass"]))
+        if getattr(self, "car_res", None) is not None and who is not None:
+            tok = torch.gather(pers[..., :SIDE], -1, who.clamp(0, SIDE - 1)[..., None]).squeeze(-1)
+            m = (who >= 0) & (who < SIDE) & (tok > 0) & ((t == PT["run"]) | (t == PT["pass"]))
+            out["car"] = (self.lineup.player(tok) + self.e_type(t), m)
+        return out
+
+    def result_effect(self, eff) -> torch.Tensor | int:
+        fx = 0
+        if "qb" in eff:
+            e, m = eff["qb"]
+            fx = fx + self.qb_res(e) * m[..., None]
+        if "car" in eff:
+            e, m = eff["car"]
+            fx = fx + self.car_res(e) * m[..., None]
+        return fx
+
+    def yards_effect(self, eff, r) -> torch.Tensor | int:
+        fx = 0
+        er = self.e_res(r)
+        if "qb" in eff:
+            e, m = eff["qb"]
+            fx = fx + self.qb_yds(e + er) * m[..., None]
+        if "car" in eff:
+            e, m = eff["car"]
+            fx = fx + self.car_yds(e + er) * m[..., None]
+        return fx
+
     def carrier_loss(self, f, t, r, y, who, m, result_mask, yards_mask) -> torch.Tensor | None:
         """The ball-carrier target: NLL of the play's result and yards from the embedding of the
         player who got the ball and the play type alone (no game state)."""
@@ -327,10 +366,15 @@ class PlayTransformer(nn.Module):
             p = p + self.lineup_drop(self.who_vec(who, t, cand))
             rm = batch["result_mask"] & self.who_result_mask(t, who, batch["result_mask"].shape[-1])
             batch = dict(batch, result_mask=rm | F.one_hot(r, rm.shape[-1]).bool())
+        fr, fy = 0, 0
+        if self.cfg.player_effects and self.lineup is not None and "pers" in batch["feats"]:
+            f = batch["feats"]
+            eff = self.effect_inputs(f["pers"], f["pers_grp"], t, f.get("who") if self.has_who else None)
+            fr, fy = self.result_effect(eff), self.yards_effect(eff, r)
         parts = {
             "type": (self.type_logits(h), t, batch["type_mask"]),
-            "result": (self.result_logits(h, t, p), r, batch["result_mask"]),
-            "yards": (self.yards_logits(h, t, r, p), y, batch["yards_mask"]),
+            "result": (self.result_logits(h, t, p) + fr, r, batch["result_mask"]),
+            "yards": (self.yards_logits(h, t, r, p) + fy, y, batch["yards_mask"]),
             "elapsed": (self.elapsed_logits(h, t, r, y, p), e, batch["elapsed_mask"]),
         }
         total, logs = 0.0, {}
