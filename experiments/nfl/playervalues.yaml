@@ -22,7 +22,8 @@ configs:
     fit: {ensemble: 4}
   # the player values only through sign-constrained additive terms on the margin and total
   # (levels and changes vs the last 8 lineups, per position group): every lineup change moves the
-  # prediction the right way, at every position
+  # prediction the right way, at every position; one shared weight per kind (levels, changes),
+  # so a point of player value is worth the same at every position
   pbp32_pva:
     model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
             lineup: "experiments/nfl/playervalues/pv.parquet", lineup_set: pva}
