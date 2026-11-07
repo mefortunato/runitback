@@ -1,0 +1,17 @@
+['player_id', 'name', 'position', 'group', 'pfr_id', 'rookie_season']
+['run', 'complete', 'incomplete', 'sack', 'interception', 'fumble_lost', 'kneel', 'spike', 'penalty', 'penalty_first_down', 'kick_received', 'kick_recovered', 'good', 'no_good', 'timeout_offense', 'timeout_defense']
+97 QBs with >=300 dropbacks 2016-24 and an embedding
+corr actual comp vs head: 0.62
+corr actual sack vs head: 0.34
+               name       n      comp    p_comp      sack    p_sack  p_yds_complete      norm
+41   Trevor Siemian  1293.0  0.539830  0.201126  0.060325  0.186885       16.987434  7.342090
+53      Cooper Rush   567.0  0.578483  0.236753  0.037037  0.214127       15.914700  7.466681
+55  Patrick Mahomes  5156.0  0.633631  0.344398  0.042281  0.146208       16.626183  8.833604
+65       Josh Allen  4303.0  0.602138  0.306175  0.047409  0.144084       16.664064  8.131875
+                 name       n      comp    p_comp
+50          PJ Walker   367.0  0.504087  0.130945
+9    Ryan Fitzpatrick  1681.0  0.580012  0.141801
+39      Brett Hundley   369.0  0.542005  0.145482
+34  Teddy Bridgewater  1300.0  0.630000  0.291944
+65         Josh Allen  4303.0  0.602138  0.306175
+55    Patrick Mahomes  5156.0  0.633631  0.344398
