@@ -165,11 +165,13 @@ class PairHead(nn.Module, HyperparametersMixin):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, out_dim),
         )
-        # sign-constrained additive terms (lineup values): output 0 (the margin) gets
-        # sum_k softplus(w_k) * (context[team_k] - context[opp_k]), and output 1 (the total, when
-        # there is one) sum_k sign_k * softplus(u_k) * (context[team_k] + context[opp_k]); the
-        # columns in ``mask_context`` are hidden from the MLP, so they move the prediction only
-        # through these terms, in the direction of their sign
+        # sign-constrained additive terms (lineup values, in points per game): the margin gets
+        # w_kind * sum_k (value[team_k] - value[opp_k]) and the total (output 1, when there is one)
+        # u_kind * sum_k sign_k * (value[team_k] + value[opp_k]), with one non-negative weight per
+        # kind (levels, changes) shared by every position: a point of player value is worth the
+        # same at any position. Values are the raw context columns (set_additive_scale undoes
+        # the standardization); the columns in ``mask_context`` are hidden from the MLP, so they
+        # move the prediction only through these terms.
         self.additive_pairs = tuple(tuple(p) for p in additive_pairs)
         if self.additive_pairs:
             k = len(self.additive_pairs)
@@ -177,11 +179,27 @@ class PairHead(nn.Module, HyperparametersMixin):
             self.register_buffer("_add_opp", torch.tensor([p[1] for p in self.additive_pairs]), persistent=False)
             self.register_buffer("_add_sign", torch.tensor(list(additive_total_sign) or [0.0] * k,
                                                            dtype=torch.float32), persistent=False)
-            self.add_w = nn.Parameter(torch.full((k,), -2.0))
-            self.add_u = nn.Parameter(torch.full((k,), -3.0))
+            half = (k + 1) // 2
+            self.register_buffer("_add_kind", torch.tensor([0] * half + [1] * (k - half)), persistent=False)
+            # raw value = z * std + mean per pair column; output scales (margin, total) in points
+            self.register_buffer("add_std", torch.ones(k, 2))
+            self.register_buffer("add_mean", torch.zeros(k, 2))
+            self.register_buffer("add_out_std", torch.ones(2))
+            self.add_w = nn.Parameter(torch.full((2,), -0.2))     # softplus: ~0.6 points per point
+            self.add_u = nn.Parameter(torch.full((2,), -2.25))    # ~0.1
         keep = torch.ones(context_dim)
         keep[list(mask_context)] = 0.0
         self.register_buffer("_ctx_keep", keep, persistent=False)
+
+    def set_additive_scale(self, std_team, mean_team, std_opp, mean_opp, out_std) -> None:
+        """The pair columns' standardization (per pair) and the outputs' scales (margin, total)."""
+        if not getattr(self, "additive_pairs", ()):
+            return
+        f = lambda x: torch.as_tensor(np.asarray(x, dtype=np.float32))
+        self.add_std.copy_(torch.stack([f(std_team), f(std_opp)], -1))
+        self.add_mean.copy_(torch.stack([f(mean_team), f(mean_opp)], -1))
+        o = f(out_std).reshape(-1)
+        self.add_out_std.copy_(o[:2] if len(o) >= 2 else o[:1].repeat(2))
 
     def _side(self, team, opp, context) -> torch.Tensor:
         if self.context_dim and getattr(self, "additive_pairs", ()):
@@ -190,10 +208,13 @@ class PairHead(nn.Module, HyperparametersMixin):
         return self.net(torch.cat(parts, dim=-1))
 
     def additive(self, context) -> tuple[torch.Tensor, torch.Tensor]:
-        """The additive terms' (margin, total) contributions, (B,) each."""
-        t, o = context[:, self._add_team], context[:, self._add_opp]
-        margin = (nn.functional.softplus(self.add_w) * (t - o)).sum(-1)
-        total = (self._add_sign * nn.functional.softplus(self.add_u) * (t + o)).sum(-1)
+        """The additive terms' (margin, total) contributions in standardized output units, (B,)."""
+        t = context[:, self._add_team] * self.add_std[:, 0] + self.add_mean[:, 0]
+        o = context[:, self._add_opp] * self.add_std[:, 1] + self.add_mean[:, 1]
+        w = nn.functional.softplus(self.add_w)[self._add_kind]
+        u = nn.functional.softplus(self.add_u)[self._add_kind]
+        margin = (w * (t - o)).sum(-1) / self.add_out_std[0]
+        total = (self._add_sign * u * (t + o)).sum(-1) / self.add_out_std[1]
         return margin, total
 
     def forward(self, team, opp, context, opp_context=None) -> torch.Tensor:

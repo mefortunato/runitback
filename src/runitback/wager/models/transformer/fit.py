@@ -248,6 +248,18 @@ def _loader(data: SequenceData, batch_size: int, shuffle: bool, num_workers: int
     )
 
 
+def _set_additive_scale(model, features, scaling) -> None:
+    head = getattr(model, "head", None)
+    if head is None or not getattr(head, "additive_pairs", ()):
+        return
+    cols = features.context_columns
+    mean, std = pd.Series(features.mean), pd.Series(features.std)
+    t = [cols[i] for i, _ in head.additive_pairs]
+    o = [cols[j] for _, j in head.additive_pairs]
+    head.set_additive_scale(std[t].to_numpy(), mean[t].to_numpy(), std[o].to_numpy(), mean[o].to_numpy(),
+                            np.asarray(scaling[1], dtype=float).reshape(-1))
+
+
 def fit_transformer(
     games: Table,
     sport: str,
@@ -416,6 +428,7 @@ def fit_transformer(
         else:
             seed_and_reset(member, seed + i)
         member.set_target_scaling(*scaling)
+        _set_additive_scale(member, features, scaling)
         fit_trainer = new_trainer(i)
         fit_trainer.fit(
             member,

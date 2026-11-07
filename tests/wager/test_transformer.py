@@ -310,3 +310,13 @@ def test_additive_lineup_terms_are_monotone_and_hidden_from_the_mlp():
         m1, _ = head.additive(ctx2)
         assert torch.allclose(head._side(t, o, ctx), head._side(t, o, ctx2))
         assert (m1 > m0).all()
+        # in raw points, a point of value is worth the same at every position
+        k = len(spec["additive_pairs"])
+        head.set_additive_scale(torch.rand(k) + 0.5, torch.zeros(k), torch.rand(k) + 0.5, torch.zeros(k), [14.0, 13.0])
+        std = head.add_std[:, 0]
+        bumps = []
+        for g in (0, 8):                                  # +1 point of QB value, +1 point of kicking
+            x = ctx.clone()
+            x[:, n_before + g] += 1.0 / std[g]
+            bumps.append(head.additive(x)[0] - head.additive(ctx)[0])
+        assert torch.allclose(bumps[0], bumps[1], atol=1e-5) and (bumps[0] > 0).all()
