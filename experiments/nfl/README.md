@@ -282,15 +282,100 @@ Results: `lineups/ablation.md`, `lineups/report.md` (per market, pass/fail), `li
 (QB changed / QB projected to change / top-quartile turnover / steady), and the per-game change
 flags in `lineups/changes/<season>.csv`.
 
+### Player values: who plays, straight into the wager model
+
+Rather than make the play-by-play simulator carry personnel, give every player a value and put
+it straight into the wager model.
+
+**Player values** (`src/runitback/nfl/player_values.py`, `scripts/player_values.py`):
+- **The fit.** A ridge adjusted plus-minus on each scrimmage play's EPA, 2016+, with the 22 players
+  on the field. Each of the possession team's players gets an offense coefficient and each of the
+  other team's a defense coefficient, plus down / distance / field-position / season controls.
+- **Shrinkage and recency.** A wider prior for QBs (a narrower one for OL and DL, tuned on the next
+  season's plays). Recent seasons are weighted more (0.7 per season back, four seasons plus the
+  current one).
+- **Replacement level.** Players with under 150 plays share a replacement-level coefficient for
+  their side and group, and a player's value is his coefficient over it. Kickers and punters: shrunk
+  EPA per attempt over the league mean.
+- **Points per game.** Values become points per game over replacement through each depth-chart
+  slot's expected snaps.
+- **Leak-free and weekly.** Every week from 2016 on is refit on the plays before it (223 fits, two
+  minutes), so values update weekly and never see the game they are for.
+- **Per-game features.** Each team's projected pre-game lineup (published depth chart minus players
+  ruled out) is summed per position group: `playervalues/pv.parquet`. Columns: QB, RB, WR, TE, OL,
+  DL, LB, DB and kicking, plus each group's change vs the team's last 8 lineups.
+
+Do the values look right? Before 2025, the top QBs are Allen, Jackson, Purdy and Tagovailoa, along
+with Bosa at DL, Kelce at TE, Henry and Jones at RB, and A.J. Brown and Evans at WR. Some low ends are
+plus-minus noise (Bobby Wagner as the "worst" LB regular); `allpositions/values_<season>.csv` has
+them all. The projected-lineup value difference alone, with no team history at all, correlates 0.86
+with the market spread and 0.40 with the final margin (the market: 0.45).
+
+**Backtest** (2021-2025, Brier vs `pbp32`; seed noise is about ±0.002, so the 4-seed averages
+`_e4` are compared with each other):
+
+| model | moneyline | spread | total | note |
+|---|---|---|---|---|
+| `pvg`: margin / total from the lineup values + a team rating learned from results | +0.0024 | **+0.0060 (fails)** | −0.0006 | six numbers per game |
+| `ens`: average of `pbp32` and `pvg` | −0.0012 | +0.0003 | −0.0017 | |
+| `pbp32_pv`: the values as context for the wager model's head | −0.0013 | +0.0009 | −0.0019 | |
+| `pbp32_pv_e4` vs `pbp32_e4` | −0.0015 ± 0.0016 | −0.0001 | −0.0013 | QB projected to change: −0.0054 ± 0.0045 |
+| `pbp32_pva_e4` vs `pbp32_e4` (constrained, levels + changes) | +0.0045 | **+0.0145 (fails)** | +0.0002 | margin RMSE 13.4 |
+| **`pbp32_pvc_e4` vs `pbp32_e4`** (constrained, changes only) | **−0.0018 ± 0.0037** | +0.0001 | +0.0003 | QB projected to change: **−0.0108 ± 0.0106** |
+| `pvg_mkt`: `pvg` blended with the line | −0.0063 | −0.0007 | −0.0072 | ties the market (+0.0005 ± 0.0012) |
+
+The gains are where lineups change. On steady-lineup games every version is within ±0.0002 of
+`pbp32`; on games where the QB is projected to change, or with top-quartile turnover, they are 2-10x
+larger. Nothing beats the market (`pvg_mkt` only ties it).
+
+**Does changing a player move the prediction the right way?** For every 2025 game, one home
+starter at a time was changed and the game re-predicted (`scripts/wager_lineup_sensitivity.py`,
+`playervalues/sensitivity/`):
+- **The change.** Each position group's starter goes to the best / worst regular by value, a
+  replacement-level player, or out (the group moves up a slot).
+- **`pbp32_pv` fails it.** It moves the right way for offense and specialists, but only by about a
+  third of the direct model's amount. For every defensive position it moves the **wrong** way
+  (Bosa in: −0.16 points). The head uses the values however fits, and a backtest gain does not make
+  that sensible.
+- **The fix: sign-constrained additive terms (`pva`, `pvc`).**
+  - The values are hidden from the head's MLP and enter the margin only as
+    `w · Σ_groups (team value − opponent value)`, with non-negative weights, so the change can't
+    move the prediction the wrong way.
+  - The total works the same way: offense adds points, defense takes them away.
+  - One weight per kind is shared by every position, so a point of value is a point anywhere.
+    Per-group weights on standardized columns gave punters 9-point swings.
+- **Levels plus changes (`pva`)** count team strength twice (the history already has it), with 1.1
+  margin points per point of value and overconfident spreads.
+- **Changes only (`pvc`)**, i.e. this lineup vs the team's last 8, learned **0.58 margin points per
+  point of value**. The direct game model's own fit is 0.6.
+
+`pbp32_pvc`, one home starter changed, all 285 games of 2025 (100% of games move the right way, at
+every position):
+
+| change | Δ home margin | Δ home win |
+|---|---|---|
+| QB1 → Josh Allen / Davis Mills / replacement / backup promoted | +4.1 / −3.0 / −6.6 / −3.0 | +0.11 / −0.09 / −0.18 / −0.08 |
+| RB1 → Aaron Jones / replacement | +0.1 / −0.5 | |
+| WR1 → Mike Evans / replacement | +0.6 / −0.8 | +0.015 / −0.022 |
+| TE1 → Travis Kelce / replacement | +0.4 / −0.4 | |
+| OL1 → best regular / replacement | +0.4 / −0.9 | |
+| DL1 → Nick Bosa / replacement | +0.3 / −0.4 | |
+| LB1 → best regular / replacement | +0.5 / −0.1 | |
+| DB1 → best regular / replacement | +0.5 / −0.6 | |
+| K → Brandon Aubrey / Jake Moody | +0.2 / −0.3 | |
+
 **Next steps for personnel**
-1. Keep `pbp32` in production for now; the candidate replacement is `te` (passes everywhere, ranks
-   QBs). Switching needs projected lineups in the refresh workflow (live depth charts and injury
-   reports) so a mid-week QB change reaches the prediction.
-2. Test the inference-time payoff directly: score `te` vs `pbp32` on games where the starting QB
-   changed from the previous week, using the projected (not the actual) lineup, over 2016–2025 to
-   get enough of them, and against the market's line move for those games.
-3. Extend player effects beyond the ball handler (pass rush / coverage on pass plays, the offensive
-   line on runs) so non-QB injuries move the rollouts too, and re-check with a swap of other
-   positions (WR1, LT, edge rusher).
-4. Get more signal per parameter for the wager model: a single scalar per side (the foundation's
-   predicted margin change from swapping the projected lineup in) instead of 16–64 columns.
+1. **Production candidate: `pbp32_pvc`** (4 seeds). It passes every market against `pbp32` and is
+   better on moneyline, with the gain concentrated in QB-change games. Every lineup change moves the
+   prediction the right way by `0.58 × the change in player value`, so the game page can show "this
+   change: −0.9 points" per player.
+2. **What it needs in the refresh workflow:**
+   - weekly player values fit through the latest plays;
+   - the projected lineup (depth chart + injury report) per game;
+   - a lineup editor whose change goes through the same value table.
+   One gap: nflverse's on-field participation for 2026 is not out, so this season's values can't
+   update from 2026 plays yet; until then they come from the fit through 2025.
+3. **The all-positions foundation (`ae` / `ae0`, `allpositions/`):** position swaps in the
+   simulator, its per-player effects against these values, and its wager arms.
+4. **Better values:** priors for rookies from draft slot and position (today they are replacement
+   level until 150 plays); aging; in-season weighting; and a lineup-value version of the total.
