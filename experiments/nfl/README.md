@@ -208,6 +208,36 @@ doesn't push the player embeddings to rank players: one play's outcome says litt
 the QB is, and the in-game state (score, field position, down) explains most of it. Ratings
 were not what was masking the lineup signal.
 
+**Players-only foundation (`experiments/nfl/playersonly.yaml`): the embeddings now know the players,
+the simulator still barely uses them.** No team identity at all (franchise / team-season / season
+tokens, ratings and coach records removed); each play is predicted from the game so far plus the
+possession team's offense unit (offensive and specialist players pooled per position group from
+the depth chart, plus its head coach) and the other team's defense unit (defensive players plus
+head coach), with the 22 on the field in the result / yards / clock heads. Trained on 2013+ with
+fewer hidden lineups; `po` adds the passer and ball-carrier targets (each play's result and
+yards from the QB's / the ball carrier's embedding alone), `ponts` doesn't.
+
+| home QB1 | Δ win, production | Δ win, `po` | Δ win, `ponts` |
+|---|---|---|---|
+| Mahomes | +0.009 | +0.012 ± 0.011 | +0.018 ± 0.011 |
+| J. Allen | +0.013 | +0.022 ± 0.011 | −0.005 ± 0.011 |
+| C. Rush | +0.008 | +0.009 ± 0.011 | +0.015 ± 0.009 |
+| T. Siemian | +0.009 | +0.008 ± 0.011 | +0.000 ± 0.012 |
+| B. Rypien | +0.004 | +0.011 ± 0.011 | +0.005 ± 0.011 |
+| unknown "new QB" | −0.005 | **−0.040 ± 0.012** (−1.4 pts) | **−0.041 ± 0.010** (−1.4 pts) |
+
+Two things changed. The lineup now matters: replacing the QB with an unknown one costs 4 points of
+win probability (1.4 points of margin), eight times production's effect. And with the passer
+target the embeddings rank quarterbacks: the passer head's predicted completion rate from each
+QB's embedding alone correlates 0.63 with his actual 2016-24 completion rate (97 QBs with 300+
+dropbacks; 0.34 for sack rate), Mahomes highest of all and Siemian / Rush near the bottom
+(`scripts/passer_probe.py`). But the rollouts still hardly separate Mahomes from Siemian
+(+0.012 vs +0.008): the play-outcome heads see the QB's embedding (in the on-field personnel) and
+use little of the quality the passer head reads from it. Wager arms: `po_pbp32` passes on all three
+markets (+0.0018 / +0.0013 / −0.0003), `ponts_pbp32` fails moneyline and spread, and the `_lp`
+arms fail spread (`playersonly/report.md`, `subsets.md`). Dropping team identity costs a little
+accuracy that the players don't yet make back.
+
 Results: `lineups/ablation.md`, `lineups/report.md` (per market, pass/fail), `lineups/subsets.md`
 (QB changed / QB projected to change / top-quartile turnover / steady), and the per-game change
 flags in `lineups/changes/<season>.csv`.
