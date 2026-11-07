@@ -1,0 +1,153 @@
+# Evaluation of the all-positions foundations trained by allpositions-train.yml (run TRAIN_RUN):
+#   position swap (2 variants × 16 shards, + effect probe) ─┐
+#   arms (experiments/nfl/allpositions.yaml × 5 seasons) ───┴─► report
+# Starts on a push of experiments/nfl/allpositions.yaml (or by hand); the report job commits
+# experiments/nfl/allpositions.
+name: All-positions evaluation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - experiments/nfl/allpositions.yaml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: allpositions-eval-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+  DATA_RUN: "42333696576"
+  TRAIN_RUN: "42400630037"
+
+jobs:
+  swap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [ae, ae0]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl, run-id: "${{ env.DATA_RUN }}", github-token: "${{ github.token }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ matrix.variant }}-fold2025", path: fold2025, run-id: "${{ env.TRAIN_RUN }}", github-token: "${{ github.token }}" }
+      - name: Position swap (${{ matrix.variant }}, shard ${{ matrix.shard }})
+        run: |
+          python scripts/lineup_position_swap.py --ckpt fold2025/model.pt --season 2025 --games 120 --sims 100 \
+            --threads $(nproc) --shard ${{ matrix.shard }} --shards 16 --out out/${{ matrix.variant }}/position_swap.csv
+          if [ "${{ matrix.shard }}" = 0 ]; then
+            python scripts/effect_probe.py fold2025/model.pt --values experiments/nfl/allpositions/values_2025.csv \
+              > out/${{ matrix.variant }}/effect_probe.txt 2>/dev/null || true
+            python scripts/passer_probe.py fold2025/model.pt > out/${{ matrix.variant }}/passer_probe.txt 2>/dev/null || true
+          fi
+      - uses: actions/upload-artifact@v4
+        with: { name: "swap-${{ matrix.variant }}-${{ matrix.shard }}", path: out, retention-days: 30 }
+
+  arms:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [ae_pbp32, ae0_pbp32, ae_pbp32_pv]
+        season: [2021, 2022, 2023, 2024, 2025]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl, run-id: "${{ env.DATA_RUN }}", github-token: "${{ github.token }}" }
+      - name: Variant
+        id: v
+        run: echo "variant=${CONFIG%%_*}" >> "$GITHUB_OUTPUT"
+        env: { CONFIG: "${{ matrix.config }}" }
+      - uses: actions/download-artifact@v4
+        with:
+          name: "${{ steps.v.outputs.variant }}-fold${{ matrix.season }}"
+          path: "runs/${{ steps.v.outputs.variant }}/fold${{ matrix.season }}"
+          run-id: ${{ env.TRAIN_RUN }}
+          github-token: ${{ github.token }}
+      - name: Backtest ${{ matrix.config }} on ${{ matrix.season }}
+        run: |
+          python scripts/foundation_arm.py ${{ matrix.config }} ${{ matrix.season }} --threads $(nproc) \
+            --experiment experiments/nfl/allpositions.yaml --output-dir experiments/nfl/allpositions
+          mkdir -p out/${{ matrix.config }}
+          cp experiments/nfl/allpositions/${{ matrix.config }}/${{ matrix.season }}.csv out/${{ matrix.config }}/
+      - uses: actions/upload-artifact@v4
+        with: { name: "arm-${{ matrix.config }}-${{ matrix.season }}", path: out, retention-days: 30 }
+
+  report:
+    needs: [swap, arms]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "${{ github.ref_name }}" }
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl, run-id: "${{ env.DATA_RUN }}", github-token: "${{ github.token }}" }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "arm-*", path: experiments/nfl/allpositions, merge-multiple: true }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "swap-*", path: experiments/nfl/allpositions, merge-multiple: true }
+      - name: Score
+        run: |
+          R=experiments/nfl/allpositions
+          cp -r experiments/nfl/lineups/pbp32 experiments/nfl/lineups/changes $R/
+          for c in pbp32_pv pvg; do [ -d experiments/nfl/playervalues/$c ] && cp -r experiments/nfl/playervalues/$c $R/; done
+          python - <<'PY'
+          import pathlib
+          from runitback.wager.experiments import ablate
+          R, seasons = pathlib.Path("experiments/nfl/allpositions"), [2021, 2022, 2023, 2024, 2025]
+          names = ["pbp32", "ae_pbp32", "ae0_pbp32", "pbp32_pv", "ae_pbp32_pv", "pvg"]
+          have = {n: {} for n in names if all((R / n / f"{s}.csv").exists() for s in seasons)}
+          print("complete configurations:", list(have))
+          ablate("data/nfl/games.csv", "nfl", have, seasons, str(R), "pbp32", 1, 1)
+          PY
+          python scripts/foundation_report.py $R --baseline pbp32 --out $R/report.md
+          python scripts/lineup_report.py $R --baseline pbp32 --out $R/subsets.md
+          rm -rf $R/pbp32 $R/changes $R/pbp32_pv $R/pvg
+          for v in ae ae0; do
+            [ -d $R/$v ] || continue
+            { echo "### Position swap, $v"; echo '```'; python scripts/lineup_position_swap.py --summary $R/$v/position_swap.*.csv;
+              echo; cat $R/$v/effect_probe.txt 2>/dev/null; echo; cat $R/$v/passer_probe.txt 2>/dev/null; echo '```'; } >> $R/position_swap.md
+          done
+          { echo "## All-positions experiment"; cat $R/ablation.md; echo; cat $R/report.md; echo; cat $R/position_swap.md; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit the results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add experiments/nfl/allpositions
+          git diff --cached --quiet && { echo "nothing new"; exit 0; }
+          git commit -m "All-positions experiment results (run ${{ github.run_id }})"
+          for i in 1 2 3 4; do
+            git pull --rebase origin "${{ github.ref_name }}" && git push origin "HEAD:${{ github.ref_name }}" && exit 0
+            sleep $((2 ** i))
+          done
+          exit 1
