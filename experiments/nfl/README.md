@@ -163,9 +163,28 @@ lineup alone. Each fold's foundation model turns the lineup into features for bo
   (`pbp32_lp_noinj`). Personnel news is largely in the closing line already, which every arm still
   trails (+0.006–0.008 Brier vs the market).
 
-**QB-swap check** (are the player embeddings informative at all?): rolling out the 2025 fold's
-generator with named QBs in every home team's QB1 slot. Pending: `.github/workflows/qb-swap.yml`,
-results in `lineups/qb_swap.*.csv`.
+**QB-swap check: the player embeddings barely know who the quarterback is.** Rolling out the
+2025 fold's generator on 120 games of 2025 (100 rollouts each, same seeds in every condition)
+with the same named QB in every home team's QB1 slot moves the home team's win probability by at
+most 1.3 points and its margin by under half a point:
+
+| home QB1 | home win | Δ win vs actual lineup | Δ margin (pts) |
+|---|---|---|---|
+| previous game's (actual) | 0.532 | | |
+| Mahomes | 0.542 | +0.009 ± 0.010 | +0.11 ± 0.22 |
+| J. Allen | 0.546 | +0.013 ± 0.009 | +0.47 ± 0.24 |
+| C. Rush | 0.540 | +0.008 ± 0.009 | +0.15 ± 0.23 |
+| T. Siemian | 0.541 | +0.009 ± 0.008 | +0.17 ± 0.20 |
+| B. Rypien | 0.536 | +0.004 ± 0.011 | +0.12 ± 0.24 |
+| unknown "new QB" | 0.527 | −0.005 ± 0.009 | −0.34 ± 0.23 |
+
+Mahomes minus Siemian is +0.001 ± 0.010; the market would put a swap like that at several points.
+The model separates known from unknown players a little (the "new QB" token is the only negative)
+but not good from bad ones. That explains the experiment above: the lineup features can't carry
+personnel information the foundation never learned. Its team strength comes from the pre-game
+ratings and the history, and lineup dropout (0.2) plus unknown-lineup training (0.2) let it lean
+on those. `lineups/qb_swap.<shard>.csv`; `python scripts/lineup_qb_swap.py --summary
+experiments/nfl/lineups/qb_swap.*.csv`.
 
 Results: `lineups/ablation.md`, `lineups/report.md` (per market, pass/fail), `lineups/subsets.md`
 (QB changed / QB projected to change / top-quartile turnover / steady), and the per-game change
@@ -174,7 +193,12 @@ flags in `lineups/changes/<season>.csv`.
 **Next steps for personnel**
 1. Keep `pbp32` in production; don't wire projected lineups in yet (it would also need live
    depth charts and injury reports in the refresh workflow).
-2. Get more signal per parameter: a single scalar per side (e.g. the foundation's predicted
+2. **Make the foundation learn who matters first**, and re-check with the QB swap before rerunning
+   the wager arms: e.g. train without the team-strength ratings (or with ratings dropout) so
+   the lineup has to explain team quality, raise the player embedding size (32) and lower lineup
+   dropout, and add a per-player target (the QB's EPA per dropback) so the embedding is pushed to
+   rank players.
+3. Get more signal per parameter: a single scalar per side (e.g. the foundation's predicted
    point-margin change from swapping the projected lineup in, via rollouts or the trunk) instead
    of 16–64 columns, and train on more seasons (lineup data starts in 2013).
-3. Score on the subsets with more seasons (2016–2025) to see whether the QB-change lean is real.
+4. Score on the subsets with more seasons (2016–2025) to see whether the QB-change lean is real.
