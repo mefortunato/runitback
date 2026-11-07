@@ -1,0 +1,186 @@
+# Foundations without team-strength inputs (experiments/nfl/noratings.yaml):
+#
+#   foundation (2 variants × 5 seasons: train, embed, lineup features) ─┬─► QB swap (2 × 8 shards) ─┬─► report
+#                                                                       └─► arms (4 × 5 seasons) ───┘
+#
+# Reuses the lineup run's processed data. The report job commits experiments/nfl/noratings.
+name: No-ratings experiment
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - .github/workflows/noratings-experiment.yml
+      - experiments/nfl/noratings.yaml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: noratings-experiment-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+  DATA_RUN: "42333696576"
+
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [nr, nrts]
+        season: [2025, 2021, 2022, 2023, 2024]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl, run-id: "${{ env.DATA_RUN }}", github-token: "${{ github.token }}" }
+      - name: Train (${{ matrix.variant }}, never sees ${{ matrix.season }})
+        run: |
+          S=${{ matrix.season }}
+          TS=0.1; [ "${{ matrix.variant }}" = nrts ] && TS=1
+          runitback nfl train --out runs/${{ matrix.variant }}/fold$S --val-season $((S-1)) --val-week 15 \
+            --epochs 10 --who --prev-lineup-prob 0.3 --no-ratings --unk-ts-prob $TS --threads $(nproc)
+      - name: Game embeddings and lineup features
+        run: |
+          S=${{ matrix.season }}; D=runs/${{ matrix.variant }}/fold$S
+          runitback nfl embed --ckpt $D/model.pt --out $D/emb --before-season $S --dim 32
+          mkdir -p data/nfl/raw
+          runitback nfl lineup-features --ckpt $D/model.pt --out $D/emb --fold $S --sets lu --threads $(nproc)
+          rm -rf $D/train
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.variant }}-fold${{ matrix.season }}
+          path: runs/${{ matrix.variant }}/fold${{ matrix.season }}
+          retention-days: 30
+
+  qbswap:
+    needs: foundation
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [nr, nrts]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl, run-id: "${{ env.DATA_RUN }}", github-token: "${{ github.token }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ matrix.variant }}-fold2025", path: fold2025 }
+      - name: QB swap (${{ matrix.variant }}, shard ${{ matrix.shard }})
+        run: |
+          python scripts/lineup_qb_swap.py --ckpt fold2025/model.pt --season 2025 --games 120 --sims 100 \
+            --threads $(nproc) --shard ${{ matrix.shard }} --shards 8 --out out/${{ matrix.variant }}/qb_swap.csv
+      - uses: actions/upload-artifact@v4
+        with: { name: "qb-${{ matrix.variant }}-${{ matrix.shard }}", path: out, retention-days: 30 }
+
+  arms:
+    needs: foundation
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [nr_pbp32_lp, nrts_pbp32_lp, nr_pbp32, nrts_pbp32]
+        season: [2021, 2022, 2023, 2024, 2025]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl, run-id: "${{ env.DATA_RUN }}", github-token: "${{ github.token }}" }
+      - name: Variant
+        id: v
+        run: echo "variant=${CONFIG%%_*}" >> "$GITHUB_OUTPUT"
+        env: { CONFIG: "${{ matrix.config }}" }
+      - uses: actions/download-artifact@v4
+        with:
+          name: "${{ steps.v.outputs.variant }}-fold${{ matrix.season }}"
+          path: "runs/${{ steps.v.outputs.variant }}/fold${{ matrix.season }}"
+      - name: Backtest ${{ matrix.config }} on ${{ matrix.season }}
+        run: |
+          python scripts/foundation_arm.py ${{ matrix.config }} ${{ matrix.season }} --threads $(nproc) \
+            --experiment experiments/nfl/noratings.yaml --output-dir experiments/nfl/noratings
+          mkdir -p out/${{ matrix.config }}
+          cp experiments/nfl/noratings/${{ matrix.config }}/${{ matrix.season }}.csv out/${{ matrix.config }}/
+      - uses: actions/upload-artifact@v4
+        with: { name: "arm-${{ matrix.config }}-${{ matrix.season }}", path: out, retention-days: 30 }
+
+  report:
+    needs: [qbswap, arms]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "${{ github.ref_name }}" }
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl, run-id: "${{ env.DATA_RUN }}", github-token: "${{ github.token }}" }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "arm-*", path: experiments/nfl/noratings, merge-multiple: true }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "qb-*", path: experiments/nfl/noratings, merge-multiple: true }
+      - name: Score
+        run: |
+          R=experiments/nfl/noratings
+          cp -r experiments/nfl/lineups/pbp32 experiments/nfl/lineups/changes $R/
+          python - <<'EOF'
+          import pathlib, yaml
+          from runitback.wager.experiments import ablate
+          cfg = yaml.safe_load(open("experiments/nfl/noratings.yaml"))
+          have = {n: c for n, c in cfg["configs"].items()
+                  if all(pathlib.Path(f"experiments/nfl/noratings/{n}/{s}.csv").exists() for s in cfg["seasons"])}
+          print("complete configurations:", list(have))
+          ablate("data/nfl/games.csv", "nfl", have, cfg["seasons"], "experiments/nfl/noratings", cfg["baseline"], 1, 1)
+          EOF
+          python scripts/foundation_report.py $R --baseline pbp32 --out $R/report.md
+          python scripts/lineup_report.py $R --baseline pbp32 --out $R/subsets.md
+          rm -rf $R/pbp32 $R/changes
+          for v in nr nrts; do
+            [ -d $R/$v ] || continue
+            { echo "### QB swap, $v"; echo '```'; python scripts/lineup_qb_swap.py --summary $R/$v/qb_swap.*.csv; echo '```'; } >> $R/qb_swap.md
+          done
+          { echo "## No-ratings experiment"; cat $R/ablation.md; echo; cat $R/subsets.md; echo; cat $R/qb_swap.md; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit the results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add experiments/nfl/noratings
+          git diff --cached --quiet && { echo "nothing new"; exit 0; }
+          git commit -m "No-ratings experiment results (run ${{ github.run_id }})"
+          for i in 1 2 3 4; do
+            git pull --rebase origin "${{ github.ref_name }}" && git push origin "HEAD:${{ github.ref_name }}" && exit 0
+            sleep $((2 ** i))
+          done
+          exit 1

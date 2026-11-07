@@ -68,6 +68,10 @@ def train(out: Path = RUNS / "prod",
                                                             "depth chart (what users start from)"),
           box_weight: float = typer.Option(0.0, help="weight of the game-level box-score loss (0 = off)"),
           who: bool = typer.Option(False, help="predict which player gets the ball (player stat lines)"),
+          ratings: bool = typer.Option(True, help="pre-game team-strength ratings as inputs (off: team "
+                                                   "strength must come from the lineups and history)"),
+          unk_ts_prob: float = typer.Option(0.1, help="share of games trained with the team-season "
+                                                       "tokens unknown (1 = never use them)"),
           device: str = typer.Option("auto", help="auto (CUDA GPU, then Apple MPS, then CPU), cpu, cuda, cuda:N or mps"),
           amp: bool = typer.Option(True, help="bf16 mixed precision on CUDA GPUs that support it"),
           ):
@@ -78,7 +82,8 @@ def train(out: Path = RUNS / "prod",
         d_model=d_model, n_layers=n_layers, n_heads=n_heads, batch_size=batch_size, lr=lr,
         threads=threads or None, max_games=max_games or None, init=init, device=device, amp=amp,
         use_lineups=lineups, player_dim=player_dim, lineup_dropout=lineup_dropout, unk_lineup_prob=unk_lineup_prob,
-        other_player_prob=other_player_prob, prev_lineup_prob=prev_lineup_prob, box_weight=box_weight, who_head=who)
+        other_player_prob=other_player_prob, prev_lineup_prob=prev_lineup_prob, box_weight=box_weight, who_head=who,
+        use_ratings=ratings, unk_ts_prob=unk_ts_prob)
 
 
 @nfl.command()
