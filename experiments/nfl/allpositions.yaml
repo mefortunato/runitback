@@ -1,0 +1,17 @@
+# Foundations with additive per-player effects for all 22 on the field (allpositions-train.yml):
+#   ae   --all-effects --lineup-weight 1    ae0  --all-effects
+# Wager arms on their game embeddings against pbp32 (the production foundation), and with the
+# player values' changes as sign-constrained additive terms (pvc, experiments/nfl/playervalues.yaml).
+# Position swaps and the effect probe on each 2025 fold (allpositions-eval.yml).
+seasons: [2021, 2022, 2023, 2024, 2025]
+baseline: pbp32
+configs:
+  pbp32:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  ae_pbp32:
+    model: {pbp: "runs/ae/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  ae0_pbp32:
+    model: {pbp: "runs/ae0/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  ae_pbp32_pvc:
+    model: {pbp: "runs/ae/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "experiments/nfl/playervalues/pv.parquet", lineup_set: pvc}

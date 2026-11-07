@@ -65,7 +65,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        config: [ae_pbp32, ae0_pbp32, ae_pbp32_pv]
+        config: [ae_pbp32, ae0_pbp32, ae_pbp32_pvc]
         season: [2021, 2022, 2023, 2024, 2025]
     steps:
       - uses: actions/checkout@v5
@@ -120,19 +120,19 @@ jobs:
         run: |
           R=experiments/nfl/allpositions
           cp -r experiments/nfl/lineups/pbp32 experiments/nfl/lineups/changes $R/
-          for c in pbp32_pv pvg; do [ -d experiments/nfl/playervalues/$c ] && cp -r experiments/nfl/playervalues/$c $R/; done
+          for c in pbp32_pvc pvg; do [ -d experiments/nfl/playervalues/$c ] && cp -r experiments/nfl/playervalues/$c $R/; done
           python - <<'PY'
           import pathlib
           from runitback.wager.experiments import ablate
           R, seasons = pathlib.Path("experiments/nfl/allpositions"), [2021, 2022, 2023, 2024, 2025]
-          names = ["pbp32", "ae_pbp32", "ae0_pbp32", "pbp32_pv", "ae_pbp32_pv", "pvg"]
+          names = ["pbp32", "ae_pbp32", "ae0_pbp32", "pbp32_pvc", "ae_pbp32_pvc", "pvg"]
           have = {n: {} for n in names if all((R / n / f"{s}.csv").exists() for s in seasons)}
           print("complete configurations:", list(have))
           ablate("data/nfl/games.csv", "nfl", have, seasons, str(R), "pbp32", 1, 1)
           PY
           python scripts/foundation_report.py $R --baseline pbp32 --out $R/report.md
           python scripts/lineup_report.py $R --baseline pbp32 --out $R/subsets.md
-          rm -rf $R/pbp32 $R/changes $R/pbp32_pv $R/pvg
+          rm -rf $R/pbp32 $R/changes $R/pbp32_pvc $R/pvg
           for v in ae ae0; do
             [ -d $R/$v ] || continue
             { echo "### Position swap, $v"; echo '```'; python scripts/lineup_position_swap.py --summary $R/$v/position_swap.*.csv;
