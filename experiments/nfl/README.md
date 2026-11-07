@@ -375,7 +375,29 @@ every position):
    - a lineup editor whose change goes through the same value table.
    One gap: nflverse's on-field participation for 2026 is not out, so this season's values can't
    update from 2026 plays yet; until then they come from the fit through 2025.
-3. **The all-positions foundation (`ae` / `ae0`, `allpositions/`):** position swaps in the
-   simulator, its per-player effects against these values, and its wager arms.
+3. **The all-positions foundation (`ae` / `ae0`, `allpositions/`) is not the route for wagers.**
+   The play-by-play model with additive per-player effects for all 22 on the field (`ae`: with a
+   lineup-only auxiliary loss; `ae0`: without) was trained on the same folds:
+   - *Simulated swaps* (`position_swap.md`, 120 games of 2025, one home starter changed): the
+     right direction for QB (Allen +1.6, new starter −4.9 / −4.5 points), OL, TE and WR, and for DL
+     and LB best/worst. RB is flat. DB, K and P are flat or point the wrong way (Gardner-Johnson
+     −0.1 in `ae`; Aubrey −0.05 in `ae0`). It fails the "true at every position" test that `pvc`
+     passes.
+   - *Its per-player effects don't line up with the player values*: across 4,514 players, the
+     correlation with the adjusted plus-minus values is −0.04 to +0.14 at every position. The
+     best/worst lists are mostly backups (John Urschel, T.J. Logan). With the team, the play state
+     and the other 21 players all in the model, a single player's own term barely identifies
+     anything. The effects are there, but they aren't player quality.
+   - *Wager arms* (`ablation.md`, `report.md`, `subsets.md`): its game summaries are slightly worse
+     than production (`ae_pbp32` +0.0012, `ae0_pbp32` +0.0009 Brier, within noise; `ae_pbp32`
+     fails moneyline). Adding the player values on top (`ae_pbp32_pvc`, −0.0001) does no better
+     than `pbp32_pvc` (−0.0013).
+   - Single-seed `pbp32_pvc` fails total in this run (+0.0025 ± 0.0019). The 4-seed version
+     passes (+0.0003), so this is seed noise on the total, but the next promotion check should
+     use 4 seeds.
+
+   Keep the production foundation (pbp32) for the game summary and the simulator. Personnel
+   enters through the player values (`pvc`). The `ae` / `ae0` heads stay behind `--all-effects`
+   for experiments.
 4. **Better values:** priors for rookies from draft slot and position (today they are replacement
    level until 150 plays); aging; in-season weighting; and a lineup-value version of the total.
