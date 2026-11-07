@@ -151,6 +151,8 @@ def main() -> None:
                     saved[idx] = table.loc[idx].copy()
                     c = f"_pv_{PV_COL[grp]}"
                     table.loc[idx, c] += dv
+                    if "_pv_19" in table.columns:          # pva: the group's change column too
+                        table.loc[idx, f"_pv_{11 + PV_COL[grp]}"] += dv
                     if grp in OFF:
                         table.loc[idx, "_pv_9"] += dv
                     elif grp in DEF:

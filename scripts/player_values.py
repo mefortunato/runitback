@@ -7,6 +7,7 @@ features use) and its previous game's actual lineup. Writes <out>/pv.parquet, on
 
     _pv_0 .. _pv_8  QB, RB, WR, TE, OL, DL, LB, DB, kicker + punter (each group's sum)
     _pv_9  offense change vs the previous game's lineup   _pv_10 defense change
+    _pv_11 .. _pv_19  each group's change vs the mean of the team's last 8 games' lineups
 
 and <out>/values_latest.csv, the most recent fit (every player's value per play and as a starter).
 
@@ -25,6 +26,7 @@ from joblib import Parallel, delayed
 from runitback.nfl import player_values as pv
 
 log = logging.getLogger("player_values")
+RECENT = 8      # games behind the per-group changes (about the wager model's history)
 
 
 def _fit(data, special, before):
@@ -84,6 +86,10 @@ def main() -> None:
     for team, d in order.groupby("team"):
         ids = d.game_id.tolist()
         prev_of |= {(g, team): p for p, g in zip([None] + ids[:-1], ids)}
+    recent_of = {}
+    for team, d in order.groupby("team"):
+        ids = d.game_id.tolist()
+        recent_of |= {(g, team): ids[max(0, i - RECENT):i] for i, g in enumerate(ids)}
     actual = {k: list(zip(d.group, d.depth.astype(int), d.player_id)) for k, d in pg.groupby(["game_id", "team"])}
     rows = []
     for g in target.itertuples():
@@ -101,6 +107,10 @@ def main() -> None:
             row = {"game_id": g.game_id, "team": team} | {f"_pv_{i}": cur[k] for i, k in enumerate(GRP)}
             row["_pv_9"] = off_sum(cur) - off_sum(pv_prev) if pv_prev else 0.0
             row["_pv_10"] = def_sum(cur) - def_sum(pv_prev) if pv_prev else 0.0
+            recent = [side_values(actual[(h, team)], vp) for h in recent_of.get((g.game_id, team), [])
+                      if (h, team) in actual]
+            for i, k in enumerate(GRP):
+                row[f"_pv_{11 + i}"] = cur[k] - float(np.mean([r[k] for r in recent])) if recent else 0.0
             rows.append(row)
     a.out.mkdir(parents=True, exist_ok=True)
     df = pd.DataFrame(rows)

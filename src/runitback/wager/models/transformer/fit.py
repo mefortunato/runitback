@@ -26,6 +26,7 @@ from .data import (
     SequenceFeatures,
     base_token_columns,
     extra_columns,
+    additive_spec,
     lineup_context_columns,
     pbp_fold_path,
 )
@@ -190,6 +191,10 @@ def transformer_config(
     }
     if antisymmetric:
         head |= {"antisymmetric": True, "symmetric_outputs": symmetric}
+    if tokens.get("lineup"):
+        sch = spec.schema.with_features(context)
+        n_before = len(sch.context) + (1 if sch.location else 0)
+        head |= additive_spec(n_before, tokens.get("lineup_set"))
     return {
         "encoder": {"token_dim": dims["token_dim"], **encoder},
         "head": head,

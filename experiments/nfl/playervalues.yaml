@@ -20,3 +20,13 @@ configs:
     model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
             lineup: "experiments/nfl/playervalues/pv.parquet", lineup_set: pv}
     fit: {ensemble: 4}
+  # the player values only through sign-constrained additive terms on the margin and total
+  # (levels and changes vs the last 8 lineups, per position group): every lineup change moves the
+  # prediction the right way, at every position
+  pbp32_pva:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "experiments/nfl/playervalues/pv.parquet", lineup_set: pva}
+  pbp32_pva_e4:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "experiments/nfl/playervalues/pv.parquet", lineup_set: pva}
+    fit: {ensemble: 4}

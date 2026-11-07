@@ -147,6 +147,9 @@ class PairHead(nn.Module, HyperparametersMixin):
         out_dim: int = 1,
         antisymmetric: bool = False,
         symmetric_outputs: tuple[int, ...] = (),
+        additive_pairs: tuple[tuple[int, int], ...] = (),
+        additive_total_sign: tuple[float, ...] = (),
+        mask_context: tuple[int, ...] = (),
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -162,10 +165,36 @@ class PairHead(nn.Module, HyperparametersMixin):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, out_dim),
         )
+        # sign-constrained additive terms (lineup values): output 0 (the margin) gets
+        # sum_k softplus(w_k) * (context[team_k] - context[opp_k]), and output 1 (the total, when
+        # there is one) sum_k sign_k * softplus(u_k) * (context[team_k] + context[opp_k]); the
+        # columns in ``mask_context`` are hidden from the MLP, so they move the prediction only
+        # through these terms, in the direction of their sign
+        self.additive_pairs = tuple(tuple(p) for p in additive_pairs)
+        if self.additive_pairs:
+            k = len(self.additive_pairs)
+            self.register_buffer("_add_team", torch.tensor([p[0] for p in self.additive_pairs]), persistent=False)
+            self.register_buffer("_add_opp", torch.tensor([p[1] for p in self.additive_pairs]), persistent=False)
+            self.register_buffer("_add_sign", torch.tensor(list(additive_total_sign) or [0.0] * k,
+                                                           dtype=torch.float32), persistent=False)
+            self.add_w = nn.Parameter(torch.full((k,), -2.0))
+            self.add_u = nn.Parameter(torch.full((k,), -3.0))
+        keep = torch.ones(context_dim)
+        keep[list(mask_context)] = 0.0
+        self.register_buffer("_ctx_keep", keep, persistent=False)
 
     def _side(self, team, opp, context) -> torch.Tensor:
+        if self.context_dim and getattr(self, "additive_pairs", ()):
+            context = context * self._ctx_keep
         parts = [team, opp] + ([context] if self.context_dim else [])
         return self.net(torch.cat(parts, dim=-1))
+
+    def additive(self, context) -> tuple[torch.Tensor, torch.Tensor]:
+        """The additive terms' (margin, total) contributions, (B,) each."""
+        t, o = context[:, self._add_team], context[:, self._add_opp]
+        margin = (nn.functional.softplus(self.add_w) * (t - o)).sum(-1)
+        total = (self._add_sign * nn.functional.softplus(self.add_u) * (t + o)).sum(-1)
+        return margin, total
 
     def forward(self, team, opp, context, opp_context=None) -> torch.Tensor:
         out = self._side(team, opp, context)
@@ -177,6 +206,13 @@ class PairHead(nn.Module, HyperparametersMixin):
             columns[0] = (out[:, 0] - back[:, 0]) / 2
             for i in self.symmetric_outputs:
                 columns[i] = (out[:, i] + back[:, i]) / 2
+            out = torch.stack(columns, dim=-1)
+        if getattr(self, "additive_pairs", ()):
+            m, tot = self.additive(context)
+            columns = list(out.unbind(-1))
+            columns[0] = columns[0] + m
+            if len(columns) > 1:
+                columns[1] = columns[1] + tot
             out = torch.stack(columns, dim=-1)
         return out.squeeze(-1) if getattr(self, "out_dim", 1) == 1 else out
 

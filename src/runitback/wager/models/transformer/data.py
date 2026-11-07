@@ -77,7 +77,14 @@ def pbp_features(games: pd.DataFrame, schema: GameSchema, path: str, dim: int) -
 # ``_pv_*`` (scripts/player_values.py): the projected lineup's player values in points over
 # replacement per position group (QB, RB, WR, TE, OL, DL, LB, DB, kicking) and the offense /
 # defense change vs the previous game's lineup.
-LINEUP_SETS = {"lp": ("_lp_", 16), "lu": ("_lu_", 16), "cf": ("_cf_", 32), "pv": ("_pv_", 11)}
+# ``pva``: the same values plus each group's change vs the team's last 8 lineups (``_pv_11`` ..
+# ``_pv_19``), used only through sign-constrained additive terms (PairHead), so a better player
+# at any position always moves the prediction his team's way.
+LINEUP_SETS = {"lp": ("_lp_", 16), "lu": ("_lu_", 16), "cf": ("_cf_", 32), "pv": ("_pv_", 11),
+               "pva": ("_pv_", 20)}
+# pva columns: groups (QB, RB, WR, TE, OL, DL, LB, DB, kicking) as levels and as changes
+PVA_LEVELS, PVA_CHANGES = tuple(range(9)), tuple(range(11, 20))
+PVA_TOTAL_SIGN = (1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 0.0)
 LINEUP_MISSING = "_lu_missing"
 
 
@@ -87,6 +94,26 @@ def lineup_columns(which: str | None) -> list[str]:
         return []
     cols = [f"{LINEUP_SETS[k][0]}{i}" for k in which.split("+") for i in range(LINEUP_SETS[k][1])]
     return cols + [LINEUP_MISSING]
+
+
+def additive_spec(n_before: int, which: str | None) -> dict:
+    """PairHead additive-term arguments for the ``pva`` block of lineup set ``which`` (context
+    columns: ``n_before`` others, then the team's lineup columns, then the opponent's)."""
+    if not which or "pva" not in which.split("+"):
+        return {}
+    team = lineup_columns(which)
+    start = n_before
+    for k in which.split("+"):
+        if k == "pva":
+            break
+        start += LINEUP_SETS[k][1]
+    opp = n_before + len(team)
+    idx = list(PVA_LEVELS) + list(PVA_CHANGES)
+    sign = list(PVA_TOTAL_SIGN) * 2
+    pairs = [(start + i, opp + (start - n_before) + i) for i in idx]
+    mask = [start + i for i in range(LINEUP_SETS["pva"][1])]
+    mask += [opp + (start - n_before) + i for i in range(LINEUP_SETS["pva"][1])]
+    return {"additive_pairs": pairs, "additive_total_sign": sign, "mask_context": mask}
 
 
 def lineup_context_columns(which: str | None) -> list[str]:

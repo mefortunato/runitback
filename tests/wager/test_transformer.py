@@ -274,3 +274,39 @@ def test_team_embeddings_encode_each_teams_history(fitted, toy_games):
     assert list(embeddings.index) == loaded.model.teams
     assert embeddings.shape[1] == loaded.model.module.encoder.out_dim
     assert np.isfinite(embeddings.to_numpy()).all()
+
+
+def test_additive_lineup_terms_are_monotone_and_hidden_from_the_mlp():
+    import torch
+
+    from runitback.wager.models.transformer.data import additive_spec, lineup_columns
+    from runitback.wager.models.transformer.model import PairHead
+
+    n_before = 3
+    team = lineup_columns("pva")
+    spec = additive_spec(n_before, "pva")
+    assert spec["additive_pairs"][0] == (n_before, n_before + len(team))
+    assert len(spec["additive_pairs"]) == 18 and len(spec["mask_context"]) == 40
+    ctx_dim = n_before + 2 * len(team)
+    torch.manual_seed(0)
+    head = PairHead(8, ctx_dim, out_dim=2, antisymmetric=True, symmetric_outputs=(1,), **spec).eval()
+    t, o = torch.randn(5, 8), torch.randn(5, 8)
+    ctx = torch.randn(5, ctx_dim)
+    opp_ctx = torch.cat([ctx[:, :n_before], ctx[:, n_before + len(team):], ctx[:, n_before:n_before + len(team)]], 1)
+    with torch.no_grad():
+        base = head(t, o, ctx, opp_ctx)
+        for g, total_up in ((0, True), (5, False)):        # a better QB / a better pass rusher
+            better = ctx.clone()
+            better[:, n_before + g] += 1.0
+            better_opp = opp_ctx.clone()
+            better_opp[:, n_before + len(team) + g] += 1.0
+            out = head(t, o, better, better_opp)
+            assert (out[:, 0] > base[:, 0]).all()            # the team's margin goes up, every row
+            assert ((out[:, 1] > base[:, 1]) if total_up else (out[:, 1] < base[:, 1])).all()
+        # the MLP never sees the lineup columns: only the additive terms change
+        m0, _ = head.additive(ctx)
+        ctx2 = ctx.clone()
+        ctx2[:, n_before + 1] += 3.0
+        m1, _ = head.additive(ctx2)
+        assert torch.allclose(head._side(t, o, ctx), head._side(t, o, ctx2))
+        assert (m1 > m0).all()
