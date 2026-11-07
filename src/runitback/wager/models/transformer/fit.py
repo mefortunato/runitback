@@ -26,6 +26,7 @@ from .data import (
     SequenceFeatures,
     base_token_columns,
     extra_columns,
+    lineup_context_columns,
     pbp_fold_path,
 )
 from .model import (
@@ -48,8 +49,8 @@ TOKEN_KEYS = (
 # Play-by-play embedding options (not booleans): ``pbp`` is the embedding table's path with a
 # ``{season}`` placeholder for the walk-forward fold (the test season), ``pbp_dim`` its width and
 # ``pbp_only`` drops the box-score stats from the tokens (runitback.nfl.embed).
-PBP_KEYS = ("pbp", "pbp_dim", "pbp_only")
-PBP_DEFAULTS = {"pbp": None, "pbp_dim": 32, "pbp_only": False}
+PBP_KEYS = ("pbp", "pbp_dim", "pbp_only", "lineup", "lineup_set")
+PBP_DEFAULTS = {"pbp": None, "pbp_dim": 32, "pbp_only": False, "lineup": None, "lineup_set": "lu"}
 # Settings that are not model init args.
 FIT_KEYS = ("ensemble", "batch_size", "patience", "max_epochs")
 
@@ -65,6 +66,8 @@ def transformer_dims(
     pbp: str | None = None,
     pbp_dim: int = 0,
     pbp_only: bool = False,
+    lineup: str | None = None,
+    lineup_set: str | None = None,
 ) -> dict[str, int]:
     """Token / context feature counts a TransformerModel needs for ``schema``."""
     location = [schema.location] if schema.location else []
@@ -75,7 +78,8 @@ def transformer_dims(
     )
     return {
         "token_dim": len(tokens),
-        "context_dim": len(schema.context) + len(location),
+        "context_dim": len(schema.context) + len(location)
+        + len(lineup_context_columns(lineup_set if lineup else None)),
     }
 
 
@@ -352,6 +356,8 @@ def fit_transformer(
     if tokens.get("pbp"):
         # the foundation model of the season after the training data (never trained on it)
         tokens = tokens | {"pbp": pbp_fold_path(tokens["pbp"], fold)}
+    if tokens.get("lineup"):
+        tokens = tokens | {"lineup": pbp_fold_path(tokens["lineup"], fold)}
     features = SequenceFeatures.fit(
         train_games, schema, model.encoder.history, **tokens, sport=sport
     )

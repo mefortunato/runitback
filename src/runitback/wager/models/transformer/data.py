@@ -69,6 +69,43 @@ def pbp_features(games: pd.DataFrame, schema: GameSchema, path: str, dim: int) -
     return out
 
 
+# Per-game lineup context from the foundation (runitback.nfl.lineup_features): ``_lp_*`` the
+# projected lineup's pooled player embeddings, ``_lu_*`` how they differ from the lineups behind the
+# team's history games, ``_cf_*`` the history re-embedded under the projected lineup minus the real
+# one. Joined for the team and, as
+# ``_opp<col>``, its opponent, into the head's context (not the history tokens).
+LINEUP_SETS = {"lp": ("_lp_", 16), "lu": ("_lu_", 16), "cf": ("_cf_", 32)}
+LINEUP_MISSING = "_lu_missing"
+
+
+def lineup_columns(which: str | None) -> list[str]:
+    """The team-side context columns of a ``lineup_set`` ("lp", "lu", "cf", or several: "lp+lu")."""
+    if not which:
+        return []
+    cols = [f"{LINEUP_SETS[k][0]}{i}" for k in which.split("+") for i in range(LINEUP_SETS[k][1])]
+    return cols + [LINEUP_MISSING]
+
+
+def lineup_context_columns(which: str | None) -> list[str]:
+    cols = lineup_columns(which)
+    return cols + [f"_opp{c}" for c in cols]
+
+
+def lineup_features(games: pd.DataFrame, schema: GameSchema, path: str, which: str) -> pd.DataFrame:
+    """Both sides' lineup context for each row (missing flag 1 where the table has no row)."""
+    table = _read_pbp(path)
+    cols = lineup_columns(which)[:-1]
+    out = []
+    for side, prefix in ((schema.team, ""), (schema.opp, "_opp")):
+        key = pd.MultiIndex.from_arrays([games[schema.game_id], games[side]])
+        part = table.reindex(columns=cols).reindex(key)
+        part[LINEUP_MISSING] = part[cols[0]].isna().astype(np.float32)
+        part.columns = [f"{prefix}{c}" for c in part.columns]
+        part.index = games.index
+        out.append(part)
+    return pd.concat(out, axis=1)
+
+
 _PBP_CACHE: dict[str, pd.DataFrame] = {}
 
 
@@ -285,6 +322,8 @@ class SequenceFeatures:
     pbp: str | None = None  # this fold's embedding table (resolved path)
     pbp_dim: int = 0
     pbp_only: bool = False
+    lineup: str | None = None  # this fold's lineup context table (resolved path)
+    lineup_set: str | None = None
 
     @classmethod
     def fit(
@@ -301,6 +340,8 @@ class SequenceFeatures:
         pbp: str | None = None,
         pbp_dim: int = 0,
         pbp_only: bool = False,
+        lineup: str | None = None,
+        lineup_set: str | None = None,
     ) -> SequenceFeatures:
         location = [schema.location] if schema.location else []
         tokens = base_token_columns(schema, pbp_only)
@@ -320,6 +361,8 @@ class SequenceFeatures:
             pbp=pbp if pbp_dim else None,
             pbp_dim=pbp_dim if pbp else 0,
             pbp_only=pbp_only,
+            lineup=lineup if lineup_set else None,
+            lineup_set=lineup_set if lineup else None,
         )
         extra = extra_columns(
             opponent_strength, elo_margin, market_tokens, efficiency, sport,
@@ -329,6 +372,9 @@ class SequenceFeatures:
             tokens += extra
             train_games = features.with_derived(train_games)
         context = location + list(schema.context)
+        if features.lineup:
+            context += lineup_context_columns(features.lineup_set)
+            train_games = features.with_lineup(train_games)
         columns = list(dict.fromkeys(tokens + context))
         values = train_games.reindex(columns=columns)
         values = values.apply(pd.to_numeric, errors="coerce")
@@ -384,8 +430,15 @@ class SequenceFeatures:
         """Standardized tokens for played ``games`` (strength computed from them)."""
         return self._standardize(self.with_derived(games), self.token_columns)
 
+    def with_lineup(self, games: pd.DataFrame) -> pd.DataFrame:
+        """``games`` with both sides' lineup context joined (when this featurizer uses it)."""
+        if not getattr(self, "lineup", None):
+            return games
+        part = lineup_features(games, self.schema, self.lineup, self.lineup_set)
+        return games.drop(columns=part.columns, errors="ignore").join(part)
+
     def context(self, matchups: pd.DataFrame) -> np.ndarray:
-        return self._standardize(matchups, self.context_columns)
+        return self._standardize(self.with_lineup(matchups), self.context_columns)
 
 
 def histories(games: pd.DataFrame, schema: GameSchema, history: int) -> np.ndarray:

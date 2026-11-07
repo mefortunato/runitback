@@ -102,6 +102,22 @@ def foundation(root: Path = typer.Option(Path("foundation/nfl"), help="fold dire
         typer.echo(f"fold{s}: {what}")
 
 
+@nfl.command("lineup-features")
+def lineup_features(ckpt: Path = typer.Option(..., help="the fold's foundation checkpoint"),
+                   out: Path = typer.Option(..., help="the fold's embedding directory (has pca_32.npz)"),
+                   fold: int = typer.Option(..., help="the fold's test season (projections fit before it)"),
+                   sets: list[str] = typer.Option(["lu", "cf"], help="lu (lineup change) and/or cf "
+                                                                      "(counterfactual history)"),
+                   data: Path = DATA / "processed", raw: Path = DATA / "raw", threads: int = 0):
+    """Projected lineups and the wager model's lineup context (runitback.nfl.lineup_features)."""
+    import torch
+    _log()
+    if threads:
+        torch.set_num_threads(threads)
+    from .nfl.lineup_features import lineup_table
+    typer.echo(lineup_table(ckpt, data, raw, fold, out, tuple(sets)))
+
+
 @nfl.command()
 def embed(ckpt: Path = typer.Option(..., help="foundation (play-by-play) checkpoint"),
           out: Path = typer.Option(..., help="output directory"),

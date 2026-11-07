@@ -53,3 +53,20 @@ def test_pbp_tokens_join_by_game_and_team(tmp_path):
     assert list(out.columns) == pbp_columns(2)
     assert out["_pbp_0"].tolist()[:2] == [2.0, 1.0]
     assert out[PBP_MISSING].tolist() == [0.0, 0.0, 1.0]
+
+
+def test_lineup_context_joins_both_sides_and_mirrors(tmp_path):
+    from runitback.wager.core.schema import mirror
+    from runitback.wager.models.transformer.data import LINEUP_MISSING, lineup_features
+
+    table = pd.DataFrame({"game_id": ["g1", "g1"], "team": ["A", "B"]}
+                         | {f"_lu_{j}": [float(j), 100.0 + j] for j in range(16)})
+    path = tmp_path / "lineup.parquet"
+    table.to_parquet(path)
+    games = pd.DataFrame({SCHEMA.game_id: ["g1", "g2"], SCHEMA.team: ["A", "A"], SCHEMA.opp: ["B", "C"]})
+    out = lineup_features(games, SCHEMA, str(path), "lu")
+    assert out["_lu_1"].tolist()[0] == 1.0 and out["_opp_lu_1"].tolist()[0] == 101.0
+    assert out[LINEUP_MISSING].tolist() == [0.0, 1.0]          # g2 has no row
+    # the opponent's view (antisymmetric heads) gets the sides swapped
+    flipped = lineup_features(mirror(games, SCHEMA), SCHEMA, str(path), "lu")
+    assert flipped["_lu_1"].tolist()[0] == 101.0 and flipped["_opp_lu_1"].tolist()[0] == 1.0
