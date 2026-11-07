@@ -208,6 +208,13 @@ doesn't push the player embeddings to rank players: one play's outcome says litt
 the QB is, and the in-game state (score, field position, down) explains most of it. Ratings
 were not what was masking the lineup signal.
 
+**Passer target with team identity (`experiments/nfl/qbtarget.yaml`): not enough.** Adding the
+passer target to production's settings (`qb`), or to them without the ratings (`qbnr`), leaves
+the QB swap flat (Mahomes −0.006 / +0.008, Siemian −0.002 / +0.001, the unknown QB
+−0.011 / −0.002), and the wager arms slip a little (`qb_pbp32` +0.0016 ± 0.0013 on moneyline,
+failing; `qbnr_pbp32` fails moneyline and spread; `qbnr/report.md`). With the team-season and
+franchise tokens in place the players stay redundant.
+
 **Players-only foundation (`experiments/nfl/playersonly.yaml`): the embeddings now know the players,
 the simulator still barely uses them.** No team identity at all (franchise / team-season / season
 tokens, ratings and coach records removed); each play is predicted from the game so far plus the
