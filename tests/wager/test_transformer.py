@@ -320,3 +320,4 @@ def test_additive_lineup_terms_are_monotone_and_hidden_from_the_mlp():
             x[:, n_before + g] += 1.0 / std[g]
             bumps.append(head.additive(x)[0] - head.additive(ctx)[0])
         assert torch.allclose(bumps[0], bumps[1], atol=1e-5) and (bumps[0] > 0).all()
+    assert additive_spec(n_before, "pvc")["additive_kind"] == [1] * 9

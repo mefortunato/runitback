@@ -31,3 +31,12 @@ configs:
     model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
             lineup: "experiments/nfl/playervalues/pv.parquet", lineup_set: pva}
     fit: {ensemble: 4}
+  # pva double-counts team strength (its level terms repeat what the history knows): the same with
+  # only each group's change vs the team's last 8 lineups in the additive terms
+  pbp32_pvc:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "experiments/nfl/playervalues/pv.parquet", lineup_set: pvc}
+  pbp32_pvc_e4:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "experiments/nfl/playervalues/pv.parquet", lineup_set: pvc}
+    fit: {ensemble: 4}

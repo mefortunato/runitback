@@ -149,6 +149,7 @@ class PairHead(nn.Module, HyperparametersMixin):
         symmetric_outputs: tuple[int, ...] = (),
         additive_pairs: tuple[tuple[int, int], ...] = (),
         additive_total_sign: tuple[float, ...] = (),
+        additive_kind: tuple[int, ...] = (),
         mask_context: tuple[int, ...] = (),
     ):
         super().__init__()
@@ -180,7 +181,8 @@ class PairHead(nn.Module, HyperparametersMixin):
             self.register_buffer("_add_sign", torch.tensor(list(additive_total_sign) or [0.0] * k,
                                                            dtype=torch.float32), persistent=False)
             half = (k + 1) // 2
-            self.register_buffer("_add_kind", torch.tensor([0] * half + [1] * (k - half)), persistent=False)
+            kinds = list(additive_kind) or [0] * half + [1] * (k - half)
+            self.register_buffer("_add_kind", torch.tensor(kinds), persistent=False)
             # raw value = z * std + mean per pair column; output scales (margin, total) in points
             self.register_buffer("add_std", torch.ones(k, 2))
             self.register_buffer("add_mean", torch.zeros(k, 2))
