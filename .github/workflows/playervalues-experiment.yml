@@ -1,0 +1,112 @@
+# Player values in the production wager model (experiments/nfl/playervalues.yaml):
+#   arms (pbp32_pv × 5 seasons, on the production foundation's game embeddings) ──► report
+# The report also scores the direct game models committed in experiments/nfl/playervalues (pvg,
+# pvgg, pvg_mkt, pvgg_mkt), the pbp32 / pvg average (ens) and the pbp32_pv / pvg average (ens_pv),
+# and commits the results.
+name: Player-values experiment
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - .github/workflows/playervalues-experiment.yml
+      - experiments/nfl/playervalues.yaml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: playervalues-experiment-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+  DATA_RUN: "42333696576"
+  FOUNDATION_RUN: "42286987708"
+
+jobs:
+  arms:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [pbp32_pv]
+        season: [2021, 2022, 2023, 2024, 2025]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl, run-id: "${{ env.DATA_RUN }}", github-token: "${{ github.token }}" }
+      - uses: actions/download-artifact@v4
+        with:
+          name: "fold${{ matrix.season }}"
+          path: "runs/foundation/fold${{ matrix.season }}"
+          run-id: ${{ env.FOUNDATION_RUN }}
+          github-token: ${{ github.token }}
+      - name: Backtest ${{ matrix.config }} on ${{ matrix.season }}
+        run: |
+          python scripts/foundation_arm.py ${{ matrix.config }} ${{ matrix.season }} --threads $(nproc) \
+            --experiment experiments/nfl/playervalues.yaml --output-dir experiments/nfl/playervalues
+          mkdir -p out/${{ matrix.config }}
+          cp experiments/nfl/playervalues/${{ matrix.config }}/${{ matrix.season }}.csv out/${{ matrix.config }}/
+      - uses: actions/upload-artifact@v4
+        with: { name: "arm-${{ matrix.config }}-${{ matrix.season }}", path: out, retention-days: 30 }
+
+  report:
+    needs: arms
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: "${{ github.ref_name }}" }
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl, run-id: "${{ env.DATA_RUN }}", github-token: "${{ github.token }}" }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "arm-*", path: experiments/nfl/playervalues, merge-multiple: true }
+      - name: Score
+        run: |
+          R=experiments/nfl/playervalues
+          cp -r experiments/nfl/lineups/pbp32 experiments/nfl/lineups/changes $R/
+          python scripts/average_predictions.py $R/ens $R/pbp32 $R/pvg
+          [ -d $R/pbp32_pv ] && python scripts/average_predictions.py $R/ens_pv $R/pbp32_pv $R/pvg
+          python - <<'PY'
+          import pathlib
+          from runitback.wager.experiments import ablate
+          R, seasons = pathlib.Path("experiments/nfl/playervalues"), [2021, 2022, 2023, 2024, 2025]
+          names = ["pbp32", "pbp32_pv", "pvg", "pvgg", "ens", "ens_pv", "pvg_mkt", "pvgg_mkt"]
+          have = {n: {} for n in names if all((R / n / f"{s}.csv").exists() for s in seasons)}
+          print("complete configurations:", list(have))
+          ablate("data/nfl/games.csv", "nfl", have, seasons, str(R), "pbp32", 1, 1)
+          PY
+          python scripts/foundation_report.py $R --baseline pbp32 --out $R/report.md
+          python scripts/lineup_report.py $R --baseline pbp32 --out $R/subsets.md
+          rm -rf $R/pbp32 $R/changes
+          { echo "## Player-values experiment"; cat $R/ablation.md; echo; cat $R/report.md; echo; cat $R/subsets.md; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit the results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add experiments/nfl/playervalues
+          git diff --cached --quiet && { echo "nothing new"; exit 0; }
+          git commit -m "Player-values experiment results (run ${{ github.run_id }})"
+          for i in 1 2 3 4; do
+            git pull --rebase origin "${{ github.ref_name }}" && git push origin "HEAD:${{ github.ref_name }}" && exit 0
+            sleep $((2 ** i))
+          done
+          exit 1

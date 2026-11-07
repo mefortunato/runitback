@@ -74,7 +74,10 @@ def pbp_features(games: pd.DataFrame, schema: GameSchema, path: str, dim: int) -
 # team's history games, ``_cf_*`` the history re-embedded under the projected lineup minus the real
 # one. Joined for the team and, as
 # ``_opp<col>``, its opponent, into the head's context (not the history tokens).
-LINEUP_SETS = {"lp": ("_lp_", 16), "lu": ("_lu_", 16), "cf": ("_cf_", 32)}
+# ``_pv_*`` (scripts/player_values.py): the projected lineup's player values in points over
+# replacement per position group (QB, RB, WR, TE, OL, DL, LB, DB, kicking) and the offense /
+# defense change vs the previous game's lineup.
+LINEUP_SETS = {"lp": ("_lp_", 16), "lu": ("_lu_", 16), "cf": ("_cf_", 32), "pv": ("_pv_", 11)}
 LINEUP_MISSING = "_lu_missing"
 
 
