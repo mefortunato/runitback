@@ -186,6 +186,28 @@ ratings and the history, and lineup dropout (0.2) plus unknown-lineup training (
 on those. `lineups/qb_swap.<shard>.csv`; `python scripts/lineup_qb_swap.py --summary
 experiments/nfl/lineups/qb_swap.*.csv`.
 
+**No team-strength inputs (`experiments/nfl/noratings.yaml`): doesn't fix it.** Retraining every
+fold without the pre-game ratings (`nr`), and without ratings or team-season tokens (`nrts`), so
+team strength can only come from the lineups, coaches and franchise, leaves the QB swap flat:
+
+| home QB1 | Δ win, production | Δ win, `nr` | Δ win, `nrts` |
+|---|---|---|---|
+| Mahomes | +0.009 ± 0.010 | −0.013 ± 0.010 | −0.011 ± 0.010 |
+| J. Allen | +0.013 ± 0.009 | +0.000 ± 0.009 | +0.012 ± 0.010 |
+| C. Rush | +0.008 ± 0.009 | +0.006 ± 0.009 | +0.011 ± 0.011 |
+| T. Siemian | +0.009 ± 0.008 | −0.006 ± 0.010 | +0.007 ± 0.011 |
+| B. Rypien | +0.004 ± 0.011 | −0.009 ± 0.009 | +0.005 ± 0.010 |
+| unknown "new QB" | −0.005 ± 0.009 | −0.017 ± 0.009 | −0.007 ± 0.010 |
+
+Elite and journeyman QBs are still indistinguishable (Mahomes is now slightly *below* Siemian);
+only the unknown token is consistently negative. And the wager model is a little worse on these
+foundations: `nr_pbp32` +0.0014 / +0.0019 / +0.0013 (moneyline / spread / total; fails on
+spread), `nrts_pbp32` similar, `nrts_pbp32_lp` fails on moneyline and spread
+(`noratings/report.md`, `subsets.md`, `qb_swap.md`). With the ratings gone, the next-play loss still
+doesn't push the player embeddings to rank players: one play's outcome says little about who
+the QB is, and the in-game state (score, field position, down) explains most of it. Ratings
+were not what was masking the lineup signal.
+
 Results: `lineups/ablation.md`, `lineups/report.md` (per market, pass/fail), `lineups/subsets.md`
 (QB changed / QB projected to change / top-quartile turnover / steady), and the per-game change
 flags in `lineups/changes/<season>.csv`.
@@ -193,11 +215,12 @@ flags in `lineups/changes/<season>.csv`.
 **Next steps for personnel**
 1. Keep `pbp32` in production; don't wire projected lineups in yet (it would also need live
    depth charts and injury reports in the refresh workflow).
-2. **Make the foundation learn who matters first**, and re-check with the QB swap before rerunning
-   the wager arms: e.g. train without the team-strength ratings (or with ratings dropout) so
-   the lineup has to explain team quality, raise the player embedding size (32) and lower lineup
-   dropout, and add a per-player target (the QB's EPA per dropback) so the embedding is pushed to
-   rank players.
+2. **Make the foundation learn who matters first**, re-checking with the QB swap (now ~15 min on
+   Actions) before rerunning the wager arms. Removing the ratings didn't do it (above); next to
+   try: a per-player target (the QB's EPA per dropback, a pass-completion head conditioned on the
+   passer's embedding) so the embedding is pushed to rank players; lower lineup dropout and a
+   bigger player embedding; and checking the lineup encoder's pooling isn't averaging the QB away
+   among 20+ slots (a separate QB slot input).
 3. Get more signal per parameter: a single scalar per side (e.g. the foundation's predicted
    point-margin change from swapping the projected lineup in, via rollouts or the trunk) instead
    of 16–64 columns, and train on more seasons (lineup data starts in 2013).
