@@ -4,8 +4,8 @@ The goal is to bring the NFL player-based wager model to the other seven sports 
 covers (ported from sportsml): NBA, WNBA, men's college basketball (`cbb`), women's college
 basketball (`wcbb`), NHL, MLB and college football (`cfb`).
 
-The NFL model being ported lives on branch `claude/focused-brahmagupta-34i6ys` (not merged to `main`
-as of 2026-11-09). Its write-up is `experiments/nfl/README.md` on that branch. Read it before
+The NFL model being ported is on `main` (merged in mefortunato/runitback#18). Its write-up is
+`experiments/nfl/README.md`. Read it before
 starting any work package: it records what worked, what didn't, and why.
 
 ## 1. The architecture being ported
@@ -66,7 +66,7 @@ parallel threads. Each package is sized for one thread and one pull request.
 
 | ID | Title | Deps | Deliverable / acceptance |
 |---|---|---|---|
-| **S0** | Merge the NFL player model to `main` | none | **User action.** Review and merge `claude/focused-brahmagupta-34i6ys` so threads can branch from `main` |
+| **S0** | Merge the NFL player model to `main` | none | **Done** (mefortunato/runitback#18) |
 | **S1** | Sport-agnostic lineup plumbing in the wager model | none | Move these from hard-coded constants onto `Sport`: NFL position groups, `LINEUP_SETS` widths, `PVA_LEVELS`/`PVA_CHANGES`/`PVA_TOTAL_SIGN`, `RECENT`, `GROUP_COLUMNS` (`wager/models/transformer/data.py`, `wager/web/lineups.py`, `wager/core/sport.py`). NFL predictions must be **bit-identical** before and after (test with a trained 2-seed fixture, as `tests/wager/test_lineup_editor.py` does) |
 | **S2** | Generic player-values core | none | Extract a sport-agnostic weekly ridge-APM fitter into `runitback/core/player_values.py`. Inputs: an events table with on-field id arrays per side, a target, controls, group per player, shrink scale per group, replacement threshold, recency decay. `nfl/player_values.py` becomes a thin adapter. **NFL `pv.parquet` must be identical** |
 | **S3** | Generic foundation folds | none | Generalize `nfl/foundation.py` and `nfl/embed.py` (fold layout, PCA on games before S, `update_fold`) behind a per-sport generator interface. NFL fold files must be identical |
@@ -146,6 +146,9 @@ parallel threads. Each package is sized for one thread and one pull request.
 
 - **Path-filtered experiment workflows.** Pushing changes to `experiments/nfl/*.yaml` or their
   workflow files on a `claude/**` branch starts multi-hour Actions runs. Only do that deliberately.
+- **No result data in git.** Experiment results are uploaded as run artifacts, never committed
+  (`.gitignore`). A new sport's experiments should follow `nfl-experiment-inputs.yml`: rebuild every
+  input from the public sources inside the run.
 - **Leakage.** Every fit, PCA and projected lineup uses only data before the game it is for. Where a
   sport has no pre-game availability history, document the stand-in and its leak.
 - **Noise floor.** A reseeded baseline moves Brier about ±0.002; use 4-seed ensembles for decisions.

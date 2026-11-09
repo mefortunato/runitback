@@ -4,13 +4,10 @@ This project brings the NFL player-based wager model (play-by-play foundation em
 values + projected-lineup `pvc` terms) to NBA, WNBA, men's and women's college basketball, NHL, MLB
 and college football in `mefortunato/runitback`.
 
-The plan and every work package (IDs like S1, N2, H4) are in `docs/multisport/PLAN.md`. Until it is
-on `main`, read it with:
-`git fetch origin claude/ecstatic-lovelace-opcpo7 && git show origin/claude/ecstatic-lovelace-opcpo7:docs/multisport/PLAN.md`
-Read the NFL write-up `experiments/nfl/README.md` before starting a package.
+The plan and every work package (IDs like S1, N2, H4) are in `docs/multisport/PLAN.md`. Read the
+NFL write-up `experiments/nfl/README.md` before starting a package.
 
-- **Base branch:** branch from `claude/focused-brahmagupta-34i6ys` (the NFL player model) until it
-  is merged to `main`, then from `main`. If a package depends on another that is not merged yet,
+- **Base branch:** branch from `main`. If a package depends on another that is not merged yet,
   branch from that package's branch and say so in the PR.
 - **One thread per work package, one draft PR per thread.** The PR title starts with the package ID,
   e.g. `[N2] NBA player values`. Base the PR on the branch you started from.
@@ -20,6 +17,8 @@ Read the NFL write-up `experiments/nfl/README.md` before starting a package.
   paste the summary line. For experiment packages, report the Brier deltas with 95% CIs against the
   sport's production baseline, and the swap test, in `experiments/<sport>/README.md`, in the NFL
   write-up's format.
+- **No result data in git:** experiment outputs go to run artifacts; workflows rebuild their
+  inputs from the public sources in the run (see `nfl-experiment-inputs.yml`).
 - **No leakage:** every fit, PCA and projected lineup uses only data before the game it is for.
 - **Refactors of NFL code** (S1, S2, S3) must leave NFL outputs identical; prove it with a test.
 - **Don't push changes to `experiments/nfl/*.yaml` or `.github/workflows/*`** unless the package calls
