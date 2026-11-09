@@ -4,7 +4,7 @@ For games of one season, roll out a foundation model with each team's previous-g
 again with one change to the home team's depth chart, on the same random seeds:
     best / worst  that group's first slot (QB1, RB1, WR1, TE1, OL1, DL1, LB1, DB1, K, P) given to
                   the best / worst regular by the direct player values fit before the season
-                  (experiments/nfl/allpositions/swap_refs.csv)
+                  (experiments/nfl/playervalues/swap_refs_2025.csv: scripts/player_values.py --season-values 2025)
     new           that slot given to the replacement-level "new player" token
     out           the slot's starter ruled out: the rest of the group moves up one slot
 Prints the change in the home team's win probability and margin per condition.
@@ -67,7 +67,7 @@ def main() -> None:
     ap.add_argument("--ckpt", type=Path)
     ap.add_argument("--season", type=int)
     ap.add_argument("--summary", type=Path, nargs="+", help="print saved runs (shards are concatenated)")
-    ap.add_argument("--refs", type=Path, default=Path("experiments/nfl/allpositions/swap_refs.csv"))
+    ap.add_argument("--refs", type=Path, default=Path("experiments/nfl/playervalues/swap_refs_2025.csv"))
     ap.add_argument("--groups", nargs="+", default=GROUPS)
     ap.add_argument("--games", type=int, default=120)
     ap.add_argument("--sims", type=int, default=100)

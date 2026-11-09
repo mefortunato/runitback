@@ -36,7 +36,7 @@ def main() -> None:
     ap.add_argument("--experiment", type=Path, default=Path("experiments/nfl/playervalues.yaml"))
     ap.add_argument("--games", default="data/nfl/games.csv")
     ap.add_argument("--plays", type=Path, help="cached play table (pickle of player_values.play_table, special)")
-    ap.add_argument("--refs", type=Path, default=Path("experiments/nfl/allpositions/swap_refs.csv"))
+    ap.add_argument("--refs", type=Path, default=Path("experiments/nfl/playervalues/swap_refs_2025.csv"))
     ap.add_argument("--out", type=Path, default=Path("experiments/nfl/playervalues/sensitivity.csv"))
     ap.add_argument("--threads", type=int, default=4)
     a = ap.parse_args()

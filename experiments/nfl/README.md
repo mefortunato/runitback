@@ -15,9 +15,37 @@ worse, and do the two models agree with each other?
   probability and margin (correlation 0.85). On totals they don't, because the generator
   under-scores by about 8 points a game.
 
-Results: `foundation/ablation.md`, `foundation/report.md` (per market, with the pass/fail column),
-`foundation/consistency.csv`, the per-game predictions in `foundation/<config>/<season>.csv` and
-the generator rollouts in `foundation/generator/<season>.csv`.
+Results: `foundation/ablation.md` and `foundation/report.md` (per market, with the pass/fail
+column). The per-game predictions (`foundation/<config>/<season>.csv`), the generator rollouts
+(`foundation/generator/<season>.csv`) and `foundation/consistency.csv` are in the run's
+`foundation-results` artifact (see "Reproducing the results").
+
+## Reproducing the results
+
+Only the configurations (`experiments/nfl/*.yaml`) and the write-ups (`*.md`) are kept in git. Every
+per-game prediction, rollout, player-value table and swap result is regenerated from the public
+sources (nflverse / SportsDataverse play-by-play, ESPN lines) by the experiment's workflow:
+
+| experiment | workflow | results artifact |
+|---|---|---|
+| foundation | `foundation-experiment.yml` | `foundation-results`, `foundation-models` |
+| lineups | `lineup-experiment.yml` | `lineup-results` |
+| QB swap (production foundation) | `qb-swap.yml` | `qb-swap-results` |
+| no ratings / QB target / players only / player effects | `noratings-` / `qbtarget-` / `playersonly-` / `playereffects-experiment.yml` | `<name>-results` |
+| player values | `playervalues-experiment.yml` | `playervalues-results` |
+| all positions | `allpositions-experiment.yml` | `allpositions-results` |
+
+Each one calls `nfl-experiment-inputs.yml` first, which downloads and preprocesses the data, trains
+the production foundation folds, and builds the projected-lineup tables and the weekly player values
+in the same run. Baselines such as `pbp32` and `prod` are rerun alongside the arms rather than read
+from earlier results. Start a workflow from the Actions tab ("Run workflow"), or push a change to its
+configuration on a `claude/**` branch. The results artifact holds the experiment's directory with the
+per-game CSVs and the regenerated `*.md` reports; copy the reports back here when they change the
+write-up. Seed noise means a rerun reproduces the tables within about ±0.002 Brier, not exactly.
+
+To run a cell locally instead: `runitback nfl download` / `preprocess`, `runitback-wager nfl download`
+/ `process`, `runitback nfl foundation` (or `runitback nfl train` + `embed`), then
+`python scripts/foundation_arm.py <config> <season> --experiment experiments/nfl/<name>.yaml`.
 
 ## Setup
 
@@ -126,7 +154,8 @@ mean gap of 8.6 points.
    end-of-half behavior) for the 8-point shortfall. Then either recalibrate the strength scale
    jointly on margin and total, or post-hoc scale points.
 4. **Rerun** with `git push` after editing `foundation.yaml`, or dispatch "Foundation experiment"
-   once it is on `main`. The models are kept as the run's `foundation-models` artifact for 90 days.
+   once it is on `main`. The models are kept as the run's `foundation-models` artifact and the
+   results as `foundation-results`, both for 90 days.
 
 ## Personnel: does knowing who plays this week help?
 
@@ -183,8 +212,8 @@ The model separates known from unknown players a little (the "new QB" token is t
 but not good from bad ones. That explains the experiment above: the lineup features can't carry
 personnel information the foundation never learned. Its team strength comes from the pre-game
 ratings and the history, and lineup dropout (0.2) plus unknown-lineup training (0.2) let it lean
-on those. `lineups/qb_swap.<shard>.csv`; `python scripts/lineup_qb_swap.py --summary
-experiments/nfl/lineups/qb_swap.*.csv`.
+on those. The shards are in the `qb-swap-results` artifact (`qb-swap.yml`); summarize them with
+`python scripts/lineup_qb_swap.py --summary qb_swap.*.csv`.
 
 **No team-strength inputs (`experiments/nfl/noratings.yaml`): doesn't fix it.** Retraining every
 fold without the pre-game ratings (`nr`), and without ratings or team-season tokens (`nrts`), so
@@ -279,8 +308,8 @@ historical games the wager model learned from (an injured starter, a traded QB),
 backtest over ordinary weeks barely samples.
 
 Results: `lineups/ablation.md`, `lineups/report.md` (per market, pass/fail), `lineups/subsets.md`
-(QB changed / QB projected to change / top-quartile turnover / steady), and the per-game change
-flags in `lineups/changes/<season>.csv`.
+(QB changed / QB projected to change / top-quartile turnover / steady). The per-game change flags
+(`changes/<season>.csv`) are in each run's `lineup<season>` artifacts.
 
 ### Player values: who plays, straight into the wager model
 
@@ -302,13 +331,14 @@ it straight into the wager model.
 - **Leak-free and weekly.** Every week from 2016 on is refit on the plays before it (223 fits, two
   minutes), so values update weekly and never see the game they are for.
 - **Per-game features.** Each team's projected pre-game lineup (published depth chart minus players
-  ruled out) is summed per position group: `playervalues/pv.parquet`. Columns: QB, RB, WR, TE, OL,
+  ruled out) is summed per position group: `pv.parquet` (`scripts/player_values.py`, in the
+  `playervalues` artifact of every experiment run that uses it). Columns: QB, RB, WR, TE, OL,
   DL, LB, DB and kicking, plus each group's change vs the team's last 8 lineups.
 
 Do the values look right? Before 2025, the top QBs are Allen, Jackson, Purdy and Tagovailoa, along
 with Bosa at DL, Kelce at TE, Henry and Jones at RB, and A.J. Brown and Evans at WR. Some low ends are
-plus-minus noise (Bobby Wagner as the "worst" LB regular); `allpositions/values_<season>.csv` has
-them all. The projected-lineup value difference alone, with no team history at all, correlates 0.86
+plus-minus noise (Bobby Wagner as the "worst" LB regular); `values_<season>.csv` from
+`scripts/player_values.py --season-values` has them all. The projected-lineup value difference alone, with no team history at all, correlates 0.86
 with the market spread and 0.40 with the final margin (the market: 0.45).
 
 **Backtest** (2021-2025, Brier vs `pbp32`; seed noise is about ±0.002, so the 4-seed averages
@@ -330,7 +360,7 @@ larger. Nothing beats the market (`pvg_mkt` only ties it).
 
 **Does changing a player move the prediction the right way?** For every 2025 game, one home
 starter at a time was changed and the game re-predicted (`scripts/wager_lineup_sensitivity.py`,
-`playervalues/sensitivity/`):
+with the best and worst regulars from `swap_refs_2025.csv`):
 - **The change.** Each position group's starter goes to the best / worst regular by value, a
   replacement-level player, or out (the group moves up a slot).
 - **`pbp32_pv` fails it.** It moves the right way for offense and specialists, but only by about a

@@ -1,0 +1,208 @@
+# Foundations with additive per-player effects for all 22 on the field (experiments/nfl/allpositions.yaml):
+# every player's embedding moves his plays' result and yards through his own additive term, at every
+# position. Production's settings plus the passer / carrier targets, player effects and:
+#   ae   --all-effects --lineup-weight 1  (plus the lineup-only target: an adjusted plus-minus)
+#   ae0  --all-effects                    (effects trained by the play loss alone)
+#
+#   inputs (data, production foundation, lineups, player values) ─► foundation (2 variants × 5 seasons)
+#     ─┬─► position swap (2 variants × 16 shards, + effect probe on the 2025 folds) ─┬─► report
+#      └─► arms (experiments/nfl/allpositions.yaml × 5 seasons) ────────────────────┘
+# Every input is rebuilt in the run (nfl-experiment-inputs.yml); the report is uploaded as the
+# allpositions-results artifact.
+name: All-positions experiment
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - .github/workflows/allpositions-experiment.yml
+      - experiments/nfl/allpositions.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: allpositions-experiment-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  inputs:
+    uses: ./.github/workflows/nfl-experiment-inputs.yml
+    with: { lineups: true, values: true }
+
+  foundation:
+    needs: inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [ae, ae0]
+        season: [2025, 2021, 2022, 2023, 2024]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl }
+      - name: Train (${{ matrix.variant }}, never sees ${{ matrix.season }})
+        run: |
+          S=${{ matrix.season }}
+          if [ "${{ matrix.variant }}" = ae ]; then   # with the lineup-only target
+            EXTRA="--lineup-weight 1"
+          else                                        # effects trained by the play loss alone
+            EXTRA=""
+          fi
+          runitback nfl train --out runs/${{ matrix.variant }}/fold$S --val-season $((S-1)) --val-week 15 \
+            --epochs 10 --who --prev-lineup-prob 0.3 --qb-weight 1 --carrier-weight 1 --player-effects --all-effects \
+            $EXTRA --threads $(nproc)
+      - name: Game embeddings and lineup features
+        run: |
+          S=${{ matrix.season }}; D=runs/${{ matrix.variant }}/fold$S
+          runitback nfl embed --ckpt $D/model.pt --out $D/emb --before-season $S --dim 32
+          mkdir -p data/nfl/raw
+          runitback nfl lineup-features --ckpt $D/model.pt --out $D/emb --fold $S --sets lu --threads $(nproc)
+          rm -rf $D/train
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.variant }}-fold${{ matrix.season }}
+          path: runs/${{ matrix.variant }}/fold${{ matrix.season }}
+          retention-days: 30
+
+  swap:
+    needs: [inputs, foundation]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [ae, ae0]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl }
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ matrix.variant }}-fold2025", path: fold2025 }
+      - uses: actions/download-artifact@v4
+        with: { name: playervalues, path: playervalues }
+      - name: Position swap (${{ matrix.variant }}, shard ${{ matrix.shard }})
+        run: |
+          python scripts/lineup_position_swap.py --ckpt fold2025/model.pt --season 2025 --games 120 --sims 100 \
+            --threads $(nproc) --shard ${{ matrix.shard }} --shards 16 --refs playervalues/swap_refs_2025.csv \
+            --out out/${{ matrix.variant }}/position_swap.csv
+          if [ "${{ matrix.shard }}" = 0 ]; then
+            python scripts/effect_probe.py fold2025/model.pt --values playervalues/values_2025.csv \
+              > out/${{ matrix.variant }}/effect_probe.txt 2>/dev/null || true
+            python scripts/passer_probe.py fold2025/model.pt > out/${{ matrix.variant }}/passer_probe.txt 2>/dev/null || true
+          fi
+      - uses: actions/upload-artifact@v4
+        with: { name: "swap-${{ matrix.variant }}-${{ matrix.shard }}", path: out, retention-days: 30 }
+
+  arms:
+    needs: [inputs, foundation]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [pbp32, pbp32_pvc, ae_pbp32, ae0_pbp32, ae_pbp32_pvc]
+        season: [2021, 2022, 2023, 2024, 2025]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl }
+      - name: Variant
+        id: v
+        run: |   # pbp32* (the baselines) run on the production foundation from nfl-experiment-inputs
+          v=${CONFIG%%_*}
+          if [ "$v" = pbp32 ]; then
+            { echo "artifact=fold$SEASON"; echo "dir=runs/foundation/fold$SEASON"; } >> "$GITHUB_OUTPUT"
+          else
+            { echo "artifact=$v-fold$SEASON"; echo "dir=runs/$v/fold$SEASON"; } >> "$GITHUB_OUTPUT"
+          fi
+        env: { CONFIG: "${{ matrix.config }}", SEASON: "${{ matrix.season }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ steps.v.outputs.artifact }}", path: "${{ steps.v.outputs.dir }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: playervalues, path: experiments/nfl/playervalues }
+      - name: Backtest ${{ matrix.config }} on ${{ matrix.season }}
+        run: |
+          python scripts/foundation_arm.py ${{ matrix.config }} ${{ matrix.season }} --threads $(nproc) \
+            --experiment experiments/nfl/allpositions.yaml --output-dir experiments/nfl/allpositions
+          mkdir -p out/${{ matrix.config }}
+          cp experiments/nfl/allpositions/${{ matrix.config }}/${{ matrix.season }}.csv out/${{ matrix.config }}/
+      - uses: actions/upload-artifact@v4
+        with: { name: "arm-${{ matrix.config }}-${{ matrix.season }}", path: out, retention-days: 30 }
+
+  report:
+    needs: [inputs, swap, arms]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "arm-*", path: experiments/nfl/allpositions, merge-multiple: true }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "swap-*", path: experiments/nfl/allpositions, merge-multiple: true }
+      - uses: actions/download-artifact@v4
+        with: { name: playervalues, path: playervalues }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "lineup*", path: lineups }
+      - name: Score
+        run: |
+          R=experiments/nfl/allpositions
+          mkdir -p $R/changes && cp lineups/*/changes/*.csv $R/changes/
+          python scripts/direct_game_model.py --pv playervalues/pv.parquet --rows $R/pbp32 --out $R --name pvg
+          python - <<'PY'
+          import pathlib
+          from runitback.wager.experiments import ablate
+          R, seasons = pathlib.Path("experiments/nfl/allpositions"), [2021, 2022, 2023, 2024, 2025]
+          names = ["pbp32", "ae_pbp32", "ae0_pbp32", "pbp32_pvc", "ae_pbp32_pvc", "pvg"]
+          have = {n: {} for n in names if all((R / n / f"{s}.csv").exists() for s in seasons)}
+          print("complete configurations:", list(have))
+          ablate("data/nfl/games.csv", "nfl", have, seasons, str(R), "pbp32", 1, 1)
+          PY
+          python scripts/foundation_report.py $R --baseline pbp32 --out $R/report.md
+          python scripts/lineup_report.py $R --baseline pbp32 --out $R/subsets.md
+          : > $R/position_swap.md
+          for v in ae ae0; do
+            [ -d $R/$v ] || continue
+            { echo "### Position swap, $v"; echo '```'; python scripts/lineup_position_swap.py --refs playervalues/swap_refs_2025.csv --summary $R/$v/position_swap.*.csv;
+              echo; cat $R/$v/effect_probe.txt 2>/dev/null; echo; cat $R/$v/passer_probe.txt 2>/dev/null; echo '```'; } >> $R/position_swap.md
+          done
+          { echo "## All-positions experiment"; cat $R/ablation.md; echo; cat $R/report.md; echo; cat $R/position_swap.md; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: allpositions-results, path: experiments/nfl/allpositions, retention-days: 90 }

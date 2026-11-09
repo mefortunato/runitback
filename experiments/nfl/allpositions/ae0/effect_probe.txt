@@ -1,9 +1,0 @@
-4514 players with 16+ games: each one's own effect on a league-average play vs a replacement-level player (yards per play; defenders: yards taken away)
-  QB  n= 122  sd Δyards 1.671   corr with direct value -0.04 (n=74)   best: Patrick Mahomes, Cooper Rush, Mike Glennon   worst: Tony Romo, Mark Sanchez
-  RB  n= 420  sd Δyards 1.435   corr with direct value -0.03 (n=166)   best: Elijah McGuire, Michael Burton, Duke Johnson   worst: Darren McFadden, Jakob Johnson
-  WR  n= 549  sd Δyards 1.572   corr with direct value +0.03 (n=272)   best: Van Jefferson, Jordy Nelson, Eric Weems   worst: Kayshon Boutte, River Cracraft
-  TE  n= 319  sd Δyards 1.367   corr with direct value +0.14 (n=163)   best: Vernon Davis, James Casey, Kendall Blanton   worst: Cole Kmet, Johnny Mundt
-  OL  n= 749  sd Δyards 1.582   corr with direct value -0.01 (n=405)   best: John Urschel, Jacques McClendon, Tyreek Burwell   worst: A.Q. Shipley, Matt Nelson
-  DL  n= 663  sd Δyards 1.724   corr with direct value -0.01 (n=367)   best: Brandon Thompson, Jabaal Sheard, Desmond Bryant   worst: R.J. McIntosh, Vance Walker
-  LB  n= 743  sd Δyards 1.348   corr with direct value +0.09 (n=304)   best: Justin March, Allen Bradford, Dakota Allen   worst: Darius Fleming, Reggie Walker
-  DB  n= 949  sd Δyards 1.653   corr with direct value +0.03 (n=462)   best: Chris Maragos, Noah Igbinoghene, Andru Phillips   worst: Omar Bolden, Duke Ihenacho

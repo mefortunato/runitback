@@ -1,11 +1,11 @@
 # The NFL lineup experiment (experiments/nfl/lineups.yaml): does the game being predicted's
-# projected lineup help the wager model? Reuses the foundation experiment's per-season play-by-play
-# models (run FOUNDATION_RUN's fold<season> artifacts), so nothing is retrained:
+# projected lineup help the wager model?
 #
-#   data ─► lineup tables (5 seasons) ─► arms (6 configurations × 5 seasons) ─► report
+#   inputs (data, foundation folds, lineup tables; nfl-experiment-inputs.yml) ─► arms (6 configurations
+#   × 5 seasons) ─► report
 #
 # The report job scores every arm against pbp32 (production) overall and on the games where the
-# lineup moved, and commits the results to the branch it ran on.
+# lineup moved, and uploads the results as the lineup-results artifact.
 name: Lineup experiment
 
 on:
@@ -17,8 +17,7 @@ on:
       - experiments/nfl/lineups.yaml
 
 permissions:
-  contents: write  # the report job commits the results
-  actions: read    # the foundation run's artifacts
+  contents: read
 
 concurrency:
   group: lineup-experiment-${{ github.ref }}
@@ -27,77 +26,14 @@ concurrency:
 env:
   MLFLOW_DISABLE_AGENT_HINT: "1"
   PYTHONUNBUFFERED: "1"
-  FOUNDATION_RUN: "42286987708"
 
 jobs:
-  data:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with: { python-version: "3.13", cache: pip }
-      - name: Install
-        run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e ".[data,wager]"
-      - name: Play-by-play (runitback) and games with lines (wager model)
-        run: |
-          runitback nfl download --start 1999 --end 2026 & pbp=$!
-          runitback-wager nfl download --output_file data/nfl/raw.csv & games=$!
-          wait $pbp && wait $games
-          runitback nfl preprocess --start 1999 --end 2026
-          runitback-wager nfl process --games data/nfl/raw.csv --output_file data/nfl/games.csv
-      - uses: actions/upload-artifact@v4
-        with:
-          name: nfl-data
-          path: |
-            data/nfl/processed
-            data/nfl/games.csv
-          retention-days: 7
-
-  lineup:
-    needs: data
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
-    strategy:
-      fail-fast: false
-      matrix:
-        season: [2021, 2022, 2023, 2024, 2025]
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with: { python-version: "3.13", cache: pip }
-      - name: Install
-        run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e ".[wager]"
-      - uses: actions/download-artifact@v4
-        with: { name: nfl-data, path: data/nfl }
-      - uses: actions/download-artifact@v4
-        with:
-          name: "fold${{ matrix.season }}"
-          path: "runs/foundation/fold${{ matrix.season }}"
-          run-id: ${{ env.FOUNDATION_RUN }}
-          github-token: ${{ github.token }}
-      - name: Projected lineups and lineup context (fold ${{ matrix.season }})
-        run: |
-          S=${{ matrix.season }}
-          mkdir -p data/nfl/raw
-          runitback nfl lineup-features --ckpt runs/foundation/fold$S/model.pt \
-            --out runs/foundation/fold$S/emb --fold $S --sets lu --sets cf --threads $(nproc)
-          mkdir -p out/changes
-          python -c "import pandas as pd; t = pd.read_parquet('runs/foundation/fold$S/emb/lineup.parquet'); \
-            t[t.season == $S][['game_id', 'team', '_qb_change', '_qb_change_actual', '_dropped']].to_csv('out/changes/$S.csv', index=False)"
-          cp runs/foundation/fold$S/emb/lineup.parquet out/
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lineup${{ matrix.season }}
-          path: out
-          retention-days: 30
+  inputs:
+    uses: ./.github/workflows/nfl-experiment-inputs.yml
+    with: { lineups: true }
 
   arms:
-    needs: lineup
+    needs: inputs
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
@@ -119,8 +55,6 @@ jobs:
         with:
           name: "fold${{ matrix.season }}"
           path: "runs/foundation/fold${{ matrix.season }}"
-          run-id: ${{ env.FOUNDATION_RUN }}
-          github-token: ${{ github.token }}
       - uses: actions/download-artifact@v4
         with: { name: "lineup${{ matrix.season }}", path: lineup }
       - name: Backtest ${{ matrix.config }} on ${{ matrix.season }}
@@ -137,13 +71,12 @@ jobs:
           retention-days: 30
 
   report:
-    needs: arms
+    needs: [inputs, arms]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
-        with: { ref: "${{ github.ref_name }}" }
       - uses: actions/setup-python@v6
         with: { python-version: "3.13", cache: pip }
       - name: Install
@@ -175,15 +108,5 @@ jobs:
             --out experiments/nfl/lineups/subsets.md
           { echo "## Lineup experiment"; cat experiments/nfl/lineups/ablation.md; echo; \
             cat experiments/nfl/lineups/subsets.md; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Commit the results
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add experiments/nfl/lineups
-          git diff --cached --quiet && { echo "nothing new"; exit 0; }
-          git commit -m "Lineup experiment results (run ${{ github.run_id }})"
-          for i in 1 2 3 4; do
-            git pull --rebase origin "${{ github.ref_name }}" && git push origin "HEAD:${{ github.ref_name }}" && exit 0
-            sleep $((2 ** i))
-          done
-          exit 1
+      - uses: actions/upload-artifact@v4
+        with: { name: lineup-results, path: experiments/nfl/lineups, retention-days: 90 }
