@@ -365,16 +365,22 @@ every position):
 | K → Brandon Aubrey / Jake Moody | +0.2 / −0.3 | |
 
 **Next steps for personnel**
-1. **Production candidate: `pbp32_pvc`** (4 seeds). It passes every market against `pbp32` and is
-   better on moneyline, with the gain concentrated in QB-change games. Every lineup change moves the
-   prediction the right way by `0.58 × the change in player value`, so the game page can show "this
-   change: −0.9 points" per player.
-2. **What it needs in the refresh workflow:**
-   - weekly player values fit through the latest plays;
-   - the projected lineup (depth chart + injury report) per game;
-   - a lineup editor whose change goes through the same value table.
+1. **In production: `pbp32_pvc`** (4 seeds; `runitback.wager.nfl`). It passes every market
+   against `pbp32` and is better on moneyline, with the gain concentrated in QB-change games. Every
+   lineup change moves the prediction the right way by `0.58 × the change in player value`.
+2. **How it runs:** `runitback nfl player-values` (`runitback.nfl.player_values.game_table`, the
+   same table as `scripts/player_values.py`: identical on every played game) fits the weekly values
+   and sums each game's projected lineup, upcoming games included. Train and Refresh predictions
+   rebuild it, so the upcoming games follow the latest depth charts and injury reports. Each
+   upcoming game's page has a lineup editor: both projected lineups with every player's points over
+   replacement at his slot, backups and players ruled out. Changing a starter or ruling a player
+   out re-prices the spread, win probability and total in the browser. The model's lineup terms are
+   additive, so this is exact: a trained 2-seed model's own predictions with its lineup values
+   changed agree with the editor's arithmetic to 1e-4 points (the unit test is
+   `tests/wager/test_lineup_editor.py`).
    One gap: nflverse's on-field participation for 2026 is not out, so this season's values can't
-   update from 2026 plays yet; until then they come from the fit through 2025.
+   update from 2026 plays yet; until then they come from the fit through 2025 (kickers and punters
+   do update: their values come from the play-by-play).
 3. **The all-positions foundation (`ae` / `ae0`, `allpositions/`) is not the route for wagers.**
    The play-by-play model with additive per-player effects for all 22 on the field (`ae`: with a
    lineup-only auxiliary loss; `ae0`: without) was trained on the same folds:

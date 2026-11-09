@@ -29,6 +29,7 @@ from ..core.predictor import Predictor, load_predictor
 from ..core.schema import one_row_per_game, played, upcoming
 from ..core.sport import get_sport
 from ..inference.utils import power_ratings
+from .lineups import LineupEditor
 from .views import SportView, get_view
 
 
@@ -161,6 +162,7 @@ class Snapshot:
             g: i for i, g in enumerate(self.recent_games.get(schema.game_id, []))
         }
         self.upcoming_games = self._predict_upcoming(predictor)
+        self.lineup_editor = LineupEditor.load(predictor)
 
     # ---------------------------------------------------------------- loading
     @classmethod
@@ -869,11 +871,16 @@ class Snapshot:
             return None
         header = self._header(row)
         prediction = None
+        lineups = None
         if game_id in set(self.upcoming_games.get(s.game_id, [])):
             pred = self.upcoming_games[self.upcoming_games[s.game_id] == game_id].iloc[
                 0
             ]
             prediction = self._prediction(pred, header)
+            if self.lineup_editor is not None:
+                lineups = self.lineup_editor.game(
+                    game_id, header["home"]["team"], header["away"]["team"]
+                )
         elif in_pool:
             prediction = self._prediction(self.pool.loc[game_id], header)
         elif recent is not None:
@@ -882,6 +889,7 @@ class Snapshot:
             {
                 **header,
                 "prediction": prediction,
+                **({"lineups": lineups} if lineups else {}),
                 "result": self._result(row),
                 "summaries": self._summaries(row),
                 "stats": self.stat_definitions(),

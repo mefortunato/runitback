@@ -140,6 +140,27 @@ def lineup_features(ckpt: Path = typer.Option(..., help="the fold's foundation c
     typer.echo(lineup_table(ckpt, data, raw, fold, out, tuple(sets)))
 
 
+@nfl.command("player-values")
+def player_values(out: Path = typer.Option(Path("player_values/nfl"), help="output directory "
+                                                                           "(RUNITBACK_NFL_PLAYER_VALUES)"),
+                  first_season: int = 2016, jobs: int = 0,
+                  download: bool = typer.Option(True, help="refresh the current season's depth charts, "
+                                                           "injury reports and rosters first"),
+                  data: Path = DATA / "processed", raw: Path = DATA / "raw"):
+    """Weekly player values and each game's lineup values for the production wager model (pbp32_pvc):
+    pv.parquet, plus the lineup editor's lineups.parquet / slots.json (runitback.nfl.player_values)."""
+    import os
+
+    import pandas as pd
+
+    from .nfl import player_values as pv
+    _log()
+    gv = pv.game_table(data, raw, first_season, jobs or os.cpu_count() or 1, download=download)
+    pv.write_game_table(gv, out, pd.read_parquet(data / "players.parquet"))
+    typer.echo(f"{len(gv.pv)} team-games, {gv.lineups.game_id.nunique()} upcoming games -> {out} "
+               f"(latest fit: before {gv.latest.before})")
+
+
 @nfl.command()
 def embed(ckpt: Path = typer.Option(..., help="foundation (play-by-play) checkpoint"),
           out: Path = typer.Option(..., help="output directory"),

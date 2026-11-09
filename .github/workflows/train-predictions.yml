@@ -9,6 +9,11 @@
 # 1-1.5 hours, at the start of each season); the 2021-2025 folds come from the foundation
 # experiment's run the first time.
 #
+# It also reads player values (experiments/nfl: pbp32_pvc, 4 seeds): weekly, leak-free values of
+# every player, summed over each team's projected lineup per position group (`runitback nfl
+# player-values`, ~5 min), rebuilt here and in Refresh predictions (injury reports and depth
+# charts change during the week).
+#
 # Runs monthly during the season and on demand, e.g. after changing the model. Backtest
 # seasons are reused from the previous release, or from the `predictions-backtest-cache`
 # release that every build adds its seasons and models to (here or on any machine:
@@ -49,6 +54,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       RUNITBACK_NFL_FOUNDATION: foundation/nfl
+      RUNITBACK_NFL_PLAYER_VALUES: player_values/nfl
       # the Foundation experiment run whose fold artifacts seed the release (until they expire)
       FOUNDATION_SEED_RUN: "42286987708"
       MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
@@ -96,6 +102,8 @@ jobs:
             tar -czf "folds/$(basename "$d").tar.gz" -C "$d" model.pt pca_32.npz pbp_32.parquet
           done
           gh release upload foundation-nfl folds/fold*.tar.gz --clobber
+      - name: Player values
+        run: runitback nfl player-values --out "$RUNITBACK_NFL_PLAYER_VALUES"
       - name: Fetch the previous build (its backtest seasons can be reused)
         run: |
           mkdir webdata

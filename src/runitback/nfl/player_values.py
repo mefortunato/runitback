@@ -208,3 +208,165 @@ def lineup_values(rows: pd.DataFrame, vals: pd.DataFrame, plays_at: dict[tuple[s
             per = FG_PER_GAME if r.group == "K" else PUNTS_PER_GAME
             out["st"] += vp.get((r.group, r.player_id), 0.0) * per
     return out
+
+
+# -- per-game lineup values (the wager model's ``_pv_*`` columns) ----------------------------------
+
+GROUP_COLUMNS = OFF_GROUPS + DEF_GROUPS + ("ST",)   # _pv_0 .. _pv_8 (K and P summed into ST)
+RECENT = 8      # games behind the per-group changes (about the wager model's history)
+PV_COLUMNS = [f"_pv_{i}" for i in range(11 + len(GROUP_COLUMNS))]
+
+
+@dataclass
+class GameValues:
+    pv: pd.DataFrame          # game_id, team, _pv_0 .. _pv_19 (every game from first_season, upcoming too)
+    lineups: pd.DataFrame     # upcoming games' projected charts with backups and each player's value
+    slots: dict               # points per unit of value_play at each slot: {group: [rank 0, rank 1, ...]}
+    latest: Values            # the most recent fit
+
+
+def slot_multipliers(plays_at: dict[tuple[str, int], float], depth: dict[str, int] | None = None
+                     ) -> dict[str, list[float]]:
+    """{group: [multiplier at rank 0, 1, ...]}: a player's points per game at a starting slot are his
+    ``value_play`` times this (plays on the field; field goals / punts per game for K / P). With
+    ``depth``, only the first ``depth[group]`` ranks (a projected chart's starting slots)."""
+    out = {}
+    for g in OFF_GROUPS + DEF_GROUPS:
+        n = max((k + 1 for gg, k in plays_at if gg == g), default=0)
+        n = min(n, depth[g]) if depth else n
+        out[g] = [float(plays_at.get((g, k), 0.0)) for k in range(n)]
+    return out | {"K": [FG_PER_GAME], "P": [PUNTS_PER_GAME]}
+
+
+def value_key(group: str, player_id: str) -> tuple[str, str]:
+    """The (side, player_id) a player's value is kept under for a lineup slot in ``group``."""
+    return ("off" if group in OFF_GROUPS else "def" if group in DEF_GROUPS else group, player_id)
+
+
+def side_values(rows, vp: dict, slots: dict[str, list[float]]) -> dict[str, float]:
+    """A lineup's (``(group, rank, player_id)`` rows) points over replacement per group column."""
+    out = dict.fromkeys(GROUP_COLUMNS, 0.0)
+    for g, k, pid in rows:
+        mult = slots.get(g)
+        if mult is None or k >= len(mult):
+            continue
+        out["ST" if g in ("K", "P") else g] += vp.get(value_key(g, pid), 0.0) * mult[k]
+    return out
+
+
+def game_table(data_dir: Path, raw_dir: Path, first_season: int = 2016, jobs: int = 4,
+               download: bool = False, upcoming: bool = True) -> GameValues:
+    """Leak-free weekly values for every week from ``first_season`` (each fit on the plays before
+    it) and each team-game's ``_pv_*`` columns from its projected pre-game lineup (published depth
+    chart minus players ruled out), in points per game over replacement:
+
+        _pv_0 .. _pv_8  QB, RB, WR, TE, OL, DL, LB, DB, kicker + punter (each group's sum)
+        _pv_9  offense change vs the previous game's lineup   _pv_10 defense change
+        _pv_11 .. _pv_19  each group's change vs the mean of the team's last 8 games' lineups
+
+    With ``upcoming``, the schedule's unplayed games are included (their charts and injury reports
+    as published so far; ``download`` refreshes them), and ``lineups`` holds their projected charts
+    with every backup, for the lineup editor."""
+    from joblib import Parallel, delayed
+
+    from .data.players import DEPTH
+    from .lineup_features import (
+        MOVES,
+        load_availability,
+        load_depth_charts,
+        projected_lineups,
+    )
+
+    players = pd.read_parquet(data_dir / "players.parquet")
+    group_of = dict(zip(players.player_id, players.group))
+    games = pd.read_parquet(data_dir / "games.parquet")
+    pg = pd.read_parquet(data_dir / "player_games.parquet")
+    data = play_table(data_dir, raw_dir, group_of)
+    seasons = sorted(set(games.season))
+    special = special_table(raw_dir, [s for s in seasons if (raw_dir / f"pbp_{s}.parquet").exists()],
+                            games[["game_id", "season", "week"]])
+    plays_at = slot_plays(pg[pg.season < 2016])   # snap shares by slot (before every fit; stable)
+    slots = slot_multipliers(plays_at)
+    target = games[games.season >= first_season][["game_id", "season", "week", "home", "away"]]
+    future = target.iloc[:0]
+    sched_path = raw_dir / "players" / "schedules.parquet"
+    if upcoming and sched_path.exists():
+        sc = pd.read_parquet(sched_path)
+        sc = sc[(sc.season >= max(seasons)) & sc.result.isna() & ~sc.game_id.isin(games.game_id)]
+        future = pd.DataFrame({"game_id": sc.game_id, "season": sc.season.astype(int), "week": sc.week.astype(int),
+                               "home": sc.home_team.replace(MOVES), "away": sc.away_team.replace(MOVES)})
+        target = pd.concat([target, future], ignore_index=True)
+    weeks = sorted({s * 100 + w for s, w in zip(target.season, target.week)})
+    weeks = [t for t in weeks if (data.plays.t < t).any()]
+    log.info("%d plays; fitting %d weeks", len(data.plays), len(weeks))
+    fits = Parallel(n_jobs=jobs)(delayed(fit_values)(data, special, t) for t in weeks)
+    vals = {f.before: dict(zip(zip(f.table.side, f.table.player_id), f.table.value_play)) for f in fits}
+
+    off_sum = lambda v: sum(v[g] for g in OFF_GROUPS)
+    def_sum = lambda v: sum(v[g] for g in DEF_GROUPS)
+
+    tseasons = sorted(set(target.season))
+    out_players, active = load_availability(raw_dir, tseasons, download=download)
+    charts = load_depth_charts(raw_dir, tseasons, download=download)
+    proj = projected_lineups(pg, target[~target.game_id.isin(future.game_id)], out_players, active, charts)
+    bench = projected_lineups(pg, future, out_players, active, charts, bench=True) if len(future) else proj.iloc[:0]
+    starting = bench[(bench["rank"] >= 0) & (bench["rank"] < bench.group.map(DEPTH).fillna(0))]
+    proj_rows = {k: list(zip(d.group, d["rank"].astype(int), d.player_id))
+                 for k, d in pd.concat([proj, starting]).groupby(["game_id", "team"])}
+    # each team's played games by week: the previous one and the last RECENT before any game
+    order = pg[["game_id", "team", "season", "week"]].drop_duplicates()
+    played_by = {team: (d.season.to_numpy() * 100 + d.week.to_numpy(), d.game_id.to_numpy())
+                 for team, d in order.sort_values(["season", "week"]).groupby("team")}
+    actual = {k: list(zip(d.group, d.depth.astype(int), d.player_id)) for k, d in pg.groupby(["game_id", "team"])}
+    rows = []
+    for g in target.itertuples():
+        t = g.season * 100 + g.week
+        vp = vals.get(t)
+        if vp is None:
+            continue
+        for team in (g.home, g.away):
+            pr = proj_rows.get((g.game_id, team))
+            if pr is None:
+                continue
+            cur = side_values(pr, vp, slots)
+            ts, ids = played_by.get(team, (np.array([], int), np.array([], object)))
+            before = ids[ts < t]
+            prev = before[-1] if len(before) else None
+            pv_prev = side_values(actual[(prev, team)], vp, slots) if (prev, team) in actual else None
+            row = {"game_id": g.game_id, "team": team} | {f"_pv_{i}": cur[k] for i, k in enumerate(GROUP_COLUMNS)}
+            row["_pv_9"] = off_sum(cur) - off_sum(pv_prev) if pv_prev else 0.0
+            row["_pv_10"] = def_sum(cur) - def_sum(pv_prev) if pv_prev else 0.0
+            recent = [side_values(actual[(h, team)], vp, slots) for h in before[-RECENT:] if (h, team) in actual]
+            for i, k in enumerate(GROUP_COLUMNS):
+                row[f"_pv_{11 + i}"] = cur[k] - float(np.mean([r[k] for r in recent])) if recent else 0.0
+            rows.append(row)
+    pv = pd.DataFrame(rows, columns=["game_id", "team", *PV_COLUMNS])
+    pv[PV_COLUMNS] = pv[PV_COLUMNS].astype(np.float32)
+
+    names = players.set_index("player_id")
+    lineups = bench.merge(future[["game_id", "season", "week"]], on="game_id")
+    lineups["value_play"] = [vals.get(s * 100 + w, {}).get(value_key(g, p), 0.0)
+                             for s, w, g, p in zip(lineups.season, lineups.week, lineups.group, lineups.player_id)]
+    lineups["name"] = lineups.player_id.map(names.name)
+    lineups["position"] = lineups.player_id.map(names.position)
+    lineups = lineups[["game_id", "team", "group", "rank", "player_id", "name", "position", "value_play", "source"]]
+    return GameValues(pv, lineups.reset_index(drop=True), slot_multipliers(plays_at, DEPTH), fits[-1])
+
+
+def write_game_table(gv: GameValues, out: Path, players: pd.DataFrame | None = None) -> None:
+    """``<out>/pv.parquet`` (the model's lineup table), ``lineups.parquet`` and ``slots.json`` (the
+    lineup editor's), ``values_latest.csv`` (the latest fit, every player's value per play and as
+    a starter)."""
+    import json
+
+    out.mkdir(parents=True, exist_ok=True)
+    gv.pv.to_parquet(out / "pv.parquet", index=False)
+    gv.lineups.to_parquet(out / "lineups.parquet", index=False)
+    (out / "slots.json").write_text(json.dumps(gv.slots))
+    last = gv.latest.table.copy()
+    if players is not None:
+        last["name"] = last.player_id.map(players.set_index("player_id").name)
+    starter = {g: m[0] for g, m in gv.slots.items()}
+    last["pts_as_starter"] = last.value_play * last.group.map(starter).fillna(0.0)
+    last.sort_values(["group", "pts_as_starter"], ascending=[True, False]).to_csv(
+        out / "values_latest.csv", index=False, float_format="%.4f")

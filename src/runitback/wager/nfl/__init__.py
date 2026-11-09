@@ -10,6 +10,15 @@ from .data.features import SCHEMA
 # directory `runitback nfl foundation` keeps (one embedding table per test season).
 FOUNDATION = os.environ.get("RUNITBACK_NFL_FOUNDATION", "").rstrip("/")
 PBP = {"pbp": f"{FOUNDATION}/fold{{season}}/pbp_32.parquet", "pbp_dim": 32} if FOUNDATION else {}
+# Player values in the head (experiments/nfl: pbp32_pvc, 4 seeds): each position group's change in
+# the projected lineup's value vs the team's last 8 lineups, through sign-constrained additive terms
+# on the margin and total, so a better player at any position moves the prediction his team's way
+# (-0.0018 Brier on moneylines over 2021-2025, -0.011 where the quarterback changes; spread and
+# total unchanged). On with the foundation when this names the directory `runitback nfl
+# player-values` writes (pv.parquet, rebuilt by Train and Refresh predictions).
+PLAYER_VALUES = os.environ.get("RUNITBACK_NFL_PLAYER_VALUES", "").rstrip("/")
+PV = ({"lineup": f"{PLAYER_VALUES}/pv.parquet", "lineup_set": "pvc", "ensemble": 4}
+      if PLAYER_VALUES and FOUNDATION else {})
 
 SPORT = Sport(
     name="nfl",
@@ -46,5 +55,6 @@ SPORT = Sport(
         "weight_decay": 0.04,
         "batch_size": 128,
         **PBP,
+        **PV,
     },
 )

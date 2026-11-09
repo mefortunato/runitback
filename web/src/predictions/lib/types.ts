@@ -183,6 +183,39 @@ export interface Matchup extends GameHeader {
 export interface GameDetail extends Matchup {
 	prediction: Prediction | null;
 	result: GameResult | null;
+	/** Upcoming games of a model with player values: both projected lineups, to edit. */
+	lineups?: GameLineups | null;
+}
+
+/** A player on a projected lineup (src/runitback/wager/web/lineups.py). */
+export interface LineupPlayer {
+	id: string;
+	name: string;
+	pos: string | null;
+	/** Value over a replacement-level player, per play on the field (per kick for K / P). */
+	value: number;
+	/** Ruled out (injury report or off the active roster) in the projection. */
+	out: boolean;
+}
+
+export interface LineupGroup {
+	key: string;
+	label: string;
+	/** The value column it adds to (kicker and punter: ST). */
+	column: string;
+}
+
+/** Projected lineups and how the model turns lineup value into points: an edit's change in a
+ * column's value moves the home margin by `weights.margin[i]` per point (home minus away) and the
+ * total by `weights.total[i]` per point (both teams). */
+export interface GameLineups {
+	groups: LineupGroup[];
+	columns: string[];
+	/** Plays (or kicks) per game at each starting slot of a group: value × this = points. */
+	slots: Record<string, number[]>;
+	weights: { margin: number[]; total: number[] };
+	home: Record<string, LineupPlayer[]>;
+	away: Record<string, LineupPlayer[]>;
 }
 
 export interface ChallengeGame extends Matchup {

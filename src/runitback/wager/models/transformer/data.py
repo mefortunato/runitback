@@ -127,12 +127,14 @@ def lineup_context_columns(which: str | None) -> list[str]:
 
 
 def lineup_features(games: pd.DataFrame, schema: GameSchema, path: str, which: str) -> pd.DataFrame:
-    """Both sides' lineup context for each row (missing flag 1 where the table has no row)."""
+    """Both sides' lineup context for each row (missing flag 1 where the table has no row, or the
+    rows are hypothetical matchups without a game id, e.g. power ratings)."""
     table = _read_pbp(path)
     cols = lineup_columns(which)[:-1]
     out = []
+    ids = games[schema.game_id] if schema.game_id in games else pd.Series(None, index=games.index, dtype=object)
     for side, prefix in ((schema.team, ""), (schema.opp, "_opp")):
-        key = pd.MultiIndex.from_arrays([games[schema.game_id], games[side]])
+        key = pd.MultiIndex.from_arrays([ids, games[side]])
         part = table.reindex(columns=cols).reindex(key)
         part[LINEUP_MISSING] = part[cols[0]].isna().astype(np.float32)
         part.columns = [f"{prefix}{c}" for c in part.columns]

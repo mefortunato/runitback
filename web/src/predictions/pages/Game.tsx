@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Link } from "../../router";
 import { api } from "../lib/api";
 import { dateText, kickoffLabel, marginLabel, seasonText, signed, spreadLabel } from "../lib/format";
@@ -5,6 +6,8 @@ import { links } from "../lib/links";
 import { gameOdds, withLine } from "../lib/odds";
 import type { SportInfo } from "../lib/types";
 import LineCalculator from "../components/LineCalculator";
+import LineupEditor from "../components/LineupEditor";
+import { adjustPrediction, initialState, lineupEffect, type LineupState } from "../lib/lineups";
 import MarketTable from "../components/MarketTable";
 import MatchupDetails from "../components/MatchupDetails";
 import ProbabilityCompare from "../components/ProbabilityCompare";
@@ -19,16 +22,30 @@ import s from "./Game.module.css";
 
 export default function Game({ info, gameId }: { info: SportInfo; gameId: string }) {
   const { data, error } = useData(
-    async () => ({ game: await api.game(info.sport, gameId), odds: await api.odds(info.sport) }),
+    async () => {
+      const game = await api.game(info.sport, gameId);
+      const lineups = game.result || !game.prediction ? null : (game.lineups ?? (await api.lineups(info.sport, gameId)));
+      return { game, lineups, odds: await api.odds(info.sport) };
+    },
     [info.sport, gameId],
   );
+  const lineups = data?.lineups ?? null;
+  const [edits, setEdits] = useState<LineupState | null>(null);
+  useEffect(() => setEdits(lineups ? initialState(lineups) : null), [lineups]);
   if (error) return <p className="error">{error}</p>;
   if (!data) return <p className="muted">Loading…</p>;
   const built = data.game;
   const result = built.result;
   // an upcoming game's current sportsbook lines replace the built ones
   const odds = result ? null : gameOdds(data.odds, built.game_id);
-  const live = withLine(built, built.prediction, odds?.consensus);
+  // edited lineups re-price the game (the model's lineup terms are additive: lib/lineups.ts)
+  const effect = lineups && edits ? lineupEffect(lineups, edits) : { margin: 0, total: 0 };
+  const editedLineup = Math.abs(effect.margin) > 1e-9 || Math.abs(effect.total) > 1e-9;
+  const basePrediction = built.prediction;
+  const ownPrediction = basePrediction && editedLineup
+    ? adjustPrediction(basePrediction, effect, info.pricing, odds?.consensus?.total ?? built.total_line)
+    : basePrediction;
+  const live = withLine(built, ownPrediction, odds?.consensus ?? (editedLineup ? {} : null));
   const game = live.game;
   const prediction = live.prediction;
   const pickTeam = prediction?.ats_pick ? (prediction.ats_pick === "home" ? game.home : game.away) : null;
@@ -60,7 +77,7 @@ export default function Game({ info, gameId }: { info: SportInfo; gameId: string
           {info.has_spread && <span className="pill">Vegas {spreadLabel(game.home, game.away, game.spread)}</span>}
           {prediction ? (
             <>
-              <span className="pill accent">Model {marginLabel(game.home, game.away, prediction.margin)}</span>
+              <span className="pill accent">Model {marginLabel(game.home, game.away, prediction.margin)}{editedLineup ? " (your lineups)" : ""}</span>
               {pickTeam && prediction.edge !== null &&
                 <span className="pill accent">Model pick: {pickTeam.team} covers (edge {signed(Math.abs(prediction.edge))})</span>}
             </>
@@ -85,6 +102,12 @@ export default function Game({ info, gameId }: { info: SportInfo; gameId: string
         )}
         <MarketTable game={game} prediction={prediction} result={result} hasSpread={info.has_spread} />
       </div>
+      {lineups && edits && basePrediction && prediction && (
+        <div className="section">
+          <LineupEditor game={game} lineups={lineups} state={edits} onChange={setEdits}
+            base={withLine(built, basePrediction, odds?.consensus).prediction ?? basePrediction} edited={prediction} />
+        </div>
+      )}
       {odds && <div className="section"><Sportsbooks home={game.home} away={game.away} odds={odds} /></div>}
       {prediction && !result && info.pricing && (
         <div className="section">

@@ -11,6 +11,9 @@ Writes, under ``<output_dir>/data/``:
 * ``sports.json``: each sport's info (label, model, backtest summary);
 * ``<sport>/upcoming.json``: ``{"default": ..., "by_date": {"<season>-<date>": ...}}``;
 * ``<sport>/games.json``: ``{game_id: game view}`` for every upcoming game;
+* ``<sport>/lineups/<game_id>.json``: an upcoming game's lineup editor (both
+  projected lineups and the model's points per point of lineup value,
+  :mod:`runitback.wager.web.lineups`), for a model with player values;
 * ``<sport>/recent.json``: ``{"dates": [{season, date, name}], "by_date":
   {"<season>-<date>": [game]}}``, the last played dates' games with their
   pre-game predictions and results (:meth:`Snapshot.recent`), and
@@ -323,6 +326,11 @@ def export(
 
         game_ids = {g["game_id"] for week in by_date.values() for g in week["games"]}
         games = {game_id: snap.game(game_id) for game_id in sorted(game_ids)}
+        # each game's lineup editor in its own file: only that game's page loads it
+        for game_id, view in games.items():
+            lineups = view.pop("lineups", None) if view else None
+            if lineups:
+                _write(out / sport / "lineups" / f"{game_id}.json", lineups, {})
         _write(out / sport / "games.json", games, teams)
 
         recent_dates = snap.recent_dates()

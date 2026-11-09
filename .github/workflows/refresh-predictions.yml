@@ -7,7 +7,9 @@
 #
 # The NFL model's history tokens include each game's play-by-play embedding: the games played
 # since the last run are embedded with the model's foundation fold (the `foundation-nfl` release,
-# see Train predictions) before the export.
+# see Train predictions) before the export, and every game's player values are rebuilt from the
+# latest depth charts and injury reports (`runitback nfl player-values`): the model's lineup terms
+# and the game pages' lineup editor read them.
 #
 # Lines come from The Odds API (ODDS_API_KEY secret; no game within 8 days: no request). The
 # schedule fits its free tier's 150 requests a month: about 23 runs a week in season, more on
@@ -54,6 +56,7 @@ jobs:
       PREDICTIONS_BUCKET: ${{ secrets.PREDICTIONS_BUCKET }}
       MLFLOW_DISABLE_AGENT_HINT: "1"
       RUNITBACK_NFL_FOUNDATION: foundation/nfl
+      RUNITBACK_NFL_PLAYER_VALUES: player_values/nfl
     steps:
       - name: Check configuration
         run: |
@@ -104,6 +107,8 @@ jobs:
             tar -xzf "folds/$a" -C "$RUNITBACK_NFL_FOUNDATION/${a%.tar.gz}"
           done
           runitback nfl foundation --root "$RUNITBACK_NFL_FOUNDATION" --existing --threads $(nproc)
+      - name: Player values (latest depth charts and injury reports)
+        run: runitback nfl player-values --out "$RUNITBACK_NFL_PLAYER_VALUES"
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}

@@ -159,7 +159,7 @@ def _schedule(raw_dir: Path, season: int, download: bool) -> pd.DataFrame:
 # -- projected lineups ----------------------------------------------------------------------------
 
 def projected_lineups(pg: pd.DataFrame, games: pd.DataFrame, out: pd.DataFrame, active: pd.DataFrame,
-                      charts: pd.DataFrame | None = None) -> pd.DataFrame:
+                      charts: pd.DataFrame | None = None, bench: bool = False) -> pd.DataFrame:
     """Projected depth chart of each team in ``games`` (game_id, season, week, home, away):
     ``game_id, team, group, rank, player_id, career_games, source, dropped``.
 
@@ -167,7 +167,8 @@ def projected_lineups(pg: pd.DataFrame, games: pd.DataFrame, out: pd.DataFrame, 
     first, then by snaps in the team's previous game) or, without one, its previous game's chart
     by snaps. Players Out/Doubtful or off the active roster (``out``, ``active``) are removed and
     the next in the group moves up. ``dropped``: how many of the previous game's slots are not in
-    this chart (personnel turnover)."""
+    this chart (personnel turnover). With ``bench``, every player of the chart is kept (ranks past
+    the depth limit too: the lineup editor's backups), and those ruled out at rank -1."""
     order = pg[["game_id", "team", "season", "week"]].drop_duplicates().sort_values(["team", "season", "week"])
     by_team = {t: d for t, d in order.groupby("team")}
     rows_by_game = {k: d.sort_values(["group", "depth"]) for k, d in pg.groupby(["game_id", "team"])}
@@ -206,13 +207,15 @@ def projected_lineups(pg: pd.DataFrame, games: pd.DataFrame, out: pd.DataFrame, 
             chart_rows = []
             for pid, grp in cands:
                 if (g.season, g.week, team, pid) in out_set or (on is not None and pid not in on):
+                    if bench:   # ruled out: listed at rank -1
+                        chart_rows.append((grp, -1, pid, career_before(pid, g.season, g.week)))
                     continue
                 k = rank.get(grp, 0)
-                if k < DEPTH.get(grp, 0):
+                if bench or k < DEPTH.get(grp, 0):
                     chart_rows.append((grp, k, pid, career_before(pid, g.season, g.week)))
                 rank[grp] = k + 1
             starters = {r.player_id for r in prev_rows.itertuples() if r.depth < DEPTH.get(r.group, 0)}
-            dropped = len(starters - {c[2] for c in chart_rows}) if prev is not None else -1
+            dropped = len(starters - {c[2] for c in chart_rows if c[1] >= 0}) if prev is not None else -1
             rows += [(g.game_id, team, *c, source, dropped) for c in chart_rows]
     cols = ["game_id", "team", "group", "rank", "player_id", "career_games", "source", "dropped"]
     return pd.DataFrame(rows, columns=cols)

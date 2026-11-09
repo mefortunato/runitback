@@ -10,6 +10,7 @@ import type {
 	ChallengeAnswer,
 	ChallengeGame,
 	GameDetail,
+	GameLineups,
 	Market,
 	MarketAnswer,
 	OddsFile,
@@ -147,6 +148,9 @@ export const api = {
 		if (!game) throw new Error(`Unknown game ${gameId}`);
 		return game;
 	},
+	/** An upcoming game's lineup editor (null: the model has no player values, or no lineups). */
+	lineups: (name: string, gameId: string) =>
+		load<GameLineups>(`${name}/lineups/${encodeURIComponent(gameId)}.json`).catch(() => null),
 	/** The last played dates' games (none from an export without them). */
 	recent: async (name: string, season?: number | null, date?: number | null) =>
 		recentDay(

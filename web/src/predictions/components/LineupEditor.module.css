@@ -1,0 +1,104 @@
+.head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+.title {
+	margin: 0;
+	font-size: 1.1rem;
+}
+.tabs {
+	display: flex;
+	gap: 6px;
+}
+.tab {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	padding: 4px 10px;
+}
+.tab.active {
+	border-color: var(--accent);
+	background: var(--accent-soft);
+}
+.dot {
+	position: absolute;
+	top: 3px;
+	right: 3px;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--accent);
+}
+.effect {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 18px;
+	padding: 8px 10px;
+	margin: 8px 0 12px;
+	border-radius: 8px;
+	background: var(--surface-2);
+	font-size: 0.9rem;
+}
+.effect.on {
+	background: var(--accent-soft);
+}
+.effect button {
+	margin-left: auto;
+}
+.groups {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+	gap: 12px 20px;
+}
+.group {
+	min-width: 0;
+}
+.groupHead {
+	display: flex;
+	justify-content: space-between;
+	font-weight: 600;
+	border-bottom: 1px solid var(--border);
+	padding-bottom: 3px;
+	margin-bottom: 4px;
+}
+.row {
+	display: grid;
+	grid-template-columns: 2.6em minmax(0, 1fr) 3.4em auto;
+	align-items: center;
+	gap: 6px;
+	padding: 2px 0;
+}
+.slot {
+	white-space: nowrap;
+}
+.select {
+	min-width: 0;
+	width: 100%;
+	padding: 3px 4px;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: var(--surface);
+	color: var(--text);
+	font: inherit;
+	font-size: 0.85rem;
+}
+.pts {
+	text-align: right;
+}
+.plus {
+	color: var(--good);
+}
+.minus {
+	color: var(--bad);
+}
+.out {
+	padding: 2px 8px;
+	font-size: 0.75rem;
+}
+.outList {
+	margin-top: 2px;
+}

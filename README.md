@@ -772,8 +772,27 @@ runitback nfl foundation                    # trains folds missing from foundati
 RUNITBACK_NFL_FOUNDATION=foundation/nfl runitback-wager web build --sports '[nfl]' --output_dir webdata
 ```
 
-Run the build and export from the directory that holds `foundation/nfl`: the trained model stores
-its embedding table's path relative to it.
+It also reads **player values** (the `pbp32_pvc` arm of [the personnel
+experiments](experiments/nfl/README.md#player-values-who-plays-straight-into-the-wager-model), 4
+seeds): a weekly, leak-free adjusted plus-minus for every player, summed over each team's projected
+lineup (published depth chart minus players ruled out) per position group. The model sees only each
+group's change against the team's last 8 lineups, through sign-constrained additive terms on the
+margin and total, so a better player at any position always moves the prediction his team's way.
+`runitback nfl player-values` (~5 minutes) writes them to `player_values/nfl/`: `pv.parquet` for
+the model, `lineups.parquet` and `slots.json` for the **lineup editor** on each upcoming game's
+page. Because the lineup terms are additive, the page re-prices an edited lineup exactly as the
+model would (`web/src/predictions/lib/lineups.ts`). The wager side uses them when
+`RUNITBACK_NFL_PLAYER_VALUES` names that directory (and the foundation is on). Both workflows
+rebuild them: Refresh predictions picks up the latest depth charts and injury reports each run.
+
+```bash
+runitback nfl player-values                 # player_values/nfl
+RUNITBACK_NFL_FOUNDATION=foundation/nfl RUNITBACK_NFL_PLAYER_VALUES=player_values/nfl \
+  runitback-wager web build --sports '[nfl]' --output_dir webdata
+```
+
+Run the build and export from the directory that holds `foundation/nfl` and `player_values/nfl`:
+the trained model stores both tables' paths relative to it.
 
 One-time setup (the deploy service account is the one the deploy workflow already uses; the Cloud
 Run runtime service account is the service's, by default the Compute Engine default account):
