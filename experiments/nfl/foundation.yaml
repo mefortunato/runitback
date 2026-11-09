@@ -1,0 +1,30 @@
+# Does a play-by-play foundation model help (or at least not hurt) the wager model?
+# Walk-forward 2021-2025: each season's wager model and PBP foundation model are fit
+# on earlier data only (runs/foundation/fold<season>, see experiments/nfl/README.md).
+#   runitback-wager nfl ablate --config experiments/nfl/foundation.yaml
+seasons: [2021, 2022, 2023, 2024, 2025]
+baseline: prod
+configs:
+  prod: {}                      # sportsml's production NFL transformer (Sport.transformer defaults)
+  # --- play-by-play foundation arms (runitback nfl embed: runs/foundation/fold<season>/emb)
+  pbp32:                        # frozen foundation: box score + PBP game embedding (32 PCs)
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  pbp16:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_16.parquet", pbp_dim: 16}
+  pbp64:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_64.parquet", pbp_dim: 64}
+  pbp32_only:                   # PBP embedding instead of the box score (result + location kept)
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32, pbp_only: true}
+  prod_seed1:                   # the baseline with another seed: the noise floor
+    fit: {seed: 1}
+  # --- fine-tuned foundation: the top trunk block trains on the wager loss (after the pbp32 fit)
+  pbp32_ft:                     # + the next-play loss, so the generator stays coherent
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+    fit: {pbp_finetune: {foundation: "runs/foundation/fold{season}/model.pt",
+                         embed_dir: "runs/foundation/fold{season}/emb", data_dir: data/nfl/processed,
+                         layers: 1, epochs: 4, aux_weight: 1.0, out: aux}}
+  pbp32_ft_noaux:               # wager loss only: the generator is free to drift
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+    fit: {pbp_finetune: {foundation: "runs/foundation/fold{season}/model.pt",
+                         embed_dir: "runs/foundation/fold{season}/emb", data_dir: data/nfl/processed,
+                         layers: 1, epochs: 4, aux_weight: 0.0, out: noaux}}

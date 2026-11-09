@@ -1,0 +1,27 @@
+.game {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	color: inherit;
+	transition: border-color 0.15s;
+}
+.game:hover {
+	text-decoration: none;
+	border-color: var(--accent);
+}
+.top {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+.teams {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+.at {
+	font-weight: 600;
+}

@@ -1,0 +1,24 @@
+# Does the foundation learn who plays once it can't lean on team-strength inputs? The QB-swap
+# check (experiments/nfl/README.md, "Personnel") found the production foundation barely moves for
+# Mahomes vs Siemian. Two retrained foundations (.github/workflows/noratings-experiment.yml):
+#   nr    no pre-game ratings (off/def EPA, Elo); otherwise the production settings
+#   nrts  no ratings and no team-season tokens either (unk_ts_prob 1), so team strength can only
+#         come from the lineups, coaches and franchise
+# Each gets the QB-swap check and the wager arms (production pbp32 history; + the pooled
+# projected lineup, lp), scored against pbp32 on the production foundation (copied from
+# experiments/nfl/lineups/pbp32: same data, same settings).
+seasons: [2021, 2022, 2023, 2024, 2025]
+baseline: pbp32
+configs:
+  pbp32:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  nr_pbp32:
+    model: {pbp: "runs/nr/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  nr_pbp32_lp:
+    model: {pbp: "runs/nr/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "runs/nr/fold{season}/emb/lineup.parquet", lineup_set: lp}
+  nrts_pbp32:
+    model: {pbp: "runs/nrts/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  nrts_pbp32_lp:
+    model: {pbp: "runs/nrts/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "runs/nrts/fold{season}/emb/lineup.parquet", lineup_set: lp}

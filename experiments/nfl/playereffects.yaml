@@ -1,0 +1,24 @@
+# Per-player effects in the play heads (experiments/nfl/README.md, "Personnel"). The players-only
+# foundation's passer head ranks QBs from their embeddings (0.63 correlation with completion rate)
+# but the simulated plays barely move with the QB. These foundations add the passer and
+# ball-carrier heads' outputs to each play's result and yards logits (`--player-effects`): a
+# per-player effect on top of the situation, trained by the main play loss as well as the targets.
+#   pe  players only (as `po` in playersonly.yaml) + player effects
+#   te  production's team identity and settings + passer / carrier targets + player effects
+# QB swap on each 2025 fold; wager arms against pbp32 on the production foundation
+# (.github/workflows/playereffects-experiment.yml).
+seasons: [2021, 2022, 2023, 2024, 2025]
+baseline: pbp32
+configs:
+  pbp32:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  pe_pbp32:
+    model: {pbp: "runs/pe/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  pe_pbp32_lp:
+    model: {pbp: "runs/pe/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "runs/pe/fold{season}/emb/lineup.parquet", lineup_set: lp}
+  te_pbp32:
+    model: {pbp: "runs/te/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  te_pbp32_lp:
+    model: {pbp: "runs/te/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "runs/te/fold{season}/emb/lineup.parquet", lineup_set: lp}

@@ -1,0 +1,74 @@
+# The QB-swap check (scripts/lineup_qb_swap.py): do the foundation model's player embeddings carry
+# who plays? Rolls out 120 games of 2025 with named QBs in the home QB1 slot, in shards, on the
+# production fold2025 model and data that nfl-experiment-inputs.yml rebuilds in the same run; the
+# shards' results (qb_swap.<shard>.csv) are uploaded as the qb-swap-results artifact.
+name: QB swap
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths: [.github/workflows/qb-swap.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qb-swap-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+  SHARDS: 8
+
+jobs:
+  inputs:
+    uses: ./.github/workflows/nfl-experiment-inputs.yml
+    with: { seasons: "[2025]" }
+
+  swap:
+    needs: inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with:
+          name: nfl-data
+          path: data/nfl
+      - uses: actions/download-artifact@v4
+        with:
+          name: fold2025
+          path: fold2025
+      - name: Swap (shard ${{ matrix.shard }})
+        run: |
+          python scripts/lineup_qb_swap.py --ckpt fold2025/model.pt --season 2025 --games 120 \
+            --sims 100 --threads $(nproc) --shard ${{ matrix.shard }} --shards $SHARDS --out out/qb_swap.csv
+      - uses: actions/upload-artifact@v4
+        with: { name: "qb-swap-${{ matrix.shard }}", path: out, retention-days: 30 }
+
+  report:
+    needs: [inputs, swap]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13" }
+      - run: pip install pandas numpy torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+      - uses: actions/download-artifact@v4
+        with: { pattern: "qb-swap-*", path: out, merge-multiple: true }
+      - name: Summarize
+        run: python scripts/lineup_qb_swap.py --summary out/qb_swap.*.csv | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: qb-swap-results, path: out, retention-days: 90 }

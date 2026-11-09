@@ -20,8 +20,10 @@ export default function NflApp() {
   const [view, setView] = useState<"game" | "season">("game");
   const [teams, setTeams] = useState<string[]>([]);
   const [seasons, setSeasons] = useState<number[]>([]);
-  const [home, setHome] = useState("KC");
-  const [away, setAway] = useState("BUF");
+  // a predictions page links here with ?home=SEA&away=ARI to generate that matchup
+  const query = new URLSearchParams(window.location.search);
+  const [home, setHome] = useState(query.get("home") || "KC");
+  const [away, setAway] = useState(query.get("away") || "BUF");
   const [season, setSeason] = useState(2026);
   const [gameType, setGameType] = useState("REG");
   const [game, setGame] = useState<Game | null>(null);

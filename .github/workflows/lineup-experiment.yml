@@ -1,0 +1,112 @@
+# The NFL lineup experiment (experiments/nfl/lineups.yaml): does the game being predicted's
+# projected lineup help the wager model?
+#
+#   inputs (data, foundation folds, lineup tables; nfl-experiment-inputs.yml) ─► arms (6 configurations
+#   × 5 seasons) ─► report
+#
+# The report job scores every arm against pbp32 (production) overall and on the games where the
+# lineup moved, and uploads the results as the lineup-results artifact.
+name: Lineup experiment
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - .github/workflows/lineup-experiment.yml
+      - experiments/nfl/lineups.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lineup-experiment-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  inputs:
+    uses: ./.github/workflows/nfl-experiment-inputs.yml
+    with: { lineups: true }
+
+  arms:
+    needs: inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [pbp32_lp_cf, pbp32_lp_lu, pbp32_lp, pbp32_lp_noinj, pbp32, pbp32_noinj]
+        season: [2021, 2022, 2023, 2024, 2025]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl }
+      - uses: actions/download-artifact@v4
+        with:
+          name: "fold${{ matrix.season }}"
+          path: "runs/foundation/fold${{ matrix.season }}"
+      - uses: actions/download-artifact@v4
+        with: { name: "lineup${{ matrix.season }}", path: lineup }
+      - name: Backtest ${{ matrix.config }} on ${{ matrix.season }}
+        run: |
+          cp lineup/lineup.parquet runs/foundation/fold${{ matrix.season }}/emb/
+          python scripts/foundation_arm.py ${{ matrix.config }} ${{ matrix.season }} --threads $(nproc) \
+            --experiment experiments/nfl/lineups.yaml --output-dir experiments/nfl/lineups
+          mkdir -p out/${{ matrix.config }}
+          cp experiments/nfl/lineups/${{ matrix.config }}/${{ matrix.season }}.csv out/${{ matrix.config }}/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arm-${{ matrix.config }}-${{ matrix.season }}
+          path: out
+          retention-days: 30
+
+  report:
+    needs: [inputs, arms]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "arm-*", path: experiments/nfl/lineups, merge-multiple: true }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "lineup*", path: lineups }
+      - name: Score
+        run: |
+          mkdir -p experiments/nfl/lineups/changes
+          cp lineups/*/changes/*.csv experiments/nfl/lineups/changes/
+          python - <<'EOF'
+          import pathlib, yaml
+          from runitback.wager.experiments import ablate
+          cfg = yaml.safe_load(open("experiments/nfl/lineups.yaml"))
+          have = {n: c for n, c in cfg["configs"].items()
+                  if all(pathlib.Path(f"experiments/nfl/lineups/{n}/{s}.csv").exists() for s in cfg["seasons"])}
+          print("complete configurations:", list(have))
+          ablate("data/nfl/games.csv", "nfl", have, cfg["seasons"], "experiments/nfl/lineups", cfg["baseline"], 1, 1)
+          EOF
+          python scripts/foundation_report.py experiments/nfl/lineups --baseline pbp32 \
+            --out experiments/nfl/lineups/report.md
+          python scripts/lineup_report.py experiments/nfl/lineups --baseline pbp32 \
+            --out experiments/nfl/lineups/subsets.md
+          { echo "## Lineup experiment"; cat experiments/nfl/lineups/ablation.md; echo; \
+            cat experiments/nfl/lineups/subsets.md; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: lineup-results, path: experiments/nfl/lineups, retention-days: 90 }

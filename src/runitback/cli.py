@@ -68,6 +68,25 @@ def train(out: Path = RUNS / "prod",
                                                             "depth chart (what users start from)"),
           box_weight: float = typer.Option(0.0, help="weight of the game-level box-score loss (0 = off)"),
           who: bool = typer.Option(False, help="predict which player gets the ball (player stat lines)"),
+          qb_weight: float = typer.Option(0.0, help="weight of the passer target (each pass play's result "
+                                                     "and yards from the QB's embedding alone; 0 = off)"),
+          carrier_weight: float = typer.Option(0.0, help="weight of the ball-carrier target (the play's result "
+                                                          "and yards from the carrier's embedding; needs --who)"),
+          players_only: bool = typer.Option(False, help="no team identity (franchise / team-season / season "
+                                                         "tokens, ratings, coach records): offense and defense "
+                                                         "are pooled from the players and head coaches"),
+          player_effects: bool = typer.Option(False, help="add the passer / carrier heads to the play's result "
+                                                          "and yards (with --qb-weight / --carrier-weight)"),
+          all_effects: bool = typer.Option(False, help="additive per-player effects for all 22 on the field "
+                                                       "(every position) in the play's result and yards"),
+          lineup_weight: float = typer.Option(0.0, help="weight of the lineup-only target (result and yards "
+                                                         "from the 22 players' effects alone; with --all-effects)"),
+          min_season: int = typer.Option(1999, help="first season trained on (players-only: 2013, "
+                                                     "where depth charts start)"),
+          ratings: bool = typer.Option(True, help="pre-game team-strength ratings as inputs (off: team "
+                                                   "strength must come from the lineups and history)"),
+          unk_ts_prob: float = typer.Option(0.1, help="share of games trained with the team-season "
+                                                       "tokens unknown (1 = never use them)"),
           device: str = typer.Option("auto", help="auto (CUDA GPU, then Apple MPS, then CPU), cpu, cuda, cuda:N or mps"),
           amp: bool = typer.Option(True, help="bf16 mixed precision on CUDA GPUs that support it"),
           ):
@@ -78,7 +97,82 @@ def train(out: Path = RUNS / "prod",
         d_model=d_model, n_layers=n_layers, n_heads=n_heads, batch_size=batch_size, lr=lr,
         threads=threads or None, max_games=max_games or None, init=init, device=device, amp=amp,
         use_lineups=lineups, player_dim=player_dim, lineup_dropout=lineup_dropout, unk_lineup_prob=unk_lineup_prob,
-        other_player_prob=other_player_prob, prev_lineup_prob=prev_lineup_prob, box_weight=box_weight, who_head=who)
+        other_player_prob=other_player_prob, prev_lineup_prob=prev_lineup_prob, box_weight=box_weight, who_head=who,
+        use_ratings=ratings, unk_ts_prob=unk_ts_prob, qb_weight=qb_weight,
+        carrier_weight=carrier_weight, players_only=players_only, min_season=min_season,
+        player_effects=player_effects, all_effects=all_effects, lineup_weight=lineup_weight)
+
+
+@nfl.command()
+def foundation(root: Path = typer.Option(Path("foundation/nfl"), help="fold directory (RUNITBACK_NFL_FOUNDATION)"),
+               season: list[int] = typer.Option(None, help="fold (test season); repeat for several. "
+                                                           "Default: the backtest's last 5 and the current"),
+               train: bool = typer.Option(True, help="train a fold that has no model (about an hour each)"),
+               existing: bool = typer.Option(False, help="only add new games to the folds already in --root "
+                                                         "(no training; the daily refresh)"),
+               data: Path = DATA / "processed", threads: int = 0):
+    """Foundation folds for the production wager model: train missing ones, embed new games."""
+    _log()
+    from .nfl.foundation import current_season, prepare
+    if existing:
+        season = sorted(int(d.name[4:]) for d in root.glob("fold*") if (d / "model.pt").exists())
+        train = False
+    elif not season:
+        now = current_season(data)
+        season = list(range(now - 5, now + 1))
+    for s, what in prepare(root, data, season, train=train, threads=threads or None).items():
+        typer.echo(f"fold{s}: {what}")
+
+
+@nfl.command("lineup-features")
+def lineup_features(ckpt: Path = typer.Option(..., help="the fold's foundation checkpoint"),
+                   out: Path = typer.Option(..., help="the fold's embedding directory (has pca_32.npz)"),
+                   fold: int = typer.Option(..., help="the fold's test season (projections fit before it)"),
+                   sets: list[str] = typer.Option(["lu", "cf"], help="lu (lineup change) and/or cf "
+                                                                      "(counterfactual history)"),
+                   data: Path = DATA / "processed", raw: Path = DATA / "raw", threads: int = 0):
+    """Projected lineups and the wager model's lineup context (runitback.nfl.lineup_features)."""
+    import torch
+    _log()
+    if threads:
+        torch.set_num_threads(threads)
+    from .nfl.lineup_features import lineup_table
+    typer.echo(lineup_table(ckpt, data, raw, fold, out, tuple(sets)))
+
+
+@nfl.command("player-values")
+def player_values(out: Path = typer.Option(Path("player_values/nfl"), help="output directory "
+                                                                           "(RUNITBACK_NFL_PLAYER_VALUES)"),
+                  first_season: int = 2016, jobs: int = 0,
+                  download: bool = typer.Option(True, help="refresh the current season's depth charts, "
+                                                           "injury reports and rosters first"),
+                  data: Path = DATA / "processed", raw: Path = DATA / "raw"):
+    """Weekly player values and each game's lineup values for the production wager model (pbp32_pvc):
+    pv.parquet, plus the lineup editor's lineups.parquet / slots.json (runitback.nfl.player_values)."""
+    import os
+
+    import pandas as pd
+
+    from .nfl import player_values as pv
+    _log()
+    gv = pv.game_table(data, raw, first_season, jobs or os.cpu_count() or 1, download=download)
+    pv.write_game_table(gv, out, pd.read_parquet(data / "players.parquet"))
+    typer.echo(f"{len(gv.pv)} team-games, {gv.lineups.game_id.nunique()} upcoming games -> {out} "
+               f"(latest fit: before {gv.latest.before})")
+
+
+@nfl.command()
+def embed(ckpt: Path = typer.Option(..., help="foundation (play-by-play) checkpoint"),
+          out: Path = typer.Option(..., help="output directory"),
+          before_season: int = typer.Option(..., help="fit the projection on games before this season "
+                                                      "(the walk-forward fold's test season)"),
+          dim: list[int] = typer.Option([32], help="projection widths; repeat for several"),
+          data: Path = DATA / "processed"):
+    """Per-team-game embeddings from the play-by-play model, for the wager models (runitback.wager)."""
+    _log()
+    from .nfl.embed import embed_fold
+    for d in dim:
+        typer.echo(embed_fold(ckpt, data, out, before_season, d))
 
 
 @nfl.command()

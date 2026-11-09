@@ -1,0 +1,72 @@
+import numpy as np
+import pandas as pd
+import torch
+
+from runitback.nfl.embed import pool_sides, project, reduce
+from runitback.wager.models.transformer.data import PBP_MISSING, pbp_columns, pbp_features
+from runitback.wager.nfl import SCHEMA
+
+
+def _raw(seasons):
+    rng = np.random.default_rng(0)
+    n = len(seasons)
+    cols = {f"off_{j}": rng.normal(size=n) for j in range(3)} | {f"def_{j}": rng.normal(size=n) for j in range(3)}
+    return pd.DataFrame({"game_id": [f"g{i}" for i in range(n)], "team": "A", "season": seasons, **cols})
+
+
+def test_projection_is_fit_only_on_earlier_seasons():
+    raw = _raw([2020] * 50 + [2021] * 50)
+    later = raw.copy()
+    later.loc[later.season == 2021, "off_0"] += 100.0  # the test season changes...
+    a, _ = reduce(raw, 2021, dim=2)
+    b, _ = reduce(later, 2021, dim=2)
+    # ...but not the projection of the games before it
+    pd.testing.assert_frame_equal(a[a.season == 2020], b[b.season == 2020])
+
+
+def test_new_games_reuse_the_folds_projection(tmp_path):
+    # the daily refresh projects this week's games with the fold's stored projection: the same
+    # numbers a full re-embedding gives, and the earlier rows stay as they were
+    raw = _raw([2020] * 50 + [2021] * 10)
+    table, proj = reduce(raw, 2021, dim=2)
+    np.savez(tmp_path / "pca.npz", **proj)
+    with np.load(tmp_path / "pca.npz") as f:
+        stored = {k: f[k] for k in f.files}
+    pd.testing.assert_frame_equal(project(raw.iloc[50:], stored), table.iloc[50:].reset_index(drop=True))
+
+
+def test_pool_sides_splits_offense_and_defense():
+    h = torch.tensor([[[1.0], [3.0], [10.0], [0.0]]])           # 3 plays + padding
+    is_home = torch.tensor([[1, 1, 0, 0]])
+    valid = torch.tensor([[1.0, 1.0, 1.0, 0.0]])
+    v = pool_sides(h, is_home, valid)
+    assert v[0, 0].tolist() == [2.0, 10.0]   # home: own offense, own defense
+    assert v[0, 1].tolist() == [10.0, 2.0]   # away: mirrored
+
+
+def test_pbp_tokens_join_by_game_and_team(tmp_path):
+    table = pd.DataFrame({"game_id": ["g1", "g1"], "team": ["A", "B"], "_pbp_0": [1.0, 2.0], "_pbp_1": [3.0, 4.0]})
+    path = tmp_path / "pbp.parquet"
+    table.to_parquet(path)
+    games = pd.DataFrame({SCHEMA.game_id: ["g1", "g1", "g0"], SCHEMA.team: ["B", "A", "A"]})
+    out = pbp_features(games, SCHEMA, str(path), 2)
+    assert list(out.columns) == pbp_columns(2)
+    assert out["_pbp_0"].tolist()[:2] == [2.0, 1.0]
+    assert out[PBP_MISSING].tolist() == [0.0, 0.0, 1.0]
+
+
+def test_lineup_context_joins_both_sides_and_mirrors(tmp_path):
+    from runitback.wager.core.schema import mirror
+    from runitback.wager.models.transformer.data import LINEUP_MISSING, lineup_features
+
+    table = pd.DataFrame({"game_id": ["g1", "g1"], "team": ["A", "B"]}
+                         | {f"_lu_{j}": [float(j), 100.0 + j] for j in range(16)})
+    path = tmp_path / "lineup.parquet"
+    table.to_parquet(path)
+    games = pd.DataFrame({SCHEMA.game_id: ["g1", "g2"], SCHEMA.team: ["A", "A"], SCHEMA.opp: ["B", "C"]})
+    out = lineup_features(games, SCHEMA, str(path), "lu")
+    assert out["_lu_1"].tolist()[0] == 1.0 and out["_opp_lu_1"].tolist()[0] == 101.0
+    assert out[LINEUP_MISSING].tolist() == [0.0, 1.0]          # g2 has no row
+    # the opponent's view (antisymmetric heads) gets the sides swapped
+    flipped = lineup_features(mirror(games, SCHEMA), SCHEMA, str(path), "lu")
+    assert flipped["_lu_1"].tolist()[0] == 101.0 and flipped["_opp_lu_1"].tolist()[0] == 1.0

@@ -28,6 +28,10 @@ jobs:
       GAR_REPOSITORY: ${{ secrets.GAR_REPOSITORY }}
       GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
       GCP_DEPLOY_SERVICE_ACCOUNT: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      # Optional: the Cloud Storage bucket with the predictions pages' data (written by the
+      # Refresh predictions workflow), mounted read-only at /mnt/predictions. Without it the
+      # predictions pages say no data has been published and the generator works as usual.
+      PREDICTIONS_BUCKET: ${{ secrets.PREDICTIONS_BUCKET }}
     steps:
       - name: Check out source
         uses: actions/checkout@v5
@@ -75,9 +79,24 @@ jobs:
         env:
           IMAGE: ${{ env.CLOUD_RUN_REGION }}-docker.pkg.dev/${{ env.GOOGLE_CLOUD_PROJECT }}/${{ env.GAR_REPOSITORY }}/runitback:${{ github.sha }}
         run: |
+          predictions=()
+          if [ -n "$PREDICTIONS_BUCKET" ]; then
+            # Cloud Storage volumes need the second-generation environment; implicit-dirs lets
+            # the mount list prefixes (nfl/...) that have no directory objects, and a 60 s
+            # metadata cache picks up a refresh within a minute
+            predictions=(
+              --execution-environment gen2
+              --clear-volumes
+              --add-volume "name=predictions,type=cloud-storage,bucket=$PREDICTIONS_BUCKET,readonly=true,mount-options=implicit-dirs;metadata-cache-ttl-secs=60"
+              --clear-volume-mounts
+              --add-volume-mount "volume=predictions,mount-path=/mnt/predictions"
+              --update-env-vars RUNITBACK_PREDICTIONS=/mnt/predictions
+            )
+          fi
           gcloud run deploy "$CLOUD_RUN_SERVICE" \
             --image "$IMAGE" \
             --project "$GOOGLE_CLOUD_PROJECT" \
             --region "$CLOUD_RUN_REGION" \
             --max 1 \
+            "${predictions[@]}" \
             --quiet

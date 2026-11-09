@@ -1,0 +1,53 @@
+.scoreboard {
+	display: grid;
+	grid-template-columns: auto auto auto 1fr;
+	gap: 16px;
+	align-items: center;
+}
+.side {
+	text-align: center;
+	min-width: 80px;
+}
+.big {
+	font-size: 1.6rem;
+	font-weight: 700;
+}
+.rate {
+	font-weight: 600;
+}
+.rate.good {
+	color: var(--good);
+}
+.extra {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	align-items: flex-end;
+	text-align: right;
+}
+.extra button {
+	padding: 4px 10px;
+}
+.extra button.hidden {
+	visibility: hidden;
+}
+.parts span + span::before {
+	content: ' · ';
+}
+@media (max-width: 640px) {
+	.scoreboard {
+		grid-template-columns: 1fr auto 1fr;
+	}
+	.extra {
+		grid-column: 1 / -1;
+		align-items: center;
+		text-align: center;
+	}
+	/* one fixed line each, so filling in the numbers never rewraps them */
+	.parts span {
+		display: block;
+	}
+	.parts span + span::before {
+		content: none;
+	}
+}

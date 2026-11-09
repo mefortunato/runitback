@@ -1,0 +1,24 @@
+# The passer target (experiments/nfl/README.md, "Personnel"): the QB-swap check found the
+# foundation's player embeddings don't rank quarterbacks, with or without team-strength inputs.
+# These foundations add a training target that predicts each pass play's result and yards from the
+# on-field QB's player embedding alone (`runitback nfl train --qb-weight 1`), so the embedding has
+# to carry the QB's completion / sack / interception / yardage profile:
+#   qb    production settings + the passer target
+#   qbnr  + the passer target, without the pre-game ratings
+# QB swap on each 2025 fold, and the wager arms against pbp32 on the production foundation
+# (.github/workflows/qbtarget-experiment.yml).
+seasons: [2021, 2022, 2023, 2024, 2025]
+baseline: pbp32
+configs:
+  pbp32:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  qb_pbp32:
+    model: {pbp: "runs/qb/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  qb_pbp32_lp:
+    model: {pbp: "runs/qb/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "runs/qb/fold{season}/emb/lineup.parquet", lineup_set: lp}
+  qbnr_pbp32:
+    model: {pbp: "runs/qbnr/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  qbnr_pbp32_lp:
+    model: {pbp: "runs/qbnr/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "runs/qbnr/fold{season}/emb/lineup.parquet", lineup_set: lp}

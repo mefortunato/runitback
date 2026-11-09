@@ -1,0 +1,16 @@
+.labels {
+	display: flex;
+	justify-content: space-between;
+	margin-bottom: 4px;
+}
+.bar {
+	display: flex;
+	height: 8px;
+	border-radius: 999px;
+	overflow: hidden;
+	background: var(--surface-2);
+	gap: 2px;
+}
+.bar div {
+	height: 100%;
+}

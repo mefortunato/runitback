@@ -1,0 +1,135 @@
+# Re-download results and sportsbook lines, refresh the trained wager model's team state (no
+# retraining: the model comes from the predictions-webdata release, see Train predictions),
+# export every predictions page's JSON and write it to the Cloud Storage bucket that the Cloud
+# Run service mounts at RUNITBACK_PREDICTIONS (see README, "Predictions data"). The app is not
+# redeployed: the pages pick up the new files within a minute. A failed run leaves the
+# published data in place. Ported from sportsml's Site workflow.
+#
+# The NFL model's history tokens include each game's play-by-play embedding: the games played
+# since the last run are embedded with the model's foundation fold (the `foundation-nfl` release,
+# see Train predictions) before the export, and every game's player values are rebuilt from the
+# latest depth charts and injury reports (`runitback nfl player-values`): the model's lineup terms
+# and the game pages' lineup editor read them.
+#
+# Lines come from The Odds API (ODDS_API_KEY secret; no game within 8 days: no request). The
+# schedule fits its free tier's 150 requests a month: about 23 runs a week in season, more on
+# game days (times in UTC, before each Eastern kickoff window). Without the key the previous
+# export's lines carry over.
+name: Refresh predictions
+
+on:
+  workflow_dispatch:
+    inputs:
+      webdata_sha256:
+        description: The predictions-webdata asset to wait for (set by Train predictions)
+        required: false
+        default: ""
+  schedule:
+    - cron: "17 10 * * *" # daily, early morning US time
+    - cron: "17 6 * * 2" # Tuesday, after Monday night's game
+    - cron: "17 16,22 * * 2-6" # Tue-Sat midday and evening lines
+    - cron: "17 16 * * 0" # Sunday morning, before the 1 pm games
+    - cron: "47 19 * * 0" # before the late afternoon games
+    - cron: "47 23 * * 0,1,4" # before Sunday, Monday and Thursday night
+
+permissions:
+  contents: read
+  id-token: write # Workload Identity Federation
+
+concurrency:
+  group: refresh-predictions
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    # the Google Cloud settings live with the deploy's; if that environment requires a reviewer,
+    # put these secrets in an environment without one (scheduled runs would otherwise wait)
+    environment: production
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_DEPLOY_SERVICE_ACCOUNT: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      PREDICTIONS_BUCKET: ${{ secrets.PREDICTIONS_BUCKET }}
+      MLFLOW_DISABLE_AGENT_HINT: "1"
+      RUNITBACK_NFL_FOUNDATION: foundation/nfl
+      RUNITBACK_NFL_PLAYER_VALUES: player_values/nfl
+    steps:
+      - name: Check configuration
+        run: |
+          missing=""
+          for v in GOOGLE_CLOUD_PROJECT GCP_WORKLOAD_IDENTITY_PROVIDER GCP_DEPLOY_SERVICE_ACCOUNT PREDICTIONS_BUCKET; do
+            [ -n "${!v}" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            printf 'Missing secret(s) in the production environment:%s\n' "$missing" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - name: Fetch the trained model
+        env:
+          WANT: ${{ inputs.webdata_sha256 }}
+        run: |
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            rm -f webdata.tar.gz
+            gh release download predictions-webdata --pattern webdata.tar.gz
+            got="$(sha256sum webdata.tar.gz | cut -d' ' -f1)"
+            if [ -z "$WANT" ] || [ "$got" = "$WANT" ]; then break; fi
+            if [ "$attempt" = 10 ]; then
+              echo "::error::predictions-webdata asset is $got, not the trained $WANT"; exit 1
+            fi
+            echo "predictions-webdata asset is still the previous one ($got); retrying"
+            sleep 30
+          done
+          mkdir webdata && tar -xzf webdata.tar.gz -C webdata
+      - name: Embed the games played since
+        run: |
+          end=$(python -c "import datetime as d; t=d.date.today(); print(t.year if t.month >= 9 else t.year - 1)")
+          runitback nfl download --start 1999 --end "$end"
+          runitback nfl preprocess --start 1999 --end "$end"
+          mkdir -p "$RUNITBACK_NFL_FOUNDATION" folds
+          # the two latest folds: the model's (the current season's, or last season's until the
+          # next Train predictions run after a new season starts)
+          for a in $(gh release view foundation-nfl --json assets -q '.assets[].name' 2>/dev/null | sort | tail -2); do
+            gh release download foundation-nfl --pattern "$a" --dir folds
+            mkdir -p "$RUNITBACK_NFL_FOUNDATION/${a%.tar.gz}"
+            tar -xzf "folds/$a" -C "$RUNITBACK_NFL_FOUNDATION/${a%.tar.gz}"
+          done
+          runitback nfl foundation --root "$RUNITBACK_NFL_FOUNDATION" --existing --threads $(nproc)
+      - name: Player values (latest depth charts and injury reports)
+        run: runitback nfl player-values --out "$RUNITBACK_NFL_PLAYER_VALUES"
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: Fetch the published data (line history, reusable challenge files)
+        run: |
+          mkdir previous
+          gcloud storage cp -r "gs://$PREDICTIONS_BUCKET/*" previous/ \
+            || echo "nothing published yet: a full export"
+      - name: Export fresh data and lines
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: >
+          runitback-wager web export --data_dir webdata --output_dir out --sports '[nfl]'
+          --refresh true --require_refresh false --odds "{nfl: oddsapi}"
+          --odds_history previous --challenge_from previous
+      - name: Publish to the bucket
+        # files first, then removals: a page loading mid-sync sees old or new files, never none
+        run: |
+          echo "$GITHUB_SHA" > out/data/export-sha.txt
+          gcloud storage rsync --recursive --cache-control=no-cache out/data "gs://$PREDICTIONS_BUCKET"
+          gcloud storage rsync --recursive --delete-unmatched-destination-objects out/data "gs://$PREDICTIONS_BUCKET"
+          echo "published $(find out/data -name '*.json' | wc -l) files to gs://$PREDICTIONS_BUCKET"

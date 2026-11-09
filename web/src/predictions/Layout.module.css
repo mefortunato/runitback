@@ -1,0 +1,134 @@
+header {
+	background: var(--surface);
+	border-bottom: 1px solid var(--border);
+	position: sticky;
+	top: env(safe-area-inset-top, 0px);
+	z-index: 10;
+}
+/* paints the phone's safe-area band above the sticky header */
+:global(body)::before {
+	content: '';
+	position: fixed;
+	inset: 0 0 auto;
+	height: env(safe-area-inset-top, 0px);
+	z-index: 10;
+	background: var(--surface);
+}
+.bar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 20px;
+	min-height: 56px;
+	padding-block: 8px;
+}
+.brand {
+	font-weight: 800;
+	font-size: 1.1rem;
+	color: var(--text);
+}
+nav {
+	display: flex;
+	gap: 4px;
+}
+nav a {
+	color: var(--muted);
+	padding: 6px 10px;
+	border-radius: 8px;
+	font-weight: 600;
+}
+nav a:hover {
+	text-decoration: none;
+	background: var(--surface-2);
+}
+nav a.active {
+	color: var(--text);
+	background: var(--surface-2);
+}
+/* the sport's pages: a second row under the sports */
+.pages {
+	order: 1;
+	flex-basis: 100%;
+	margin-left: -10px;
+}
+nav a {
+	white-space: nowrap;
+}
+.theme {
+	flex: none;
+	display: inline-grid;
+	place-items: center;
+	width: 34px;
+	height: 34px;
+	padding: 0;
+	background: transparent;
+	border-color: transparent;
+	color: var(--muted);
+}
+.theme:hover,
+.theme:focus-visible {
+	background: var(--surface-2);
+	color: var(--text);
+}
+.theme:disabled {
+	opacity: 1;
+	cursor: default;
+}
+.theme svg {
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+.theme {
+	margin-left: auto;
+}
+.menus {
+	display: none;
+}
+@media (max-width: 760px) {
+	nav {
+		display: none;
+	}
+	.menus {
+		display: flex;
+		gap: 6px;
+		margin-left: auto;
+		min-width: 0;
+	}
+	.menus select {
+		min-width: 0;
+		padding: 6px 8px;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		background-color: var(--surface-2);
+		color: var(--text);
+		font: inherit;
+		font-size: 0.9rem;
+		font-weight: 600;
+	}
+	/* the sport keeps its full name; a long page name gives way first */
+	.menus select:first-child {
+		flex: none;
+	}
+	.bar {
+		flex-wrap: nowrap;
+		gap: 8px;
+	}
+	.theme {
+		margin-left: 0;
+	}
+}
+main {
+	min-height: calc(100vh - 160px);
+	padding-bottom: 32px;
+}
+footer {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding-top: 16px;
+	padding-bottom: 24px;
+	border-top: 1px solid var(--border);
+}

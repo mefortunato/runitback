@@ -1,0 +1,124 @@
+# Player values in the production wager model (experiments/nfl/playervalues.yaml):
+#   inputs (data, foundation, lineups, player values) ─► arms (pbp32 and the pv arms × 5 seasons) ─► report
+# The report also fits and scores the direct game models (scripts/direct_game_model.py: pvg, pvgg,
+# pvg_mkt, pvgg_mkt), the pbp32 / pvg average (ens) and the pbp32_pv / pvg average (ens_pv). Every
+# input is rebuilt in the run (nfl-experiment-inputs.yml); the report is uploaded as the
+# playervalues-results artifact.
+name: Player-values experiment
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - .github/workflows/playervalues-experiment.yml
+      - experiments/nfl/playervalues.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: playervalues-experiment-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  inputs:
+    uses: ./.github/workflows/nfl-experiment-inputs.yml
+    with: { lineups: true, values: true }
+
+  arms:
+    needs: inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [pbp32, pbp32_pvc_e4, pbp32_pvc, pbp32_pva_e4, pbp32_pv_e4, pbp32_e4, pbp32_pva, pbp32_pv]
+        season: [2021, 2022, 2023, 2024, 2025]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl }
+      - uses: actions/download-artifact@v4
+        with:
+          name: "fold${{ matrix.season }}"
+          path: "runs/foundation/fold${{ matrix.season }}"
+      - uses: actions/download-artifact@v4
+        with: { name: playervalues, path: experiments/nfl/playervalues }
+      - name: Backtest ${{ matrix.config }} on ${{ matrix.season }}
+        run: |
+          python scripts/foundation_arm.py ${{ matrix.config }} ${{ matrix.season }} --threads $(nproc) \
+            --experiment experiments/nfl/playervalues.yaml --output-dir experiments/nfl/playervalues
+          mkdir -p out/${{ matrix.config }}
+          cp experiments/nfl/playervalues/${{ matrix.config }}/${{ matrix.season }}.csv out/${{ matrix.config }}/
+      - uses: actions/upload-artifact@v4
+        with: { name: "arm-${{ matrix.config }}-${{ matrix.season }}", path: out, retention-days: 30 }
+
+  report:
+    needs: [inputs, arms]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "arm-*", path: experiments/nfl/playervalues, merge-multiple: true }
+      - uses: actions/download-artifact@v4
+        with: { name: playervalues, path: experiments/nfl/playervalues }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "lineup*", path: lineups }
+      - name: Score
+        run: |
+          R=experiments/nfl/playervalues
+          mkdir -p $R/changes && cp lineups/*/changes/*.csv $R/changes/
+          # the direct game models on the lineup values, with pbp32's rows and market columns
+          python scripts/direct_game_model.py --pv $R/pv.parquet --rows $R/pbp32 --out $R --name pvg
+          python scripts/direct_game_model.py --pv $R/pv.parquet --rows $R/pbp32 --out $R --name pvgg --by-group
+          python scripts/direct_game_model.py --pv $R/pv.parquet --rows $R/pbp32 --out $R --name pvg_mkt --market
+          python scripts/direct_game_model.py --pv $R/pv.parquet --rows $R/pbp32 --out $R --name pvgg_mkt --by-group --market
+          python scripts/average_predictions.py $R/ens $R/pbp32 $R/pvg
+          [ -d $R/pbp32_pv ] && python scripts/average_predictions.py $R/ens_pv $R/pbp32_pv $R/pvg
+          python - <<'PY'
+          import pathlib
+          from runitback.wager.experiments import ablate
+          R, seasons = pathlib.Path("experiments/nfl/playervalues"), [2021, 2022, 2023, 2024, 2025]
+          names = ["pbp32", "pbp32_pv", "pbp32_pva", "pbp32_pvc", "pbp32_e4", "pbp32_pv_e4", "pbp32_pva_e4", "pbp32_pvc_e4", "pvg", "pvgg", "ens", "ens_pv", "pvg_mkt", "pvgg_mkt"]
+          have = {n: {} for n in names if all((R / n / f"{s}.csv").exists() for s in seasons)}
+          print("complete configurations:", list(have))
+          ablate("data/nfl/games.csv", "nfl", have, seasons, str(R), "pbp32", 1, 1)
+          PY
+          python scripts/foundation_report.py $R --baseline pbp32 --out $R/report.md
+          # the 4-seed averages against each other
+          E=$R/e4; rm -rf $E; mkdir -p $E; cp -r $R/pbp32_e4 $R/pbp32_pv_e4 $R/pbp32_pva_e4 $R/pbp32_pvc_e4 $R/changes $E/ 2>/dev/null || true
+          if [ -d $E/pbp32_e4 ] && [ -d $E/pbp32_pv_e4 ]; then
+            python -c "
+          import pathlib
+          from runitback.wager.experiments import ablate
+          have = {n: {} for n in ('pbp32_e4', 'pbp32_pv_e4', 'pbp32_pva_e4', 'pbp32_pvc_e4') if pathlib.Path('$E', n).is_dir()}
+          ablate('data/nfl/games.csv', 'nfl', have, [2021, 2022, 2023, 2024, 2025], '$E', 'pbp32_e4', 1, 1)"
+            python scripts/foundation_report.py $E --baseline pbp32_e4 --out $E/report.md
+            python scripts/lineup_report.py $E --baseline pbp32_e4 --out $E/subsets.md
+            rm -rf $E/pbp32_e4 $E/pbp32_pv_e4 $E/pbp32_pva_e4 $E/pbp32_pvc_e4 $E/changes
+          fi
+          python scripts/lineup_report.py $R --baseline pbp32 --out $R/subsets.md
+          { echo "## Player-values experiment"; cat $R/ablation.md; echo; cat $R/report.md; echo; cat $R/subsets.md; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: playervalues-results, path: experiments/nfl/playervalues, retention-days: 90 }

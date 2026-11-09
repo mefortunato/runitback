@@ -1,0 +1,173 @@
+# Everything the NFL experiments build on, rebuilt from the public sources in the calling run
+# (nothing comes from the repository or from an earlier run). Called by the experiment workflows:
+#
+#   data ─┬─► foundation (one fold per season) ─► lineups (one per season)
+#         └─► values
+#
+# Artifacts, all in the calling run:
+#   nfl-data          data/nfl/processed and data/nfl/games.csv (play-by-play + games with lines)
+#   fold<S>           the production play-by-play foundation that never sees season S: model.pt and
+#                     emb/ (pbp_16/32/64.parquet, PCA fit on games before S)       [foundation]
+#   lineup<S>         lineup.parquet (projected lineups and lineup context, runitback nfl
+#                     lineup-features) and changes/<S>.csv (per-game lineup change flags)  [lineups]
+#   playervalues      pv.parquet, lineups.parquet, slots.json, values_latest.csv and, per season,
+#                     values_<S>.csv and swap_refs_<S>.csv (scripts/player_values.py)        [values]
+name: NFL experiment inputs
+
+on:
+  workflow_call:
+    inputs:
+      seasons:
+        description: "Test seasons (JSON list) for the folds and lineup tables"
+        type: string
+        default: "[2021, 2022, 2023, 2024, 2025]"
+      end-season:
+        description: "Last season of play-by-play to download"
+        type: string
+        default: "2026"
+      foundation:
+        description: "Train the production foundation folds"
+        type: boolean
+        default: true
+      lineups:
+        description: "Projected lineups and lineup change flags per fold (needs foundation)"
+        type: boolean
+        default: false
+      values:
+        description: "Player values and per-game lineup values"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - name: Play-by-play (runitback) and games with lines (wager model)
+        run: |
+          runitback nfl download --start 1999 --end ${{ inputs.end-season }} & pbp=$!
+          runitback-wager nfl download --output_file data/nfl/raw.csv & games=$!
+          wait $pbp && wait $games
+          runitback nfl preprocess --start 1999 --end ${{ inputs.end-season }}
+          runitback-wager nfl process --games data/nfl/raw.csv --output_file data/nfl/games.csv
+          ls -la data/nfl data/nfl/processed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nfl-data
+          path: |
+            data/nfl/processed
+            data/nfl/games.csv
+          retention-days: 7
+
+  foundation:
+    needs: data
+    if: ${{ inputs.foundation }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        season: ${{ fromJSON(inputs.seasons) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl }
+      - name: Train the foundation model (never sees ${{ matrix.season }})
+        run: |
+          S=${{ matrix.season }}
+          runitback nfl train --out runs/foundation/fold$S --val-season $((S-1)) --val-week 15 \
+            --epochs 10 --who --prev-lineup-prob 0.3 --threads $(nproc)
+      - name: Game embeddings (PCA on games before ${{ matrix.season }})
+        run: |
+          S=${{ matrix.season }}
+          runitback nfl embed --ckpt runs/foundation/fold$S/model.pt --out runs/foundation/fold$S/emb \
+            --before-season $S --dim 16 --dim 32 --dim 64
+          rm -rf runs/foundation/fold$S/train
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fold${{ matrix.season }}
+          path: runs/foundation/fold${{ matrix.season }}
+          retention-days: 30
+
+  lineups:
+    needs: [data, foundation]
+    if: ${{ inputs.foundation && inputs.lineups }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        season: ${{ fromJSON(inputs.seasons) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl }
+      - uses: actions/download-artifact@v4
+        with: { name: "fold${{ matrix.season }}", path: "runs/foundation/fold${{ matrix.season }}" }
+      - name: Projected lineups and lineup context (fold ${{ matrix.season }})
+        run: |
+          S=${{ matrix.season }}
+          mkdir -p data/nfl/raw out/changes
+          runitback nfl lineup-features --ckpt runs/foundation/fold$S/model.pt \
+            --out runs/foundation/fold$S/emb --fold $S --sets lu --sets cf --threads $(nproc)
+          python -c "import pandas as pd; t = pd.read_parquet('runs/foundation/fold$S/emb/lineup.parquet'); \
+            t[t.season == $S][['game_id', 'team', '_qb_change', '_qb_change_actual', '_dropped']].to_csv('out/changes/$S.csv', index=False)"
+          cp runs/foundation/fold$S/emb/lineup.parquet out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lineup${{ matrix.season }}
+          path: out
+          retention-days: 30
+
+  values:
+    needs: data
+    if: ${{ inputs.values }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nfl-data, path: data/nfl }
+      - name: Raw play-by-play (EPA), depth charts, injury reports and rosters
+        run: runitback nfl download --start 2011 --end ${{ inputs.end-season }}
+      - name: Player values (weekly, leak-free) and per-season values
+        run: |
+          SEASONS=$(python -c "import json; print(' '.join(map(str, json.loads('${{ inputs.seasons }}'))))")
+          python scripts/player_values.py --out out --jobs $(nproc) --download --season-values $SEASONS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: playervalues
+          path: out
+          retention-days: 30

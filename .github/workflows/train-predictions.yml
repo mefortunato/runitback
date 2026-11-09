@@ -1,0 +1,176 @@
+# Train the wager model (spread / moneyline / total), run its walk-forward backtest (the
+# performance page, Beat the model, past power rankings) and publish the result as the
+# `predictions-webdata` release asset that Refresh predictions exports from. Ported from
+# sportsml's Train workflow, NFL only for now.
+#
+# The NFL model reads the play-by-play foundation's frozen game embeddings (experiments/nfl:
+# pbp32): one foundation model per test season ("fold", runitback.nfl.foundation), kept in the
+# `foundation-nfl` release. A season's fold is trained once, the first time it is needed (about
+# 1-1.5 hours, at the start of each season); the 2021-2025 folds come from the foundation
+# experiment's run the first time.
+#
+# It also reads player values (experiments/nfl: pbp32_pvc, 4 seeds): weekly, leak-free values of
+# every player, summed over each team's projected lineup per position group (`runitback nfl
+# player-values`, ~5 min), rebuilt here and in Refresh predictions (injury reports and depth
+# charts change during the week).
+#
+# Runs monthly during the season and on demand, e.g. after changing the model. Backtest
+# seasons are reused from the previous release, or from the `predictions-backtest-cache`
+# release that every build adds its seasons and models to (here or on any machine:
+# `runitback-wager web build --cache release:predictions-backtest-cache`), while the model
+# and its code are unchanged; a routine run only trains the model for upcoming games
+# (~15 min), a full backtest (after a model change, or with refresh_backtest) ~1 hour.
+name: Train predictions
+
+on:
+  workflow_dispatch:
+    inputs:
+      refresh_backtest:
+        description: Backtest every season again instead of reusing the last release's
+        type: boolean
+        default: false
+      reuse_model_days:
+        description: >-
+          Use the backtest cache's model if trained at most this many days ago, instead of
+          training (0: train)
+        type: number
+        default: 0
+  schedule:
+    - cron: "41 7 1 * *" # the 1st of each month
+  # before the workflow is on the default branch it can't be started by hand: a push that changes
+  # it on a claude/ branch starts it there
+  push:
+    branches: ["claude/**"]
+    paths: [.github/workflows/train-predictions.yml]
+
+permissions:
+  contents: write # the predictions-webdata and backtest cache releases
+  actions: write # start Refresh predictions
+
+concurrency:
+  group: train-predictions
+  cancel-in-progress: false
+
+jobs:
+  # the play-by-play folds in their own job (a new season's fold trains for hours), published
+  # before the wager model's build, so a build that fails or times out keeps them
+  folds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUNITBACK_NFL_FOUNDATION: foundation/nfl
+      RUNITBACK_NFL_PLAYER_VALUES: player_values/nfl
+      # the Foundation experiment run whose fold artifacts seed the release (until they expire)
+      FOUNDATION_SEED_RUN: "42286987708"
+      MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
+      MLFLOW_DISABLE_AGENT_HINT: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - name: Play-by-play
+        run: |
+          end=$(python -c "import datetime as d; t=d.date.today(); print(t.year if t.month >= 9 else t.year - 1)")
+          runitback nfl download --start 1999 --end "$end"
+          runitback nfl preprocess --start 1999 --end "$end"
+      - name: Fetch the foundation folds
+        run: |
+          mkdir -p "$RUNITBACK_NFL_FOUNDATION" folds
+          for a in $(gh release view foundation-nfl --json assets -q '.assets[].name' 2>/dev/null); do
+            gh release download foundation-nfl --pattern "$a" --dir folds
+            mkdir -p "$RUNITBACK_NFL_FOUNDATION/${a%.tar.gz}"
+            tar -xzf "folds/$a" -C "$RUNITBACK_NFL_FOUNDATION/${a%.tar.gz}"
+          done
+          for s in 2021 2022 2023 2024 2025; do
+            d="$RUNITBACK_NFL_FOUNDATION/fold$s"
+            [ -f "$d/model.pt" ] && continue
+            if gh run download "$FOUNDATION_SEED_RUN" --name "fold$s" --dir "seed/fold$s"; then
+              mkdir -p "$d" && cp seed/fold$s/model.pt seed/fold$s/emb/pca_32.npz seed/fold$s/emb/pbp_32.parquet "$d/"
+              echo "fold$s: from the foundation experiment"
+            fi
+          done
+      - name: Train missing folds, embed new games
+        run: runitback nfl foundation --root "$RUNITBACK_NFL_FOUNDATION" --threads $(nproc)
+      - name: Publish the folds
+        # before the build, so a trained fold is kept even if the build fails
+        run: |
+          gh release view foundation-nfl >/dev/null 2>&1 || gh release create foundation-nfl \
+            --title "NFL play-by-play foundation folds" --latest=false \
+            --notes "One play-by-play model per test season, its PCA and game embeddings (runitback.nfl.foundation). Written by Train predictions."
+          for d in "$RUNITBACK_NFL_FOUNDATION"/fold*; do
+            tar -czf "folds/$(basename "$d").tar.gz" -C "$d" model.pt pca_32.npz pbp_32.parquet
+          done
+          gh release upload foundation-nfl folds/fold*.tar.gz --clobber
+  build:
+    needs: folds
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUNITBACK_NFL_FOUNDATION: foundation/nfl
+      RUNITBACK_NFL_PLAYER_VALUES: player_values/nfl
+      MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
+      MLFLOW_DISABLE_AGENT_HINT: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - name: Play-by-play
+        run: |
+          end=$(python -c "import datetime as d; t=d.date.today(); print(t.year if t.month >= 9 else t.year - 1)")
+          runitback nfl download --start 1999 --end "$end"
+          runitback nfl preprocess --start 1999 --end "$end"
+      - name: Fetch the foundation folds
+        run: |
+          mkdir -p "$RUNITBACK_NFL_FOUNDATION" folds
+          for a in $(gh release view foundation-nfl --json assets -q '.assets[].name'); do
+            gh release download foundation-nfl --pattern "$a" --dir folds
+            mkdir -p "$RUNITBACK_NFL_FOUNDATION/${a%.tar.gz}"
+            tar -xzf "folds/$a" -C "$RUNITBACK_NFL_FOUNDATION/${a%.tar.gz}"
+          done
+      - name: Player values
+        run: runitback nfl player-values --out "$RUNITBACK_NFL_PLAYER_VALUES"
+      - name: Fetch the previous build (its backtest seasons can be reused)
+        run: |
+          mkdir webdata
+          if gh release download predictions-webdata --pattern webdata.tar.gz; then
+            tar -xzf webdata.tar.gz -C webdata && rm webdata.tar.gz
+          else
+            echo "no previous predictions-webdata release: backtesting every season"
+          fi
+      - name: Download, train, backtest
+        run: >
+          runitback-wager web build --sports '[nfl]' --output_dir webdata
+          --cache release:predictions-backtest-cache
+          --refresh_backtest ${{ inputs.refresh_backtest || false }}
+          --reuse_model_days ${{ inputs.reuse_model_days || 0 }}
+      - name: Publish the predictions-webdata release asset
+        run: |
+          tar -czf webdata.tar.gz -C webdata .
+          gh release view predictions-webdata >/dev/null 2>&1 || gh release create predictions-webdata \
+            --title "Predictions web data (trained wager model and backtest)" --latest=false \
+            --notes "Written by the Train predictions workflow; Refresh predictions exports from it."
+          gh release upload predictions-webdata webdata.tar.gz --clobber
+      - name: Refresh the published predictions
+        # fails until Refresh predictions is on the default branch (it can't be started before)
+        continue-on-error: ${{ github.event_name == 'push' }}
+        # Refresh waits for this exact asset: a download right after the upload can still be
+        # served the previous one
+        run: >
+          gh workflow run refresh-predictions.yml --ref "${{ github.ref_name }}"
+          -f webdata_sha256="$(sha256sum webdata.tar.gz | cut -d' ' -f1)"

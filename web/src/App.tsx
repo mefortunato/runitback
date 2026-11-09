@@ -4,21 +4,35 @@ import NbaApp from "./nba/NbaApp";
 import NflApp from "./nfl/NflApp";
 import { Link, usePath } from "./router";
 import { ThemeToggle } from "./theme";
+import SportPage from "./predictions/SportPage";
 
-const PAGES: Record<string, { title: string; render: () => React.ReactNode }> = {
-  "/": { title: "Run It Back", render: () => <Home /> },
-  "/nfl": { title: "NFL · Run It Back", render: () => <NflApp /> },
-  "/nba": { title: "NBA · Run It Back", render: () => <NbaApp /> },
+// each sport: /<sport>/... = predictions pages, /<sport>/generator = the play-by-play generator
+const SPORTS: Record<string, { label: string; generator: () => React.ReactNode }> = {
+  nfl: { label: "NFL", generator: () => <NflApp /> },
+  nba: { label: "NBA", generator: () => <NbaApp /> },
 };
+
+function route(path: string): { title: string; render: () => React.ReactNode } | undefined {
+  if (path === "/") return { title: "Run It Back", render: () => <Home /> };
+  const [sport, ...rest] = path.split("/").filter(Boolean);
+  const s = SPORTS[sport];
+  if (!s) return undefined;
+  const page = rest[0] === "generator" ? "Generator" : rest.length ? rest[0][0].toUpperCase() + rest[0].slice(1) : "Predictions";
+  return {
+    title: `${s.label} ${/^\d+$/.test(page) ? "Predictions" : page} · Run It Back`,
+    render: () => <SportPage key={sport} sport={sport} label={s.label} rest={rest} generator={s.generator} />,
+  };
+}
 
 export default function App() {
   const raw = usePath();
   const path = raw.length > 1 ? raw.replace(/\/+$/, "") : raw;
-  const page = PAGES[path];
-  useEffect(() => { document.title = page?.title ?? "Not found · Run It Back"; }, [page]);
-  const tab = (to: string, label: string) => (
-    <Link to={to} className={path === to ? "selected" : ""} aria-current={path === to ? "page" : undefined}>{label}</Link>
-  );
+  const page = route(path);
+  useEffect(() => { document.title = page?.title ?? "Not found · Run It Back"; }, [page?.title]);
+  const tab = (to: string, label: string) => {
+    const on = to === "/" ? path === "/" : path === to || path.startsWith(to + "/");
+    return <Link to={to} className={on ? "selected" : ""} aria-current={on ? "page" : undefined}>{label}</Link>;
+  };
   return (
     <div className="app">
       <header className="site-header">

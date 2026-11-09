@@ -1,0 +1,568 @@
+.how {
+	--home: var(--series-1);
+	--away: var(--series-2);
+	--model: var(--accent);
+	--ease: cubic-bezier(0.22, 1, 0.36, 1);
+	display: grid;
+	gap: 14px;
+}
+.top {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 8px;
+}
+.top h2 {
+	margin: 0;
+}
+.toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 10px;
+	font-size: 0.8rem;
+	background: var(--surface-2);
+}
+.toggle svg {
+	width: 12px;
+	height: 12px;
+	fill: currentColor;
+}
+
+/* the three panels with the flow between them */
+.stage {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 36px minmax(0, 0.8fr) 36px minmax(0, 1.4fr);
+	align-items: stretch;
+}
+.panel {
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--surface-2);
+	padding: 12px;
+	display: grid;
+	gap: 8px;
+	align-content: start;
+	transition:
+		border-color 0.4s,
+		box-shadow 0.4s;
+}
+.panel.lit {
+	border-color: var(--model);
+	box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.label {
+	font-size: 0.72rem;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	color: var(--muted);
+}
+
+/* recent games */
+.team {
+	display: grid;
+	grid-template-columns: 44px minmax(0, 1fr);
+	align-items: center;
+	gap: 6px;
+}
+.name {
+	font-weight: 700;
+	font-size: 0.85rem;
+}
+.name.home {
+	color: var(--home);
+}
+.name.away {
+	color: var(--away);
+}
+.bars {
+	width: 100%;
+	height: 52px;
+	overflow: visible;
+}
+.bars .base {
+	stroke: var(--context-line);
+	stroke-width: 1;
+	vector-effect: non-scaling-stroke;
+}
+.bars.home rect {
+	fill: var(--home);
+}
+.bars.away rect {
+	fill: var(--away);
+}
+.bars rect {
+	transform-box: fill-box;
+	transform-origin: top;
+}
+.bars rect.up {
+	transform-origin: bottom;
+}
+/* bars regrow each time the loop comes back round */
+.how:not(.still) .history.lit .bars rect {
+	animation: grow 0.5s var(--ease) backwards;
+}
+@keyframes grow {
+	from {
+		transform: scaleY(0);
+	}
+}
+.key {
+	display: flex;
+	gap: 12px;
+	font-size: 0.72rem;
+	color: var(--muted);
+}
+
+/* dots flowing from one panel to the next */
+.flow {
+	position: relative;
+	align-self: center;
+	height: 2px;
+	margin: 0 4px;
+	background: var(--border);
+}
+.flow::after {
+	content: '';
+	position: absolute;
+	right: -2px;
+	top: -4px;
+	border: 5px solid transparent;
+	border-left-color: var(--border);
+	border-right: 0;
+}
+.flow.on {
+	background: var(--model);
+}
+.flow.on::after {
+	border-left-color: var(--model);
+}
+.flow span {
+	position: absolute;
+	top: -3px;
+	left: 0;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--model);
+	opacity: 0;
+}
+.how:not(.still) .flow.on span {
+	animation: travel 1.2s linear infinite;
+}
+.flow span:nth-child(2) {
+	animation-delay: 0.4s !important;
+}
+.flow span:nth-child(3) {
+	animation-delay: 0.8s !important;
+}
+@keyframes travel {
+	0% {
+		left: 0;
+		opacity: 0;
+	}
+	20% {
+		opacity: 1;
+	}
+	80% {
+		opacity: 1;
+	}
+	100% {
+		left: calc(100% - 8px);
+		opacity: 0;
+	}
+}
+
+/* the model */
+.model {
+	justify-items: center;
+	text-align: center;
+}
+.model .label {
+	justify-self: stretch;
+	text-align: left;
+}
+.net {
+	width: 100%;
+	max-width: 140px;
+	height: auto;
+}
+.net line {
+	stroke: var(--context-line);
+	stroke-width: 1;
+	transition: stroke 0.4s;
+}
+.net circle {
+	fill: var(--surface);
+	stroke: var(--muted);
+	stroke-width: 1.5;
+	transition:
+		fill 0.4s,
+		stroke 0.4s;
+}
+.model.on .net line {
+	stroke: var(--accent-soft);
+}
+.model.on .net circle {
+	stroke: var(--model);
+}
+.model.on .net circle.out {
+	fill: var(--model);
+}
+.how:not(.still) .model.lit .net circle {
+	animation: pulse 1.2s ease-in-out infinite both;
+}
+@keyframes pulse {
+	0%,
+	100% {
+		fill: var(--surface);
+	}
+	40% {
+		fill: var(--model);
+	}
+}
+.caption {
+	font-size: 0.75rem;
+	color: var(--muted);
+}
+
+/* the margin number line */
+.line {
+	position: relative;
+	height: 64px;
+	margin: 0 22px;
+}
+.axis {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 10px;
+	height: 2px;
+	background: var(--border);
+}
+.tick {
+	position: absolute;
+	bottom: 4px;
+	width: 2px;
+	height: 14px;
+	margin-left: -1px;
+	background: var(--border);
+}
+.gap {
+	position: absolute;
+	bottom: 4px;
+	height: 14px;
+	background: var(--accent-soft);
+	border-radius: 3px;
+	opacity: 0;
+	transition: opacity 0.5s 0.3s;
+}
+.gap.on {
+	opacity: 1;
+}
+.mark {
+	position: absolute;
+	bottom: 4px;
+	width: 14px;
+	height: 14px;
+	margin-left: -7px;
+	border-radius: 50%;
+	border: 2px solid var(--surface);
+	opacity: 0;
+	transform: scale(0.4);
+	transition:
+		left 0.9s var(--ease),
+		opacity 0.4s,
+		transform 0.4s var(--ease);
+}
+.mark.on {
+	opacity: 1;
+	transform: scale(1);
+}
+.mark .tag {
+	position: absolute;
+	left: 50%;
+	bottom: 18px;
+	transform: translateX(-50%);
+	font-size: 0.7rem;
+	line-height: 1.15;
+	text-align: center;
+	white-space: nowrap;
+	color: var(--muted);
+}
+.mark .tag b {
+	font-size: 0.85rem;
+	font-variant-numeric: tabular-nums;
+}
+.mark.model {
+	background: var(--model);
+	z-index: 2;
+}
+.mark.model b {
+	color: var(--model);
+}
+.mark.vegas {
+	background: var(--vegas);
+	border-radius: 3px;
+}
+.mark.vegas b {
+	color: var(--vegas);
+}
+/* the Vegas tag sits low and to the left so it clears the model's */
+.mark.vegas .tag {
+	transform: translateX(-100%);
+	left: -2px;
+	bottom: 14px;
+	text-align: right;
+}
+.mark.final {
+	background: var(--good);
+	transform: scale(0.4) rotate(45deg);
+	border-radius: 2px;
+}
+.mark.final.on {
+	transform: scale(1) rotate(45deg);
+}
+.mark.final .tag {
+	/* undo the diamond's rotation and sit to the right */
+	transform: rotate(-45deg) translate(10px, -18px);
+	transform-origin: 0 0;
+	left: 0;
+	top: 0;
+	text-align: left;
+}
+.mark.final b {
+	color: var(--good);
+}
+.ends {
+	display: flex;
+	justify-content: space-between;
+	font-size: 0.7rem;
+	color: var(--muted);
+	margin-top: -4px;
+}
+
+/* win probability */
+.win {
+	opacity: 0.35;
+	transition: opacity 0.5s;
+}
+.win.on {
+	opacity: 1;
+}
+.win-labels {
+	display: flex;
+	justify-content: space-between;
+	font-size: 0.75rem;
+	margin-bottom: 4px;
+	font-variant-numeric: tabular-nums;
+}
+.win-labels span:nth-child(2) {
+	color: var(--muted);
+}
+.win-labels span:first-child {
+	color: var(--away);
+	font-weight: 700;
+}
+.win-labels span:last-child {
+	color: var(--home);
+	font-weight: 700;
+}
+.win:not(.on) .win-labels span:first-child,
+.win:not(.on) .win-labels span:last-child {
+	visibility: hidden;
+}
+.win-bar {
+	display: flex;
+	gap: 2px;
+	height: 8px;
+	border-radius: 999px;
+	overflow: hidden;
+}
+.win-bar .away {
+	background: var(--away);
+	transition: width 1s var(--ease);
+}
+.win-bar .home {
+	flex: 1;
+	background: var(--home);
+}
+.win:not(.on) .win-bar div {
+	background: var(--border);
+}
+
+/* the pick and how it went */
+.verdict {
+	display: grid;
+	min-height: 26px;
+}
+.verdict > span {
+	grid-area: 1 / 1;
+	justify-self: start;
+	align-self: center;
+	font-size: 0.82rem;
+	font-weight: 700;
+	padding: 3px 10px;
+	border-radius: 999px;
+	opacity: 0;
+	transform: translateY(4px);
+	transition:
+		opacity 0.4s,
+		transform 0.4s var(--ease);
+}
+.verdict > span.on {
+	opacity: 1;
+	transform: none;
+}
+.pick {
+	background: var(--accent-soft);
+	color: var(--model);
+	transition-delay: 0.5s !important;
+}
+.right {
+	background: var(--good-soft);
+	color: var(--good);
+}
+
+/* steps and caption */
+.steps {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: grid;
+	grid-template-columns: repeat(5, minmax(0, 1fr));
+	gap: 6px;
+}
+.steps button {
+	width: 100%;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 8px;
+	font-size: 0.8rem;
+	text-align: left;
+	color: var(--muted);
+	background: transparent;
+	border-color: var(--border);
+	position: relative;
+	overflow: hidden;
+}
+.steps .n {
+	flex: none;
+	display: inline-grid;
+	place-items: center;
+	width: 20px;
+	height: 20px;
+	border-radius: 50%;
+	font-size: 0.72rem;
+	font-weight: 700;
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+}
+.steps .done button {
+	color: var(--text);
+}
+.steps .active button {
+	color: var(--text);
+	font-weight: 600;
+	border-color: var(--model);
+	background: var(--accent-soft);
+}
+.steps .active .n,
+.steps .done .n {
+	background: var(--model);
+	border-color: var(--model);
+	color: var(--surface);
+}
+.text {
+	margin: 0;
+	min-height: 3em;
+	line-height: 1.5;
+	max-width: 70ch;
+}
+.note {
+	margin: -6px 0 0;
+}
+
+.still *,
+.still *::before,
+.still *::after {
+	transition: none !important;
+	animation: none !important;
+}
+
+@media (max-width: 760px) {
+	/* the words above the picture, so both fit on a phone screen */
+	.steps,
+	.text {
+		order: -1;
+	}
+	.top {
+		order: -2;
+	}
+	.stage {
+		grid-template-columns: minmax(0, 1fr);
+		grid-template-rows: auto 28px auto 28px auto;
+	}
+	.flow {
+		justify-self: center;
+		width: 2px;
+		height: auto;
+		align-self: stretch;
+		margin: 4px 0;
+	}
+	.flow::after {
+		right: auto;
+		left: -4px;
+		top: auto;
+		bottom: -2px;
+		border: 5px solid transparent;
+		border-top-color: var(--border);
+		border-bottom: 0;
+	}
+	.flow.on::after {
+		border-top-color: var(--model);
+		border-left-color: transparent;
+	}
+	.flow span {
+		left: -3px;
+	}
+	.how:not(.still) .flow.on span {
+		animation-name: travel-down;
+	}
+	.model {
+		grid-template-columns: auto minmax(0, 1fr);
+		align-items: center;
+		text-align: left;
+	}
+	.model .label {
+		grid-column: 1 / -1;
+	}
+	.net {
+		width: 110px;
+	}
+	.steps {
+		grid-template-columns: repeat(5, minmax(0, 1fr));
+	}
+	.steps .t {
+		display: none;
+	}
+	.steps button {
+		justify-content: center;
+	}
+}
+@keyframes travel-down {
+	0% {
+		top: 0;
+		opacity: 0;
+	}
+	20%,
+	80% {
+		opacity: 1;
+	}
+	100% {
+		top: calc(100% - 8px);
+		opacity: 0;
+	}
+}

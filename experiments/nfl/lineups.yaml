@@ -1,0 +1,32 @@
+# Who plays this week: does the projected lineup help the wager model (experiments/nfl/README.md,
+# "Personnel")? Every arm keeps the box-score history tokens and the frozen play-by-play game
+# embeddings (pbp32, production); the arms add the game being predicted's projected lineup
+# (runitback.nfl.lineup_features, per fold: runs/foundation/fold<season>/emb/lineup.parquet):
+#   lp  the projected players' embeddings, pooled by the foundation's lineup encoder
+#   lu  how that pooled lineup differs from the lineups behind the history games
+#   cf  the history re-embedded as if the projected lineup had played it, minus as played
+# The wager model's injury features (inj_<unit>: expected missing snap share per unit) are the
+# current way it sees personnel; the _noinj arms drop them.
+#   .github/workflows/lineup-experiment.yml (or: python scripts/foundation_arm.py <arm> <season>
+#   --experiment experiments/nfl/lineups.yaml --output-dir experiments/nfl/lineups)
+seasons: [2021, 2022, 2023, 2024, 2025]
+baseline: pbp32
+configs:
+  pbp32:                        # production: box score + PBP game embedding history
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  pbp32_lp:                     # + who is projected to play (pooled player embeddings)
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "runs/foundation/fold{season}/emb/lineup.parquet", lineup_set: lp}
+  pbp32_lp_lu:                  # + how that differs from the history's lineups
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "runs/foundation/fold{season}/emb/lineup.parquet", lineup_set: lp+lu}
+  pbp32_lp_cf:                  # + the history as if this week's lineup had played it
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "runs/foundation/fold{season}/emb/lineup.parquet", lineup_set: lp+cf}
+  pbp32_noinj:                  # production without the injury features
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+    fit: {context: [rest, opp_rest, div_game]}
+  pbp32_lp_noinj:               # the projected lineup instead of the injury features
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "runs/foundation/fold{season}/emb/lineup.parquet", lineup_set: lp}
+    fit: {context: [rest, opp_rest, div_game]}

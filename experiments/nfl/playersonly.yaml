@@ -1,0 +1,27 @@
+# Players-only foundation (experiments/nfl/README.md, "Personnel"): no team identity at all
+# (franchise / team-season / season tokens, pre-game ratings, coach records). Each play is
+# predicted from the game so far plus the possession team's offense unit (its offensive and
+# specialist players, pooled per position group from the depth chart, + its head coach) and the
+# other team's defense unit (its defensive players + head coach); the result / yards / clock heads
+# also see the 22 players on the field. Trained on 2013+ (where depth charts start), with fewer
+# hidden lineups (unk_lineup_prob 0.05, lineup_dropout 0.1).
+#   po     + the passer and ball-carrier targets (each play's result and yards from the QB's /
+#            the ball carrier's embedding alone)
+#   ponts  without those targets
+# QB swap on each 2025 fold; wager arms against pbp32 on the production foundation
+# (.github/workflows/playersonly-experiment.yml).
+seasons: [2021, 2022, 2023, 2024, 2025]
+baseline: pbp32
+configs:
+  pbp32:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  po_pbp32:
+    model: {pbp: "runs/po/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  po_pbp32_lp:
+    model: {pbp: "runs/po/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "runs/po/fold{season}/emb/lineup.parquet", lineup_set: lp}
+  ponts_pbp32:
+    model: {pbp: "runs/ponts/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  ponts_pbp32_lp:
+    model: {pbp: "runs/ponts/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "runs/ponts/fold{season}/emb/lineup.parquet", lineup_set: lp}

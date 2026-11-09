@@ -8,8 +8,14 @@ transformer building blocks, the score-distribution summaries, the model schedul
 helpers. One server (`runitback.server`) serves every sport's API and the web app:
 
 - `/`: a landing page that explains the model and links to each sport
-- `/nfl`: the NFL game, forecast and season simulators
-- `/nba`: the NBA game, forecast and season simulators
+- `/nfl`: NFL predictions (spread, moneyline, over/under for upcoming games, recent results,
+  power rankings, team map, the walk-forward backtest and "Beat the model"), and at
+  `/nfl/generator` the NFL game, forecast and season simulators
+- `/nba`: the NBA game, forecast and season simulators (NBA predictions come later)
+
+The predictions pages come from `runitback.wager`, the game-level models ported from sportsml
+(`runitback-wager <sport> ...`, the `wager` extra). They are precomputed static JSON; see
+[Predictions data](#predictions-data).
 
 ## NFL
 
@@ -720,6 +726,94 @@ yield between model calls so background simulations do not hold up the game.
 ```bash
 runitback nfl simulate KC BUF --season 2026 --n 1000 --out results.json   # or .csv (one row per game)
 ```
+
+## Predictions data
+
+The predictions pages read static JSON from `/data/...`: `runitback-wager web export` writes it from
+a trained wager model and its walk-forward backtest. The server serves `/data` from
+`$RUNITBACK_PREDICTIONS` (else from the web build, e.g. `web/public/data` in development), and the
+pages show "not available" for anything missing. Locally:
+
+```bash
+pip install -e ".[wager]"
+runitback-wager web build --sports '[nfl]' --output_dir webdata     # train + backtest (~1 h on 4 CPUs)
+runitback-wager web export --data_dir webdata --output_dir out --refresh true
+RUNITBACK_PREDICTIONS=out/data runitback serve
+```
+
+In production the data lives in a **Cloud Storage bucket mounted read-only into the Cloud Run
+service** at `/mnt/predictions` (`RUNITBACK_PREDICTIONS`), so it refreshes without a redeploy and
+deployments keep needing a merge to `main`:
+
+- **Train predictions** (`.github/workflows/train-predictions.yml`, monthly and by hand) trains the
+  wager model, backtests it and publishes the `predictions-webdata` release asset (backtest seasons
+  are reused through the `predictions-backtest-cache` release while the model is unchanged).
+- **Refresh predictions** (`.github/workflows/refresh-predictions.yml`, daily and before each NFL
+  kickoff window) downloads that release, re-downloads results and lines (The Odds API with the
+  `ODDS_API_KEY` secret; without it the previous lines carry over), refreshes team state (no
+  retraining), exports, and syncs the files to the bucket. The pages pick them up within a minute:
+  the mount caches metadata for 60 s and `/data` responses carry `Cache-Control: no-cache`.
+- **Deploy to Cloud Run** mounts the bucket when the `PREDICTIONS_BUCKET` secret is set (it also
+  switches the service to the second-generation execution environment, which Cloud Storage volumes
+  need). Without the secret the app deploys as before and the predictions pages are empty.
+
+The NFL wager model reads the play-by-play generator's frozen game embeddings in its history tokens
+(the `pbp32` arm of [the foundation experiment](experiments/nfl/README.md): at least as good as the
+box-score model on every market). It needs one foundation model per test season, so the backtest
+of each season and the model for upcoming games only use a play-by-play model that never trained on
+the games they predict. `runitback nfl foundation` keeps them in `foundation/nfl/fold<season>/`. It
+trains a missing fold (about an hour; once per season) and adds newly played games to the
+embedding tables. The wager side uses them when `RUNITBACK_NFL_FOUNDATION` names that directory;
+without it, the model is the box-score one. Both workflows set it, and the folds live in the
+`foundation-nfl` release. Locally:
+
+```bash
+runitback nfl foundation                    # trains folds missing from foundation/nfl
+RUNITBACK_NFL_FOUNDATION=foundation/nfl runitback-wager web build --sports '[nfl]' --output_dir webdata
+```
+
+It also reads **player values** (the `pbp32_pvc` arm of [the personnel
+experiments](experiments/nfl/README.md#player-values-who-plays-straight-into-the-wager-model), 4
+seeds): a weekly, leak-free adjusted plus-minus for every player, summed over each team's projected
+lineup (published depth chart minus players ruled out) per position group. The model sees only each
+group's change against the team's last 8 lineups, through sign-constrained additive terms on the
+margin and total, so a better player at any position always moves the prediction his team's way.
+`runitback nfl player-values` (~5 minutes) writes them to `player_values/nfl/`: `pv.parquet` for
+the model, `lineups.parquet` and `slots.json` for the **lineup editor** on each upcoming game's
+page. Because the lineup terms are additive, the page re-prices an edited lineup exactly as the
+model would (`web/src/predictions/lib/lineups.ts`). The wager side uses them when
+`RUNITBACK_NFL_PLAYER_VALUES` names that directory (and the foundation is on). Both workflows
+rebuild them: Refresh predictions picks up the latest depth charts and injury reports each run.
+
+```bash
+runitback nfl player-values                 # player_values/nfl
+RUNITBACK_NFL_FOUNDATION=foundation/nfl RUNITBACK_NFL_PLAYER_VALUES=player_values/nfl \
+  runitback-wager web build --sports '[nfl]' --output_dir webdata
+```
+
+Run the build and export from the directory that holds `foundation/nfl` and `player_values/nfl`:
+the trained model stores both tables' paths relative to it.
+
+One-time setup (the deploy service account is the one the deploy workflow already uses; the Cloud
+Run runtime service account is the service's, by default the Compute Engine default account):
+
+```bash
+gcloud storage buckets create "gs://${PREDICTIONS_BUCKET}" --project "$GOOGLE_CLOUD_PROJECT" \
+  --location "$CLOUD_RUN_REGION" --uniform-bucket-level-access
+# Refresh predictions writes the files
+gcloud storage buckets add-iam-policy-binding "gs://${PREDICTIONS_BUCKET}" \
+  --member "serviceAccount:${GCP_DEPLOY_SERVICE_ACCOUNT}" --role roles/storage.objectAdmin
+# the running service reads them
+gcloud storage buckets add-iam-policy-binding "gs://${PREDICTIONS_BUCKET}" \
+  --member "serviceAccount:${CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT}" --role roles/storage.objectViewer
+```
+
+Then add `PREDICTIONS_BUCKET` (the bucket name, without `gs://`) and optionally `ODDS_API_KEY`
+to the `production` environment's secrets, run **Train predictions** once (it starts the first
+refresh), and redeploy (or push to `main`) so the service mounts the bucket. If the `production`
+environment requires a reviewer, scheduled refreshes wait for one; give the refresh workflow an
+environment without that rule holding the same Google Cloud secrets. `deploy-cloud-run.sh` reads
+`PREDICTIONS_BUCKET` from `.env` the same way.
 
 ## Tests
 

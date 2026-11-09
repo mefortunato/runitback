@@ -1,0 +1,48 @@
+.chart {
+	width: 100%;
+	height: auto;
+	display: block;
+	overflow: visible;
+}
+.side {
+	font-size: 10px;
+	fill: var(--muted);
+	font-weight: 600;
+}
+.row-label {
+	font-size: 11px;
+	fill: var(--muted);
+	font-weight: 600;
+}
+.track {
+	stroke: var(--border);
+	stroke-width: 1;
+}
+.zero {
+	stroke: var(--muted);
+	stroke-dasharray: 3 3;
+	opacity: 0.7;
+}
+.edge {
+	fill: var(--accent-soft);
+}
+.marker.vegas {
+	fill: var(--vegas);
+}
+.marker.model {
+	fill: var(--accent);
+	stroke: var(--surface);
+	stroke-width: 2;
+}
+.marker.final {
+	fill: var(--text);
+}
+.value {
+	font-size: 12px;
+	font-weight: 600;
+	fill: var(--text);
+}
+.tick {
+	font-size: 10px;
+	fill: var(--muted);
+}

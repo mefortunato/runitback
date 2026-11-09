@@ -1,0 +1,132 @@
+.intro {
+	max-width: 68ch;
+}
+.filters {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin: 12px 0 6px;
+}
+.filters button {
+	cursor: pointer;
+}
+.filters.divisions {
+	margin-top: 0;
+}
+.source {
+	margin: 0 0 12px;
+}
+.legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+	margin-bottom: 8px;
+}
+.chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 10px;
+	border-radius: 999px;
+	font-size: 0.85rem;
+}
+.chip .x {
+	color: var(--muted);
+}
+.swatch {
+	display: inline-block;
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	flex: none;
+}
+.ranks {
+	width: 100%;
+	border-collapse: collapse;
+}
+.ranks th {
+	text-align: left;
+	font-size: 0.8rem;
+	color: var(--muted);
+	font-weight: 600;
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--border);
+}
+.ranks td {
+	padding: 4px 8px;
+	border-bottom: 1px solid var(--border);
+}
+.ranks tr.pinned td {
+	background: var(--surface-2);
+}
+.num {
+	text-align: right;
+	width: 1%;
+	white-space: nowrap;
+}
+/* the name column takes the slack and truncates instead of widening */
+.team-cell {
+	width: 100%;
+	max-width: 0;
+}
+.name {
+	font-weight: 600;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.short {
+	display: none;
+}
+.stage {
+	flex: none;
+	font-size: 0.75rem;
+	font-weight: 600;
+	color: var(--muted);
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	padding: 1px 8px;
+	white-space: nowrap;
+}
+.stage.champion {
+	color: var(--accent);
+	border-color: var(--accent);
+	background: var(--accent-soft);
+}
+.check {
+	margin: 0 0 8px;
+}
+.finalist {
+	color: var(--text);
+	font-variant-numeric: tabular-nums;
+}
+@media (max-width: 640px) {
+	.full {
+		display: none;
+	}
+	.short {
+		display: inline;
+	}
+}
+.team {
+	overflow: hidden;
+	width: 100%;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	background: none;
+	border: 0;
+	padding: 2px 0;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	min-width: 0;
+	max-width: 100%;
+}
+.change.up {
+	color: var(--good);
+}
+.change.down {
+	color: var(--bad);
+}

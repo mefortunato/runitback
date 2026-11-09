@@ -1,0 +1,42 @@
+# Player values (experiments/nfl/README.md, "Player values"): leak-free weekly adjusted plus-minus
+# on play EPA with the 22 on the field (src/runitback/nfl/player_values.py), summed over each
+# team's projected lineup per position group (scripts/player_values.py -> playervalues/pv.parquet).
+#   pbp32_pv  the production wager model (pbp32) with the player values in its context
+# The direct game model (scripts/direct_game_model.py: pvg, pvgg, pvg_mkt, pvgg_mkt) and the
+# pbp32 / pvg average (ens) are scored alongside (.github/workflows/playervalues-experiment.yml).
+seasons: [2021, 2022, 2023, 2024, 2025]
+baseline: pbp32
+configs:
+  pbp32:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+  pbp32_pv:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "experiments/nfl/playervalues/pv.parquet", lineup_set: pv}
+  # 4-seed averages of both, so the comparison is not within the seed-to-seed noise (~±0.002)
+  pbp32_e4:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32}
+    fit: {ensemble: 4}
+  pbp32_pv_e4:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "experiments/nfl/playervalues/pv.parquet", lineup_set: pv}
+    fit: {ensemble: 4}
+  # the player values only through sign-constrained additive terms on the margin and total
+  # (levels and changes vs the last 8 lineups, per position group): every lineup change moves the
+  # prediction the right way, at every position; one shared weight per kind (levels, changes),
+  # so a point of player value is worth the same at every position
+  pbp32_pva:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "experiments/nfl/playervalues/pv.parquet", lineup_set: pva}
+  pbp32_pva_e4:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "experiments/nfl/playervalues/pv.parquet", lineup_set: pva}
+    fit: {ensemble: 4}
+  # pva double-counts team strength (its level terms repeat what the history knows): the same with
+  # only each group's change vs the team's last 8 lineups in the additive terms
+  pbp32_pvc:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "experiments/nfl/playervalues/pv.parquet", lineup_set: pvc}
+  pbp32_pvc_e4:
+    model: {pbp: "runs/foundation/fold{season}/emb/pbp_32.parquet", pbp_dim: 32,
+            lineup: "experiments/nfl/playervalues/pv.parquet", lineup_set: pvc}
+    fit: {ensemble: 4}

@@ -14,9 +14,16 @@ dependencies = [
 [project.optional-dependencies]
 data = ["sportsdataverse>=0.1.4"]
 dev = ["pytest", "httpx"]
+# game-level wager models (spread / moneyline / total), ported from sportsml
+wager = [
+  "httpx", "jsonargparse[signatures]", "lightning", "mlflow", "networkx", "nflreadpy", "omegaconf",
+  "scikit-learn", "scipy", "torch_geometric", "torchmetrics", "tqdm", "umap-learn",
+]
+tune = ["optuna>=5.0.0"]
 
 [project.scripts]
 runitback = "runitback.cli:app"
+runitback-wager = "runitback.wager.cli:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]
