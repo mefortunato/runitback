@@ -527,6 +527,35 @@ runitback mlb probables 2026-07-04               # announced probable pitchers a
   not a record of who was announced. `lineups_<S>` and `substitutions_<S>` are who played and
   every change in order.
 
+### MLB projected lineups
+
+```bash
+runitback mlb lineups                       # → data/mlb/processed/{projected,posted}_lineups.parquet, prints the check
+runitback mlb lineups --sp rotation         # leak-free starter: the team's starter 5 team-games ago
+runitback mlb lineups --live 2027-04-01     # also upcoming games → projected_lineups_upcoming.parquet
+```
+
+`src/runitback/mlb/data/lineups.py` (work package M3) projects each team-game's starting pitcher
+and batting order from what is known before first pitch. One row per (game, side, role, spot):
+the SP and nine batters, with fielding position, handedness, the opposing starter and his hand,
+the DH rule, `source` and the game the lineup was copied from.
+
+- **Starting pitcher:** the feed's probable, as the sportsml loader uses. **Leak:** for finished
+  games the Stats API's probable is the actual starter (99.8% agree), so a late scratch counts as
+  known. `--sp rotation` is the leak-free alternative.
+- **Batting order:** the team's most recent starting lineup against a starter of the same hand as
+  this game's opposing (projected) starter, under the same DH rule (`prev_hand`), falling back to
+  the latest lineup (`prev`) and then earlier seasons. Batters who have since appeared for another
+  team are replaced by the team's latest starter at that position (`filled`); with no DH the
+  pitcher's spot gets this game's starter. The DH rule is known in advance: universal in 2020 and
+  from 2022, American League parks only before.
+- **Posted lineup:** teams post lineups a few hours before first pitch, but the Stats API keeps no
+  history of them, so `posted_lineups.parquet` uses the actual starting nine (leak: a scratch
+  after posting counts as known). For upcoming games the posted lineup is used once a team has
+  posted nine, else the projection.
+
+Results on real seasons: pending (being measured).
+
 ## NHL
 
 `runitback.nhl` so far holds the event and personnel data for the player-based wager model
