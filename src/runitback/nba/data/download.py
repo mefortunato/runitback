@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 log = logging.getLogger(__name__)
@@ -37,19 +38,25 @@ def download_season(season: int, raw_dir: Path, force: bool = False) -> Path:
 
 
 def numpy_dtypes(df: pd.DataFrame) -> pd.DataFrame:
-    """Plain numpy columns in place of pandas' nullable ones (``Int64``, ``boolean``, ``string``
-    with ``pd.NA``), as ``sportsdataverse.nba.load_nba_pbp`` can return: missing numbers become
-    NaN, missing flags False and missing strings None, as in the release files, so preprocessing
-    sees the same values whichever way a season was downloaded."""
+    """Plain numpy columns in place of pandas' nullable or pyarrow-backed ones (``Int64``,
+    ``boolean``, ``string``, ``int32[pyarrow]``, ... with ``pd.NA``), as
+    ``sportsdataverse.nba.load_nba_pbp`` can return: missing numbers become NaN, missing flags
+    False and missing strings None, as in the release files, so preprocessing sees the same values
+    whichever way a season was downloaded."""
     out = {}
     for c in df.columns:
         col = df[c]
-        if isinstance(col.dtype, pd.BooleanDtype):
+        ext = pd.api.types.is_extension_array_dtype(col.dtype)
+        if ext and pd.api.types.is_bool_dtype(col.dtype):
             col = col.fillna(False).astype(bool)
-        elif pd.api.types.is_extension_array_dtype(col.dtype) and pd.api.types.is_numeric_dtype(col.dtype):
-            col = col.astype("float64") if col.isna().any() else col.astype(col.dtype.numpy_dtype)
-        elif isinstance(col.dtype, pd.StringDtype) and col.isna().any():
-            col = col.astype(object).where(col.notna(), None)
+        elif ext and pd.api.types.is_numeric_dtype(col.dtype):
+            col = col.astype("float64") if col.isna().any() else col.to_numpy(dtype=np.float64).astype(
+                np.int64 if pd.api.types.is_integer_dtype(col.dtype) else np.float64)
+            col = pd.Series(col, index=df.index)
+        elif (ext or col.dtype == object) and col.isna().any():
+            vals = col.astype(object).to_numpy(copy=True)
+            vals[col.isna().to_numpy()] = None
+            col = pd.Series(vals, index=df.index, dtype=object)
         out[c] = col
     return pd.DataFrame(out, index=df.index)
 

@@ -170,18 +170,20 @@ RAW = PROCESSED.parent / "raw"
 
 
 @pytest.mark.skipif(not (RAW / "pbp_2002.parquet").exists(), reason="raw 2002 data not downloaded")
-def test_nullable_download_preprocesses_like_the_release_file():
-    """sportsdataverse's loader can return nullable dtypes (pd.NA team ids in 2002); load_raw
-    normalizes them so preprocessing gives the same games either way."""
+@pytest.mark.parametrize("backend", ["numpy_nullable", "pyarrow"])
+def test_nullable_download_preprocesses_like_the_release_file(backend):
+    """sportsdataverse's loader can return nullable or pyarrow-backed dtypes (pd.NA team ids and
+    texts in 2002); load_raw normalizes them so preprocessing gives the same games either way."""
     from runitback.nba.data.download import COLUMNS, numpy_dtypes
     from runitback.nba.data.preprocess import process_game
 
     plain = pd.read_parquet(RAW / "pbp_2002.parquet")
     plain = numpy_dtypes(plain[[c for c in COLUMNS if c in plain]])
-    nullable = plain.convert_dtypes()
-    assert nullable.team_id.isna().any() and isinstance(nullable.team_id.dtype, pd.Int64Dtype)
-    ids = plain.game_id.drop_duplicates().head(5)
-    for gid in ids:
+    other = plain.convert_dtypes(dtype_backend=backend)
+    assert other.team_id.isna().any() and pd.api.types.is_extension_array_dtype(other.team_id.dtype)
+    other.loc[other.index[:50], "text"] = pd.NA  # missing descriptions, as the loader gives some
+    plain.loc[plain.index[:50], "text"] = None
+    for gid in plain.game_id.drop_duplicates().head(5):
         a = process_game(plain[plain.game_id == gid])
-        b = process_game(numpy_dtypes(nullable[nullable.game_id == gid]))
+        b = process_game(numpy_dtypes(other[other.game_id == gid]))
         assert a == b
