@@ -1,0 +1,81 @@
+# College basketball player values and projected rotations (work package C3), rebuilt from the public
+# sources in the calling run, as nba-experiment-inputs.yml does for the NBA. For the C4 experiments
+# to call (or run it by hand from the Actions tab); it has no push trigger.
+#
+# Artifact, in the calling run:
+#   <gender>-player-values   data/<gender>/processed (player_games, team_games, players,
+#                            projected_lineups) and player_values/<gender> (pv.parquet, ppg.json,
+#                            values_latest.csv)
+#
+# Men's adjusted plus-minus (`cbbd: true`) fetches every 2024+ game day from CollegeBasketballData,
+# one call a day (about 150 a season), and needs the CBBD_API_KEY secret. A key's monthly call limit
+# is usually below a full backfill (experiments/cbb/README.md), so it is off by default: the men's
+# values are then the box-score values throughout.
+name: College player values
+
+on:
+  workflow_dispatch:
+    inputs:
+      gender:
+        description: "cbb (men's) or wcbb (women's)"
+        type: choice
+        options: [cbb, wcbb]
+        default: cbb
+      cbbd:
+        description: "Men's: fetch CBBD lineups (2024+) for the adjusted plus-minus"
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      gender:
+        type: string
+        default: cbb
+      cbbd:
+        type: boolean
+        default: false
+    secrets:
+      CBBD_API_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  values:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - name: Player box scores, player tables and projected rotations
+        run: |
+          G=${{ inputs.gender }}
+          runitback college download --gender $G
+          runitback college players --gender $G
+          runitback college lineups --gender $G
+      - name: CBBD lineups (men's, 2024 on)
+        if: ${{ inputs.cbbd && inputs.gender == 'cbb' }}
+        env:
+          CBBD_API_KEY: ${{ secrets.CBBD_API_KEY }}
+        run: runitback college cbbd --season 2024 --season 2025 --season 2026 --season 2027
+      - name: Weekly values and pv.parquet
+        run: |
+          G=${{ inputs.gender }}
+          runitback college player-values --gender $G
+          python scripts/college_player_values.py report --gender $G | tee player_values/$G/report.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.gender }}-player-values
+          path: |
+            data/${{ inputs.gender }}/processed
+            player_values/${{ inputs.gender }}
+          if-no-files-found: error
+          retention-days: 30
