@@ -1,5 +1,5 @@
 """Command-line interface: runitback serve, runitback <nfl|nba> download | preprocess | train |
-evaluate | calibrate | simulate | serve, runitback mlb download | process | probables, and
+evaluate | calibrate | simulate | serve, runitback mlb download | process | player-values | probables, and
 runitback nhl download | events."""
 from __future__ import annotations
 
@@ -559,6 +559,29 @@ def mlb_process(start: int = typer.Option(2015, help="first season (its run valu
     summary = build_seasons(list(range(start, end + 1)), mlb_paths.feeds_dir(), mlb_paths.processed_dir(),
                             client, workers, lookback)
     typer.echo(json.dumps(summary, indent=1))
+
+
+@mlb.command("player-values")
+def mlb_player_values(out: Path = typer.Option(Path("player_values/mlb"), help="output directory"),
+                      start: int = typer.Option(2015, help="first season of plate appearances"), end: int = 2026,
+                      first_season: int = typer.Option(2016, help="first season with pv.parquet rows"),
+                      jobs: int = 0, fielding: bool = typer.Option(False, help="also fit fielders 2-9")):
+    """Weekly plate-appearance adjusted plus-minus on RE24 run value and each team-game's lineup values
+    (pv.parquet, usage.json, values_latest.csv; runitback.mlb.player_values). Needs `runitback mlb
+    process` first."""
+    import os
+
+    from .mlb import paths as mlb_paths
+    from .mlb import player_values as pv
+    from .mlb.data import statsapi
+    from .wager.mlb.data.download import team_keys
+    _mlb_log()
+    tb = pv.load(mlb_paths.processed_dir(), list(range(start, end + 1)))
+    gv = pv.game_table(tb, first_season, jobs or os.cpu_count() or 1, cfg=pv.apm_config(fielding=fielding))
+    keys = team_keys(statsapi.default_client().get("/v1/teams", sportId=1)["teams"])
+    gv.pv = pv.to_wager_keys(gv.pv, keys)
+    pv.write_game_table(gv, out, tb.players)
+    typer.echo(f"{len(gv.pv)} team-games, {len(gv.fits)} weekly fits -> {out}")
 
 
 @mlb.command("probables")
