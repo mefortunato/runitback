@@ -134,9 +134,7 @@ def starting_lineups(lineups: pd.DataFrame) -> dict[tuple[int, str], list[tuple[
 class _History:
     """What is known before each game, updated as games are played (see :func:`projected_lineups`)."""
 
-    def __init__(self, absent: int | None = None):
-        self.absent = absent
-        self.recent = defaultdict(list)      # team -> [set of players who batted], one per game
+    def __init__(self):
         self.last = {}                       # (team, key...) -> (game_pk, lineup)
         self.pos_starters = defaultdict(list)  # (team, season, position) -> [player ids], latest last
         self.sp_order = defaultdict(list)    # (team, season) -> [starter ids], latest last
@@ -156,8 +154,7 @@ class _History:
             return source, pk, lineup, src_dh
         return "none", None, None, None
 
-    def record(self, row: dict, lineup, opp_hand: str | None, dh_used: bool, pitchers: list[int],
-               batted: set[int] = frozenset()):
+    def record(self, row: dict, lineup, opp_hand: str | None, dh_used: bool, pitchers: list[int]):
         """After a game: its starting nine (faced a starter throwing ``opp_hand``, DH used or not)
         and its pitchers in order."""
         team, season = row["team_id"], row["season"]
@@ -173,9 +170,6 @@ class _History:
                 lst.append(pid)
                 del lst[:-20]
             self.pending_team[pid] = team
-        rec = self.recent[team]
-        rec.append(set(batted) | {pid for _, pid, _ in lineup})
-        del rec[:-20]
         if pitchers:
             self.sp_order[(team, season)].append(pitchers[0])
         for pid in pitchers:
@@ -191,15 +185,6 @@ class _History:
     def with_team(self, pid: int, team: int) -> bool:
         return self.last_team.get(pid, team) == team
 
-    def available(self, pid: int, team: int) -> bool:
-        """Still with the team and, with ``absent``, batted in one of its last ``absent`` games."""
-        if not self.with_team(pid, team):
-            return False
-        rec = self.recent.get(team, [])
-        if self.absent is None or len(rec) < self.absent:
-            return True
-        return any(pid in g for g in rec[-self.absent:])
-
     def rotation_sp(self, team: int, season: int, date: str) -> int | None:
         order = self.sp_order.get((team, season), [])
         if len(order) < ROTATION:
@@ -211,7 +196,7 @@ class _History:
 
     def fill(self, team: int, season: int, pos: str, taken: set[int]) -> int | None:
         for pid in reversed(self.pos_starters.get((team, season, pos), [])):
-            if pid not in taken and self.available(pid, team):
+            if pid not in taken and self.with_team(pid, team):
                 return pid
         return None
 
@@ -235,7 +220,7 @@ def _adapt(lineup, src_dh: bool, dh: bool, sp: int | None, hist: _History, team:
         if pos == DH and not dh:   # the copied game had a DH, this one has not
             out.append((spot, sp, PITCHER, False))
             continue
-        if hist.available(pid, team):
+        if hist.with_team(pid, team):
             out.append((spot, pid, pos, False))
             continue
         new = hist.fill(team, season, pos, taken)
@@ -247,7 +232,7 @@ def _adapt(lineup, src_dh: bool, dh: bool, sp: int | None, hist: _History, team:
 
 def projected_lineups(games: pd.DataFrame, lineups: pd.DataFrame, players: pd.DataFrame,
                       lineup: str = "previous", sp: str = "probable",
-                      seasons: set[int] | None = None, absent: int | None = None) -> pd.DataFrame:
+                      seasons: set[int] | None = None) -> pd.DataFrame:
     """Projected (``lineup="previous"``) or posted (``"posted"``) lineups of every team-game in
     ``games`` (or those of ``seasons``), with the probable (``sp="probable"``) or rotation
     (``"rotation"``) starting pitcher. See the module docstring."""
@@ -259,9 +244,7 @@ def projected_lineups(games: pd.DataFrame, lineups: pd.DataFrame, players: pd.Da
                 .groupby(["game_pk", "side"]).player_id.agg(list).to_dict())
     throws = {int(k): v for k, v in zip(players.player_id, players.throws.map(throw_hand))}
     bats = {int(k): v for k, v in zip(players.player_id, players.bats)}
-    hist = _History(absent)
-    batted = lineups.dropna(subset=["batting_order"]).groupby(["game_pk", "side"]).player_id \
-        .agg(lambda v: set(int(p) for p in v)).to_dict()
+    hist = _History()
     out: list[dict] = []
     cur_date = None
     recs = tg.to_dict("records")
@@ -301,8 +284,7 @@ def projected_lineups(games: pd.DataFrame, lineups: pd.DataFrame, players: pd.Da
                 continue
             opp_sp = None if pd.isna(x["opp_sp"]) else int(x["opp_sp"])
             hist.record(x, actual, throws.get(opp_sp), any(pos == DH for _, _, pos in actual),
-                        [int(p) for p in pitchers.get((x["game_pk"], x["side"]), [])],
-                        batted.get((x["game_pk"], x["side"]), set()))
+                        [int(p) for p in pitchers.get((x["game_pk"], x["side"]), [])])
     return _types(pd.DataFrame(out, columns=COLUMNS))
 
 
