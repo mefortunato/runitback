@@ -1,6 +1,6 @@
 """Command-line interface: runitback serve, runitback <nfl|nba> download | preprocess | train |
-evaluate | calibrate | simulate | serve, runitback mlb download | process | player-values | probables, and
-runitback nhl download | events."""
+evaluate | calibrate | simulate | serve, runitback mlb download | process | lineups | player-values |
+probables, and runitback nhl download | events | lineups."""
 from __future__ import annotations
 
 import csv
@@ -374,6 +374,46 @@ def nba_train(out: Path = NBA_RUNS / "prod",
         threads=threads or None, max_games=max_games or None, init=init, min_season=min_season, device=device, amp=amp)
 
 
+@nba.command("foundation")
+def nba_foundation(root: Path = typer.Option(Path("foundation/nba"), help="fold directory"),
+                   season: list[int] = typer.Option(None, help="fold (test season, the year it ends); repeat "
+                                                               "for several. Default: the last 5 complete and the current"),
+                   train: bool = typer.Option(True, help="train a fold that has no model"),
+                   existing: bool = typer.Option(False, help="only add new games to the folds already in --root "
+                                                             "(no training)"),
+                   epochs: int = typer.Option(0, help="override the fold recipe's epochs (0 = runitback.nba.foundation.TRAIN)"),
+                   data: Path = NBA_DATA / "processed", threads: int = 0):
+    """Foundation folds (pbp32) for the NBA wager model: train missing ones, embed new games."""
+    _log()
+    from .core.foundation import default_seasons, existing_folds
+    from .nba.foundation import NBA, NBAGenerator, prepare
+    gen = NBAGenerator(epochs=epochs) if epochs else NBA
+    if existing:
+        season = existing_folds(root)
+        train = False
+    elif not season:
+        season = default_seasons(gen, data)
+    for s, what in prepare(root, data, season, train=train, threads=threads or None, gen=gen).items():
+        typer.echo(f"fold{s}: {what}")
+
+
+@nba.command("embed")
+def nba_embed(ckpt: Path = typer.Option(..., help="the fold's event-model checkpoint"),
+              out: Path = typer.Option(..., help="output directory"),
+              before_season: int = typer.Option(..., help="fit the projection on games before this season "
+                                                          "(the fold's test season)"),
+              dim: list[int] = typer.Option([32], help="projection widths; repeat for several"),
+              data: Path = NBA_DATA / "processed", threads: int = 0):
+    """Per-team-game embeddings (pooled per possession) from the NBA event model, for the wager models."""
+    import torch
+    _log()
+    if threads:
+        torch.set_num_threads(threads)
+    from .nba.embed import embed_fold
+    for d in dim:
+        typer.echo(embed_fold(ckpt, data, out, before_season, d))
+
+
 @nba.command("evaluate")
 def nba_evaluate(ckpt: Path = NBA_RUNS / "eval" / "model.pt", sims: int = 100, games: int = 150,
                  out: Path = NBA_RUNS / "eval" / "report.json",
@@ -510,6 +550,19 @@ def nhl_events(start: int = 2011, end: int = 2027,
     typer.echo(json.dumps(summary, indent=1, default=str))
 
 
+@nhl.command("lineups")
+def nhl_lineups(start: int = typer.Option(0, help="first season (0 = every events_<season>.parquet)"),
+                end: int = 2027):
+    """Each game's projected lines and goalie from the team's previous game
+    (data/nhl/processed/projected_lineups.parquet, plus played_lineups.parquet). Goalie rows carry
+    both (a) the previous starter (`goalie_prev`) and (b) the actual starter, known at puck drop
+    (`goalie_actual`). Prints the check against the games as played."""
+    from .nhl.data.lineups import build_lineups
+    _log()
+    seasons = range(start, end + 1) if start else None
+    typer.echo(json.dumps(build_lineups(NHL_DATA / "processed", seasons), indent=1, default=str))
+
+
 def _write_result(res, out: Path | None, scores: bool) -> None:
     if out and out.suffix == ".csv":
         with out.open("w", newline="") as f:
@@ -559,6 +612,23 @@ def mlb_process(start: int = typer.Option(2015, help="first season (its run valu
     summary = build_seasons(list(range(start, end + 1)), mlb_paths.feeds_dir(), mlb_paths.processed_dir(),
                             client, workers, lookback)
     typer.echo(json.dumps(summary, indent=1))
+
+
+@mlb.command("lineups")
+def mlb_lineups(sp: str = typer.Option("probable", help="starting pitcher: probable (the feed's, leaks a "
+                                                         "late scratch) or rotation (5 team-games ago)"),
+                season: list[int] = typer.Option(None, help="seasons to project (default: all processed; "
+                                                             "earlier ones are still read as history)"),
+                live: list[str] = typer.Option(None, help="also project these dates' upcoming games "
+                                                          "(YYYY-MM-DD) from the probables and posted lineups")):
+    """Projected lineups (probable starter, previous lineup vs his hand) and the posted stand-in for
+    every processed game: data/mlb/processed/{projected,posted}_lineups.parquet
+    (runitback.mlb.data.lineups); prints the check vs actual."""
+    from .mlb import paths as mlb_paths
+    from .mlb.data.lineups import build_lineups
+    _mlb_log()
+    typer.echo(json.dumps(build_lineups(mlb_paths.processed_dir(), seasons=season or None, sp=sp,
+                                        live_dates=live or None), indent=1))
 
 
 @mlb.command("player-values")

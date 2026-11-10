@@ -417,6 +417,7 @@ runitback nba train --out runs/nba/eval --val-season 2026        # hold out the 
 runitback nba evaluate --ckpt runs/nba/eval/model.pt
 runitback nba calibrate --ckpt runs/nba/eval/model.pt --season 2025   # strength_scale by Brier
 runitback nba train --out runs/nba/prod                           # production model on all data
+runitback nba foundation --root foundation/nba                  # pbp32 folds (one generator per test season) for the wager model
 runitback serve                                                   # http://127.0.0.1:8000/nba
 runitback nba simulate BOS NYK --season 2027 --n 1000
 runitback nba season --season 2027 --seed 0 --out season.json   # full season + playoffs
@@ -527,20 +528,69 @@ runitback mlb probables 2026-07-04               # announced probable pitchers a
   not a record of who was announced. `lineups_<S>` and `substitutions_<S>` are who played and
   every change in order.
 
+### MLB projected lineups
+
+```bash
+runitback mlb lineups                       # → data/mlb/processed/{projected,posted}_lineups.parquet, prints the check
+runitback mlb lineups --sp rotation         # leak-free starter: the team's starter 5 team-games ago
+runitback mlb lineups --live 2027-04-01     # also upcoming games → projected_lineups_upcoming.parquet
+```
+
+`src/runitback/mlb/data/lineups.py` (work package M3) projects each team-game's starting pitcher
+and batting order from what is known before first pitch. One row per (game, side, role, spot):
+the SP and nine batters, with fielding position, handedness, the opposing starter and his hand,
+the DH rule, `source` and the game the lineup was copied from.
+
+- **Starting pitcher:** the feed's probable, as the sportsml loader uses. **Leak:** for finished
+  games the Stats API's probable is the actual starter (99.8% agree), so a late scratch counts as
+  known. `--sp rotation` is the leak-free alternative.
+- **Batting order:** the team's most recent starting lineup against a starter of the same hand as
+  this game's opposing (projected) starter, under the same DH rule (`prev_hand`), falling back to
+  the latest lineup (`prev`) and then earlier seasons. Batters who have since appeared for another
+  team are replaced by the team's latest starter at that position (`filled`); with no DH the
+  pitcher's spot gets this game's starter. The DH rule is known in advance: universal in 2020 and
+  from 2022, American League parks only before.
+- **Posted lineup:** teams post lineups a few hours before first pitch, but the Stats API keeps no
+  history of them, so `posted_lineups.parquet` uses the actual starting nine (leak: a scratch
+  after posting counts as known). For upcoming games the posted lineup is used once a team has
+  posted nine, else the projection.
+
+Check against what happened, 2018-2025 (`runitback mlb lineups`; team-games with a previous
+game; "previous game" is the naive baseline of the team's last lineup as played):
+
+| Season | Team-games | Probable SP started | Rotation SP started | Batters right (prev. game) | Right spot (prev. game) | Lineup from same hand |
+|---|---|---|---|---|---|---|
+| 2018 | 4,898 | 99.9% | 77.2% | 78.7% (74.8%) | 54.4% (49.6%) | 98.1% |
+| 2019 | 4,932 | 99.7% | 78.3% | 77.9% (74.7%) | 54.0% (49.6%) | 97.6% |
+| 2020 | 1,902 | 99.6% | 64.9% | 78.5% (74.4%) | 52.3% (47.4%) | 96.8% |
+| 2021 | 4,932 | 99.8% | 68.9% | 78.2% (74.8%) | 52.1% (47.6%) | 97.6% |
+| 2022 | 4,940 | 99.7% | 69.4% | 78.4% (74.2%) | 50.9% (46.2%) | 98.8% |
+| 2023 | 4,942 | 99.9% | 74.1% | 79.6% (74.4%) | 53.3% (46.9%) | 98.8% |
+| 2024 | 4,944 | 99.9% | 76.1% | 80.7% (75.6%) | 55.0% (48.6%) | 98.8% |
+| 2025 | 4,954 | 99.8% | 76.6% | 80.9% (76.1%) | 54.9% (47.9%) | 98.8% |
+
+The same-hand lookup beats the previous game every season, by 3.1-5.1 points of starting batters.
+The DH rule matches the lineups of all 18,237 games. Dropping batters who had not batted in the
+team's last 3-8 games (likely injured) moved the hit rate by -0.1 to +0.3 points, so it was left
+out. The probable SP's ~99.8% is the leak described above, not a forecast; the rotation rule (65-78%)
+is what a leak-free starter guess gets.
+
 ## NHL
 
-`runitback.nhl` so far holds the event and personnel data for the player-based wager model
-(`docs/multisport/PLAN.md`, H1). There is no simulator yet.
+`runitback.nhl` so far holds the event and personnel data and the projected lineups for the
+player-based wager model (`docs/multisport/PLAN.md`, H1 and H3). There is no simulator yet.
 
 ```bash
 runitback nhl download --start 2011 --end 2027   # → data/nhl/raw/: play-by-play, schedule, players, gap shift charts
 runitback nhl events --start 2011 --end 2027     # → data/nhl/processed/{events_<season>,games,players}.parquet, prints coverage
+runitback nhl lineups                            # → data/nhl/processed/{played,projected}_lineups.parquet, prints the check vs actual
 ```
 
 | Piece | File | What it does |
 |---|---|---|
 | Download | `src/runitback/nhl/data/download.py` | sportsdataverse `nhl_pbp_full` (each release file checked by its `season` column; the file names are inconsistent), the schedule and player positions (`api.nhle.com/stats/rest`), shift charts for gap games |
 | Events | `src/runitback/nhl/data/events.py` | one row per event with the skaters (`home_1..6`, `away_1..6`) and goalies on ice, strength from the home side, `xg`; `CHANGE` rows attributed to games and sides; games with missing personnel rebuilt from the shift charts |
+| Lineups | `src/runitback/nhl/data/lineups.py` | each team-game as played (TOI, 5-on-5 lines and pairs, starting goalie) and its projected lineup from the previous game, with two starting-goalie options |
 
 Coverage (share of play events with skaters on ice for both teams, after the shift-chart fallback):
 99.9–100% in every season from 2010-11. The fallback rebuilds 176 games of 2019-20 (every event but
@@ -549,6 +599,52 @@ no personnel in the release) and about 150 partial games elsewhere. Rebuilt from
 2020-21). Gaps that remain: **2014-15 is not in the release** (no events at all), **2009-10 has
 no personnel** in either source (events and `xg` only), and 17 games of April 2025 have no
 overtime personnel (the NHL API has no shift charts for them).
+
+**Projected lineups** (`runitback nhl lineups`, `runitback.nhl.data.lineups`; work package H3).
+`played_lineups.parquet` rebuilds every team-game as played from the events: the skaters who
+dressed, their TOI and 5-on-5 TOI, forward lines and defense pairs (grouped greedily by shared
+5-on-5 ice time and numbered by TOI), and the starting goalie (in net at the game's first event).
+`projected_lineups.parquet` gives each team-game the **previous game's** skaters, lines and TOI.
+Nothing from the game itself is used for them. The starting goalie has no history of announced
+starters, so the goalie rows carry both options, and `lineup(proj, goalie=...)` picks one:
+
+- **(a) `goalie_prev`**: the previous game's starter. Leak-free.
+- **(b) `goalie_actual`**: the actual starter, treated as known at puck drop. **This leaks.**
+  Teams confirm starters on game day (morning skate, warm-ups), so a closing line has usually
+  priced him in. But a backtest with (b) also knows him in games where the line or the
+  prediction was made before the announcement (opening lines, morning refits), and in the rare
+  game where the announced starter is scratched in warm-ups. Rows that use it are flagged
+  `known_at_drop`. Only the starter's identity comes from the game, not his TOI or any result.
+
+Against the games as played (`evaluate`, by season: 2021-25 is the mean of 2020-21 to 2024-25,
+about 2,600 team-games a season; the range covers every complete season):
+
+| | 2021-25 | range 2011-2026 |
+|---|---|---|
+| dressed skaters projected | 93.6% | 92.7–94.6% |
+| all 18 right | 31.5% | 26–35% |
+| forwards on the projected line / D on the projected pair | 46.4% / 55.6% | 44–51% / 52–56% |
+| TOI error per skater (minutes) | 3.63 | 3.46–3.83 |
+| **(a) previous starter starts** | **47.1%** | 66.5% (2013) → 43.5% (2026) |
+| (a) on the second night of a back-to-back (15% of team-games) | 11.1% | 45% (2013) → 4.5% (2024) |
+| (b) differs from (a): games where the leak adds information | 52.9% | 34–56% |
+| leak-free reference rule (`usual_starter`, not a projection mode) | 64.5% | 62–72% |
+
+- **(a) is a weak projection, and getting weaker.** Teams now split starts: since 2020-21 the
+  previous starter starts fewer than half the time, and almost never on the second night of a
+  back-to-back. So (b) knows the starter in more than half the games where (a) does not.
+- **A schedule-aware rule recovers about a third of the gap without leaking.**
+  `usual_starter` (the goalie with the most starts in the team's last 10 games; on a back-to-back,
+  the most frequent one who did not start the night before) is right in 64.5% of 2021-25
+  team-games. It is reported by `evaluate` only. Whether H6 should use it as a third option is
+  left to that package.
+- **Skaters are stable; lines are not.** About one dressed skater changes per team-game, but
+  only about half the forwards stay on the same rebuilt line, so line slots are noisy and
+  group-level (F / D) sums are the safer input. A season opener keeps 63% of the dressed
+  skaters (47% in 2015-16, whose previous game is in 2013-14, because 2014-15 is missing).
+  Seasons are named by the year they end (2025 = 2024-25), as in the events tables.
+- **Known gaps.** No injury or roster information: a player hurt in the previous game or traded
+  since stays in. There is no live (upcoming-game) projection yet.
 
 ### NHL rules engine
 
