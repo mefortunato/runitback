@@ -5,10 +5,12 @@ real lineups and personnel), which gives one hidden state per play. A team-game'
 mean hidden state over the plays the team had the ball (``off_*``) next to the mean over the plays
 it defended (``def_*``), so both teams of a game get their own row, from their own side.
 
-``reduce`` projects the raw embeddings onto principal components fit only on games before a given
-season (the fold's test season), so a walk-forward wager model never sees a projection fit on the
-games it predicts. The result is a table keyed by (game_id, team) with ``_pbp_<i>`` columns that the
-wager transformer joins onto its history tokens (``runitback.wager``, ``pbp_embeddings``).
+``reduce`` (sport-agnostic, ``runitback.core.foundation``) projects the raw embeddings onto principal
+components fit only on games before a given season (the fold's test season), so a walk-forward wager
+model never sees a projection fit on the games it predicts. The result is a table keyed by
+(game_id, team) with ``_pbp_<i>`` columns that the wager transformer joins onto its history tokens
+(``runitback.wager``, ``pbp_embeddings``). ``embed_fold`` / ``update_fold`` run the NFL generator
+through the generic fold code (``runitback.nfl.foundation.NFL``).
 
 ``lower_states`` returns each game's per-play states after the first ``n_layers - k`` blocks, so the
 top ``k`` blocks can be fine-tuned on the wager loss without recomputing the frozen ones.
@@ -22,13 +24,17 @@ import numpy as np
 import pandas as pd
 import torch
 
+from ..core import foundation
+from ..core.foundation import (  # noqa: F401  (re-exported: the fold's PCA)
+    PREFIX,
+    project,
+    reduce,
+)
 from .model.dataset import TeamSeasonVocab, collate, encode_games
 from .model.lineups import CoachVocab, LineupData, PlayerVocab
 from .model.transformer import ModelConfig, PlayTransformer
 
 log = logging.getLogger(__name__)
-
-PREFIX = "_pbp_"
 
 
 def load_foundation(ckpt: Path) -> tuple[PlayTransformer, TeamSeasonVocab, dict]:
@@ -111,31 +117,6 @@ def game_embeddings(ckpt: Path, data_dir: Path, batch_size: int = 32, game_ids=N
     return pd.concat([pd.DataFrame(rows, columns=["game_id", "team", "season"]), out], axis=1)
 
 
-def reduce(raw: pd.DataFrame, before_season: int, dim: int = 32) -> tuple[pd.DataFrame, dict]:
-    """Project raw embeddings onto the top `dim` principal components of the games before
-    `before_season` (standardized per column on those games). Returns the ``_pbp_*`` table and the
-    projection (mean, std, components, explained variance)."""
-    x = raw.filter(regex=r"^(off|def)_\d+$").to_numpy(np.float64)
-    fit = (raw.season < before_season).to_numpy()
-    mean, std = x[fit].mean(0), x[fit].std(0) + 1e-6
-    z = (x - mean) / std
-    _, s, vt = np.linalg.svd(z[fit], full_matrices=False)
-    comp = vt[:dim]
-    var = (s ** 2) / (s ** 2).sum()
-    fitted = {"mean": mean, "std": std, "components": comp, "explained": var[:dim]}
-    return project(raw, fitted), fitted
-
-
-def project(raw: pd.DataFrame, proj) -> pd.DataFrame:
-    """Raw embeddings onto a fold's stored projection (``reduce``'s, or its ``pca_<dim>.npz``)."""
-    x = raw.filter(regex=r"^(off|def)_\d+$").to_numpy(np.float64)
-    z = ((x - proj["mean"]) / proj["std"]) @ np.asarray(proj["components"]).T
-    out = raw[["game_id", "team", "season"]].copy().reset_index(drop=True)
-    for j in range(z.shape[1]):
-        out[f"{PREFIX}{j}"] = z[:, j].astype(np.float32)
-    return out
-
-
 @torch.no_grad()
 def lower_states(model: PlayTransformer, items: list[dict], trainable: int, batch_size: int = 32
                  ) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
@@ -154,37 +135,14 @@ def lower_states(model: PlayTransformer, items: list[dict], trainable: int, batc
 
 def embed_fold(ckpt: Path, data_dir: Path, out: Path, before_season: int, dim: int = 32) -> Path:
     """Write <out>/raw.parquet (per team-game raw embeddings), <out>/pbp_<dim>.parquet (PCA fit on
-    games before `before_season`) and <out>/pca_<dim>.npz."""
-    out.mkdir(parents=True, exist_ok=True)
-    raw_path = out / "raw.parquet"
-    if raw_path.exists():
-        raw = pd.read_parquet(raw_path)
-    else:
-        raw = game_embeddings(ckpt, data_dir)
-        raw.to_parquet(raw_path)
-    red, proj = reduce(raw, before_season, dim)
-    path = out / f"pbp_{dim}.parquet"
-    red.to_parquet(path)
-    np.savez(out / f"pca_{dim}.npz", **proj)
-    log.info("fold %d: %d team-games, %d dims explain %.1f%% of the variance", before_season, len(red), dim,
-             100 * proj["explained"].sum())
-    return path
+    games before `before_season`) and <out>/pca_<dim>.npz (runitback.core.foundation.embed_fold)."""
+    from .foundation import NFL
+    return foundation.embed_fold(NFL, ckpt, data_dir, out, before_season, dim)
 
 
 def update_fold(ckpt: Path, data_dir: Path, out: Path, dim: int = 32) -> tuple[Path, int]:
     """Add the played games missing from <out>/pbp_<dim>.parquet (e.g. this week's) with the
-    fold's stored projection: earlier rows and the projection stay as they are, so a wager model
-    fit on the table sees the same numbers. Returns the table and how many games were added."""
-    path = out / f"pbp_{dim}.parquet"
-    table = pd.read_parquet(path)
-    with np.load(out / f"pca_{dim}.npz") as f:
-        proj = {k: f[k] for k in f.files}
-    games = pd.read_parquet(data_dir / "games.parquet", columns=["game_id"])
-    played = pd.read_parquet(data_dir / "plays.parquet", columns=["game_id"]).game_id.unique()
-    new = sorted(set(games.game_id) & set(played) - set(table.game_id))
-    if new:
-        add = project(game_embeddings(ckpt, data_dir, game_ids=new), proj)
-        table = pd.concat([table, add], ignore_index=True)
-        table.to_parquet(path)
-    log.info("%s: %d team-games, %d games added", path, len(table), len(new))
-    return path, len(new)
+    fold's stored projection (runitback.core.foundation.update_fold). Returns the table and how
+    many games were added."""
+    from .foundation import NFL
+    return foundation.update_fold(NFL, ckpt, data_dir, out, dim)
