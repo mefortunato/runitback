@@ -1,5 +1,6 @@
-"""Command-line interface: runitback serve, and runitback <nfl|nba> download | preprocess | train |
-evaluate | calibrate | simulate | serve."""
+"""Command-line interface: runitback serve, runitback <nfl|nba> download | preprocess | train |
+evaluate | calibrate | simulate | serve, runitback mlb download | process | probables, and
+runitback nhl download | events."""
 from __future__ import annotations
 
 import csv
@@ -10,19 +11,25 @@ from pathlib import Path
 import typer
 
 from .nba import paths as nba_paths
+from .nhl import paths as nhl_paths
 from .nfl.paths import data_dir, default_checkpoint, runs_dir
 
 app = typer.Typer(add_completion=False, help="Run It Back: simulate sports games one play at a time")
 nfl = typer.Typer(add_completion=False, help="NFL: data, training, evaluation, simulation and the web app")
 nba = typer.Typer(add_completion=False, help="NBA: data, training, evaluation, simulation and the web app")
 app.add_typer(nfl, name="nfl")
+nhl = typer.Typer(add_completion=False, help="NHL: event and personnel data")
+mlb = typer.Typer(add_completion=False, help="MLB: plate-appearance data from MLB's Stats API")
 app.add_typer(nba, name="nba")
+app.add_typer(mlb, name="mlb")
+app.add_typer(nhl, name="nhl")
 DATA = data_dir()
 RUNS = runs_dir()
 DEFAULT_CKPT = default_checkpoint()
 NBA_DATA = nba_paths.data_dir()
 NBA_RUNS = nba_paths.runs_dir()
 NBA_CKPT = nba_paths.default_checkpoint()
+NHL_DATA = nhl_paths.data_dir()
 
 
 def _log():
@@ -301,6 +308,44 @@ def nba_players(start: int = 2015, end: int = 2027):
     typer.echo(json.dumps(summary, indent=1))
 
 
+@nba.command("lineups")
+def nba_lineups(roster: bool = typer.Option(True, help="candidates are the game's box-score roster (else the "
+                                                         "team's last 5 games' rotation, injury DNPs removed only)"),
+                live: bool = typer.Option(False, help="also project ESPN's upcoming games (rosters, /injuries, "
+                                                      "posted starters)")):
+    """Projected pre-game lineups (minutes, starters, ruled out) for every game in player_games.parquet:
+    data/nba/processed/projected_lineups.parquet (runitback.nba.data.lineups); prints the check vs actual."""
+    from .nba.data.lineups import build_lineups
+    _log()
+    typer.echo(json.dumps(build_lineups(NBA_DATA / "processed", roster=roster, live=live), indent=1))
+
+
+@nba.command("player-values")
+def nba_player_values(out: Path = typer.Option(Path("player_values/nba"), help="output directory"),
+                      start: int = typer.Option(2015, help="first season of possessions"), end: int = 2027,
+                      first_season: int = typer.Option(2016, help="first season with pv.parquet rows"),
+                      jobs: int = 0, rebuild: bool = typer.Option(False, help="rebuild possessions.parquet")):
+    """Weekly possession-level adjusted plus-minus and each team-game's lineup values (pv.parquet,
+    slots.json, values_latest.csv; runitback.nba.player_values). Needs `runitback nba players` first."""
+    import os
+
+    import pandas as pd
+
+    from .nba import player_values as pv
+    _log()
+    proc, raw = NBA_DATA / "processed", NBA_DATA / "raw"
+    seasons = list(range(start, end + 1))
+    path = proc / "possessions.parquet"
+    poss = pv.build_possessions(seasons, raw, proc) if rebuild or not path.exists() else pd.read_parquet(path)
+    poss = poss[poss.season.isin(seasons)]
+    poss, pg = pv.franchise_only(poss, pd.read_parquet(proc / "player_games.parquet"))
+    players = pd.read_parquet(proc / "players.parquet")
+    gv = pv.game_table(poss, pg, players, first_season, jobs or os.cpu_count() or 1)
+    gv.pv = pv.to_wager_teams(gv.pv, raw, seasons)
+    pv.write_game_table(gv, out, players)
+    typer.echo(f"{len(gv.pv)} team-games, {len(gv.fits)} weekly fits -> {out}")
+
+
 @nba.command("preprocess")
 def nba_preprocess(start: int = 2015, end: int = 2027):
     """Convert raw play-by-play to engine/model events and report engine replay agreement."""
@@ -424,6 +469,47 @@ def nba_serve(ckpt: Path = NBA_CKPT, host: str = "127.0.0.1", port: int = 8000):
     _serve(host, port, nba_ckpt=ckpt)
 
 
+# ---------------------------------------------------------------- NHL
+
+@nhl.command("download")
+def nhl_download(start: int = typer.Option(2011, help="first season (the year it ends: 2011 = 2010-11, the "
+                                                      "first with personnel)"),
+                 end: int = 2027, force: bool = False,
+                 refresh_latest: bool = typer.Option(True, help="re-download the last season even if cached "
+                                                                "(it may still be in progress)"),
+                 shifts: bool = typer.Option(True, help="fetch the shift charts of games whose personnel is "
+                                                        "missing from the release"),
+                 validate_games: int = typer.Option(0, help="also fetch this many complete games' shift charts "
+                                                            "per season, to check the rebuild (`events`)")):
+    """Download the nhl_pbp_full play-by-play (sportsdataverse), the schedule and players (NHL stats API),
+    and shift charts for the gaps, into data/nhl/raw."""
+    from .nhl.data.download import download_players, download_schedule, download_season, download_shifts
+    from .nhl.data.events import shift_games
+    _log()
+    raw = NHL_DATA / "raw"
+    seasons = list(range(start, end + 1))
+    for s in seasons:
+        latest = force or (refresh_latest and s == end)
+        typer.echo(f"{s}: {download_season(s, raw, latest)}")
+        download_schedule(s, raw, latest)
+        download_players(s, raw, latest)
+    if shifts:
+        for s, games in shift_games(seasons, raw, validate_games).items():
+            typer.echo(f"{s}: shift charts for {len(games)} games, {download_shifts(games, raw, force)} fetched")
+
+
+@nhl.command("events")
+def nhl_events(start: int = 2011, end: int = 2027,
+               validate_games: int = typer.Option(0, help="rebuild this many complete games per season from "
+                                                          "their shift charts and report the agreement")):
+    """Events table with the skaters and goalies on ice (data/nhl/processed/events_<season>.parquet), plus
+    games.parquet and players.parquet. Prints a per-season coverage summary."""
+    from .nhl.data.events import build_events
+    _log()
+    summary = build_events(range(start, end + 1), NHL_DATA / "raw", NHL_DATA / "processed", validate_games)
+    typer.echo(json.dumps(summary, indent=1, default=str))
+
+
 def _write_result(res, out: Path | None, scores: bool) -> None:
     if out and out.suffix == ".csv":
         with out.open("w", newline="") as f:
@@ -436,6 +522,51 @@ def _write_result(res, out: Path | None, scores: bool) -> None:
     if out and out.suffix != ".csv":
         out.write_text(json.dumps(d, indent=1))
     typer.echo(json.dumps({k: v for k, v in d.items() if k != "margin_hist"}, indent=1))
+
+# ---------------------------------------------------------------- MLB
+
+def _mlb_log():
+    _log()
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # one line per feed request otherwise
+
+
+@mlb.command("download")
+def mlb_download(start: int = typer.Option(2015, help="first season"), end: int = 2026,
+                 workers: int = typer.Option(4, help="download threads (they share one throttle)"),
+                 min_interval: float = typer.Option(0.1, help="seconds between requests, all threads")):
+    """Cache every finished game's Stats API live feed (data/mlb/raw/feeds; cached games are not
+    requested again)."""
+    from .mlb import paths as mlb_paths
+    from .mlb.data import statsapi
+    from .mlb.data.ingest import download
+    _mlb_log()
+    client = statsapi.Client(min_interval=min_interval)
+    typer.echo(json.dumps(download(list(range(start, end + 1)), mlb_paths.feeds_dir(), client, workers)))
+
+
+@mlb.command("process")
+def mlb_process(start: int = typer.Option(2015, help="first season (its run values need the season "
+                                                     "before it, so start one season early)"),
+                end: int = 2026, workers: int = 4, min_interval: float = 0.1,
+                lookback: int = typer.Option(1, help="seasons of run expectancy behind each season")):
+    """Plate-appearance, games, lineups, substitutions and players tables per season
+    (data/mlb/processed), downloading any feed not cached yet."""
+    from .mlb import paths as mlb_paths
+    from .mlb.data import statsapi
+    from .mlb.data.ingest import build_seasons
+    _mlb_log()
+    client = statsapi.Client(min_interval=min_interval)
+    summary = build_seasons(list(range(start, end + 1)), mlb_paths.feeds_dir(), mlb_paths.processed_dir(),
+                            client, workers, lookback)
+    typer.echo(json.dumps(summary, indent=1))
+
+
+@mlb.command("probables")
+def mlb_probables(date: str = typer.Argument(..., help="YYYY-MM-DD")):
+    """Announced probable pitchers and posted batting orders for a date's games, as listed now."""
+    from .mlb.data.statsapi import probables
+    for row in probables(date):
+        typer.echo(json.dumps(row))
 
 
 if __name__ == "__main__":

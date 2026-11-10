@@ -20,6 +20,12 @@ def fixture_games(sport: str) -> pd.DataFrame:
         from .test_wnba import TODAY, schedule
 
         return build_games(schedule(), pd.DataFrame(), today=TODAY)
+    if sport == "nhl":
+        from runitback.wager.nhl.data.download import build_games
+
+        from .test_nhl import LINES, REPORTS, SCHEDULE, TEAMS, TODAY
+
+        return build_games(SCHEDULE, REPORTS, TEAMS, LINES, today=TODAY)
     from runitback.wager.mlb.data.download import build_games
 
     from .test_mlb import LINES, LOGS, PEOPLE, SCHEDULE, TEAMS, TODAY
@@ -27,7 +33,7 @@ def fixture_games(sport: str) -> pd.DataFrame:
     return build_games([SCHEDULE], LOGS, PEOPLE, TEAMS, LINES, today=TODAY)
 
 
-@pytest.mark.parametrize("sport", ["cbb", "wcbb", "wnba", "mlb"])  # nhl is ported later
+@pytest.mark.parametrize("sport", ["cbb", "wcbb", "wnba", "nhl", "mlb"])
 def test_views_show_their_games(sport):
     assert sport in BUILTIN_VIEWS
     view = get_view(sport)

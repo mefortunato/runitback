@@ -1,1 +1,1 @@
-"""NHL: rules engine and vocabulary (the generator model and data pipeline come later)."""
+"""Run It Back — NHL: event and personnel data, and the rules engine (the simulator comes later)."""
