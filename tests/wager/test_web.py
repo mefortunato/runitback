@@ -726,6 +726,26 @@ def test_trust_is_the_brier_optimal_shrink_toward_the_market():
     assert fake._trust()["moneyline"] == pytest.approx(0.5, abs=0.05)
 
 
+def test_nba_playoffs_come_from_the_bracket():
+    from runitback.wager.web.sports.nba import playoffs
+
+    rows = [
+        # season, day, team, opp_team, result (team's margin)
+        (2025, 200, "BOS", "MIA", 9), (2025, 200, "MIA", "BOS", -9),  # 1st round
+        (2025, 220, "BOS", "NYK", -4), (2025, 220, "NYK", "BOS", 4),
+        (2025, 221, "OKC", "MIN", 12), (2025, 221, "MIN", "OKC", -12),
+        (2025, 230, "NYK", "OKC", 3), (2025, 230, "OKC", "NYK", -3),
+    ]  # fmt: skip
+    for day in (232, 234, 236, 238):  # the Finals
+        rows += [(2025, day, "OKC", "NYK", 7), (2025, day, "NYK", "OKC", -7)]
+    columns = ["season", "day", "team", "opp_team", "result"]
+    games = pd.DataFrame(rows, columns=columns).assign(game_type="playoffs")
+    # until the champion's fourth win, nothing is marked
+    assert playoffs(games[games.day < 238]) == {}
+    assert playoffs(games) == {
+        2025: {"OKC": "champion", "NYK": "runner_up", "BOS": "semifinal",
+               "MIN": "semifinal"}
+    }  # fmt: skip
 
 
 def test_views_can_name_dates_and_cap_the_upcoming_ones(webdata, monkeypatch):
@@ -752,6 +772,19 @@ def test_views_can_name_dates_and_cap_the_upcoming_ones(webdata, monkeypatch):
     assert season["date_names"] == [f"Game day {d}" for d in season["dates"]]
 
 
+def test_nba_view_stats_and_dates_on_nba_games():
+    from runitback.wager.nba.data.download import build_games
+    from runitback.wager.web.sports.nba import VIEW, date_name, kickoff
+
+    from .test_nba import BOX, LINES, SCHEDULE, TODAY
+
+    games = build_games(SCHEDULE, BOX, LINES, today=TODAY)
+    played = games[games.result.notna()]
+    for stat in VIEW.stats:
+        assert stat.value(played).notna().all(), stat.key
+    first = games[games.game_id == "2"].iloc[0]
+    assert date_name(first) == "Oct 25"
+    assert kickoff(first) == "2024-10-25 22:00"
 
 
 def test_build_reuses_unchanged_backtest_seasons(tmp_path, monkeypatch):

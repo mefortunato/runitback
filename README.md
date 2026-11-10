@@ -15,7 +15,11 @@ helpers. One server (`runitback.server`) serves every sport's API and the web ap
 
 The predictions pages come from `runitback.wager`, the game-level models ported from sportsml
 (`runitback-wager <sport> ...`, the `wager` extra). They are precomputed static JSON; see
-[Predictions data](#predictions-data).
+[Predictions data](#predictions-data). The wager models cover `nfl`, `nba`, `wnba`, `cbb` (men's
+college basketball) and `wcbb` (women's). The basketball loaders and settings are sportsml's
+unchanged; sportsml's README has the details. Only the NFL is on the site so far. The basketball
+port was checked against sportsml by `.github/workflows/basketball-port.yml`; results are in
+`experiments/<sport>/README.md`.
 
 ## NFL
 

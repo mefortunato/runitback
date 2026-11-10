@@ -43,4 +43,10 @@ EQUIVALENT_CODE: dict[str, tuple[str, ...]] = {
     "c6b81294866cf1e201f8fb96cee17ab6691da011000a10ad0d5200f00f2904a3": (
         "8158c871cd70aabecfa85bd55019e1c18a2e199ae98a4557db53f62e95c2342c",
     ),
+    # S4a: the basketball sports ported from sportsml and added to BUILTIN_SPORTS (core/sport.py);
+    # nothing the NFL trains on or predicts with changed.
+    # nfl
+    "9e42a198a6dae313e4afed914cbe9dcff811f3aba007d90f87c86faaa1c30a9e": (
+        "d51c92ffb1132c3abdc0a5ece6a07f8f881b88a35ae694c7b4ff5b1e73246922",
+    ),
 }
