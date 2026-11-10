@@ -19,3 +19,4 @@ build/
 /experiments/**/*.json
 /experiments/**/*.txt
 /experiments/**/*.parquet
+/player_values/
