@@ -77,8 +77,45 @@ def espn_provider(**kw):
     return provider, calls
 
 
+def test_espn_lines_of_the_coming_games_from_the_home_side():
+    provider, calls = espn_provider()
+    lines = provider.fetch()
+    assert calls == ["11"]  # only the upcoming FBS game within 8 days
+    assert lines["book"].tolist() == ["DraftKings"]  # no opening or live lines
+    dk = lines.iloc[0]
+    assert (dk.home, dk.away, dk.spread, dk.spread_open) == (
+        "Georgia",
+        "Auburn",
+        3.0,
+        2.5,
+    )
+    assert (dk.spread_home_odds, dk.spread_away_odds, dk.ml_home, dk.ml_away) == (
+        -105,
+        -115,
+        -150,
+        130,
+    )
+    assert (dk.total, dk.total_open, dk.over_odds) == (52.5, 51.5, -110)
+    assert dk.commence == pd.Timestamp("2099-12-31T20:00Z")
+    provider, calls = espn_provider(days=2)
+    assert provider.fetch().empty and calls == []
 
 
+def test_espn_pools_fcs_sides_like_the_games_table():
+    from .cfb_fixtures import SCHEDULE, item
+
+    game = SCHEDULE.iloc[[0]].assign(
+        completed=False, home_points=None, away_points=None,
+        start_date="2024-11-23T19:00:00.000Z",
+    )  # fmt: skip
+    provider = ESPN(
+        schedule=game,
+        odds=lambda gid: [item("DraftKings", -40.5, 55.5)],
+        today=datetime.datetime(2024, 11, 20, tzinfo=datetime.timezone.utc),
+    )
+    lines = provider.fetch()
+    assert list(lines[["home", "away"]].iloc[0]) == ["Alabama", "FCS"]
+    assert lines["spread"].iloc[0] == 40.5
 
 
 def card(game_id, home, away, kickoff):

@@ -113,13 +113,13 @@ def foundation(root: Path = typer.Option(Path("foundation/nfl"), help="fold dire
                data: Path = DATA / "processed", threads: int = 0):
     """Foundation folds for the production wager model: train missing ones, embed new games."""
     _log()
-    from .nfl.foundation import current_season, prepare
+    from .core.foundation import default_seasons, existing_folds
+    from .nfl.foundation import NFL, prepare
     if existing:
-        season = sorted(int(d.name[4:]) for d in root.glob("fold*") if (d / "model.pt").exists())
+        season = existing_folds(root)
         train = False
     elif not season:
-        now = current_season(data)
-        season = list(range(now - 5, now + 1))
+        season = default_seasons(NFL, data)
     for s, what in prepare(root, data, season, train=train, threads=threads or None).items():
         typer.echo(f"fold{s}: {what}")
 
