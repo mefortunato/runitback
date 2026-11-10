@@ -109,7 +109,8 @@ def report(args):
         m = pd.read_csv(args.market, dtype={"game_id": str})
         m = m[(m.location == 1) & m.moneyline.abs().ge(100) & m.opp_moneyline.abs().ge(100)].set_index("game_id")
         imp = lambda o: np.where(o < 0, -o / (-o + 100), 100 / (o + 100))  # noqa: E731
-        ph, pa = imp(m.moneyline.to_numpy()), imp(m.opp_moneyline.to_numpy())
+        with np.errstate(divide="ignore"):   # np.where evaluates both branches
+            ph, pa = imp(m.moneyline.to_numpy()), imp(m.opp_moneyline.to_numpy())
         m["p_home"] = ph / (ph + pa)
         m["logit"] = np.log(m.p_home / (1 - m.p_home))
     else:
@@ -131,6 +132,7 @@ def game_level(pvt: pd.DataFrame, g: pd.DataFrame, m: pd.DataFrame | None, label
     a = pvt[pvt.team == pvt.away].set_index("game_id")
     d = pd.DataFrame({"diff": h.net - a.net, "sk": h.skaters - a.skaters, "gk": h._pv_4 - a._pv_4,
                       "season": h.season}).dropna()
+    d["season"] = d.season.astype(int)
     # the events' score: regulation and overtime goals (a shootout game is a 0 margin)
     d["margin"] = (g.home_score - g.away_score).reindex(d.index)
     d["win"] = (g.home_final > g.away_final).reindex(d.index).astype(float)
