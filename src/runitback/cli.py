@@ -303,6 +303,18 @@ def nba_players(start: int = 2015, end: int = 2027):
     typer.echo(json.dumps(summary, indent=1))
 
 
+@nba.command("lineups")
+def nba_lineups(roster: bool = typer.Option(True, help="candidates are the game's box-score roster (else the "
+                                                         "team's last 5 games' rotation, injury DNPs removed only)"),
+                live: bool = typer.Option(False, help="also project ESPN's upcoming games (rosters, /injuries, "
+                                                      "posted starters)")):
+    """Projected pre-game lineups (minutes, starters, ruled out) for every game in player_games.parquet:
+    data/nba/processed/projected_lineups.parquet (runitback.nba.data.lineups); prints the check vs actual."""
+    from .nba.data.lineups import build_lineups
+    _log()
+    typer.echo(json.dumps(build_lineups(NBA_DATA / "processed", roster=roster, live=live), indent=1))
+
+
 @nba.command("preprocess")
 def nba_preprocess(start: int = 2015, end: int = 2027):
     """Convert raw play-by-play to engine/model events and report engine replay agreement."""
