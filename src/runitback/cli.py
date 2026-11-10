@@ -280,12 +280,25 @@ def serve(ckpt: Path = DEFAULT_CKPT, host: str = "127.0.0.1", port: int = 8000):
 
 @nba.command("download")
 def nba_download(start: int = typer.Option(2015, help="first season (the year it ends: 2015 = 2014-15)"),
-                 end: int = 2027, force: bool = False):
-    """Download ESPN play-by-play via SportsDataverse."""
+                 end: int = 2027, force: bool = False,
+                 players: bool = typer.Option(True, help="also download the ESPN player box scores")):
+    """Download ESPN play-by-play (and player box scores) via SportsDataverse."""
     from .nba.data.download import download_season
     _log()
     for s in range(start, end + 1):
         typer.echo(download_season(s, NBA_DATA / "raw", force))
+        if players:
+            from .nba.data.players import download_box
+            typer.echo(download_box(s, NBA_DATA / "raw", force))
+
+
+@nba.command("players")
+def nba_players(start: int = 2015, end: int = 2027):
+    """On-court fives for every event, plus player_games and players tables (data/nba/processed)."""
+    from .nba.data.players import build_players
+    _log()
+    summary = build_players(list(range(start, end + 1)), NBA_DATA / "raw", NBA_DATA / "processed")
+    typer.echo(json.dumps(summary, indent=1))
 
 
 @nba.command("preprocess")
