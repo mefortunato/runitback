@@ -352,6 +352,7 @@ ESPN and historical ones (`GS`, `NJ`, `SEA`, ...) are mapped to the current fran
 | Preprocessing | `src/runitback/nba/data/preprocess.py` | ESPN rows → (state, event); results derived from what happens next |
 | Ratings | `src/runitback/nba/data/ratings.py` | efficiency vs league average (EWMA) and Elo |
 | Players | `src/runitback/nba/data/players.py` | on-court fives for every event (box-score starters + substitutions, period starts inferred, missing subs repaired); per-game player table (minutes, starter, DNP reason) and player directory |
+| Player values | `src/runitback/nba/player_values.py` | possessions from the play-by-play; weekly, leak-free possession-level adjusted plus-minus (offense and defense, G / F / C replacement levels) on the `runitback.core` fitter; each team-game's `pv.parquet` row (`experiments/nba/README.md`) |
 | Model | `src/runitback/nba/model/transformer.py` | core trunk; heads type → result → clock |
 | Sampler / API / routes | `src/runitback/nba/sim/`, `src/runitback/nba/server/app.py` | `simulate_games`, FastAPI |
 | Season simulator | `src/runitback/nba/sim/season.py` | schedule formula, standings and tiebreakers, play-in, playoffs |
@@ -408,6 +409,7 @@ model, more seasons and `calibrate` are the obvious next steps.
 pip install -e ".[data,dev]"
 runitback nba download --start 2015 --end 2027      # raw parquet (play-by-play + player box) → data/nba/raw/
 runitback nba players --start 2015 --end 2027       # → data/nba/processed/{on_court,player_games,players}.parquet, prints the 5-on-court check
+runitback nba player-values --start 2015 --end 2027 # → data/nba/processed/possessions.parquet; player_values/nba/{pv.parquet,slots.json,values_latest.csv}
 runitback nba preprocess --start 2015 --end 2027    # → data/nba/processed/{games,plays,ratings}.parquet, prints engine agreement
 runitback nba train --out runs/nba/eval --val-season 2026        # hold out the last 40% of 2025-26
 runitback nba evaluate --ckpt runs/nba/eval/model.pt
