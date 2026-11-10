@@ -100,7 +100,7 @@ def _toy_cfg(**kw):
         n = len(df)
         return sp.csr_matrix(np.stack([np.ones(n), df.home.to_numpy(float)], 1) * 30.0)
     return APMConfig(groups=("G", "F"), target="pts", controls=controls, sides=(("o", 1.0), ("d", -1.0)),
-                     min_events=100, decay=0.8, window=2, lam=50.0, **kw)
+                     **({"min_events": 100, "decay": 0.8, "window": 2, "lam": 50.0} | kw))
 
 
 def test_core_recovers_effects_and_signs():
@@ -135,6 +135,25 @@ def test_core_group_scale_and_clip():
     assert spread(wide, "G") > spread(plain, "G")
     clipped = fit_apm(ev, _toy_cfg(target_clip=0.1), 2023 * 1000, 2022)
     assert spread(clipped, "G") < spread(plain, "G")
+
+
+def test_core_event_weights():
+    ev, _ = _toy_events()
+    plain = fit_apm(ev, _toy_cfg(), 2023 * 1000, 2022)
+    # unit weights: the same fit
+    ones = Events(ev.frame.assign(w=1.0), ev.sides, ev.ids, ev.group)
+    pd.testing.assert_frame_equal(plain, fit_apm(ones, _toy_cfg(weight="w"), 2023 * 1000, 2022), check_exact=False,
+                                  rtol=1e-6, atol=1e-9)
+    # weight 2 on every event is the same fit as each event twice, i.e. half the penalty
+    twos = Events(ev.frame.assign(w=2.0), ev.sides, ev.ids, ev.group)
+    a = fit_apm(twos, _toy_cfg(weight="w"), 2023 * 1000, 2022)
+    b = fit_apm(ev, _toy_cfg(lam=25.0), 2023 * 1000, 2022)
+    np.testing.assert_allclose(a.value, b.value, rtol=1e-4, atol=1e-6)
+    # count_weight: the replacement threshold and the events column count the weight
+    c = fit_apm(twos, _toy_cfg(weight="w", count_weight=True, min_events=200), 2023 * 1000, 2022)
+    assert c.player_id.tolist() == a.player_id.tolist() and np.allclose(c.events, 2 * a.events)
+    half = Events(ev.frame.assign(w=0.5), ev.sides, ev.ids, ev.group)
+    assert fit_apm(half, _toy_cfg(weight="w", count_weight=True, min_events=10 ** 6), 2023 * 1000, 2022).empty
 
 
 def test_shrunk_rates():

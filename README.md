@@ -577,13 +577,15 @@ is what a leak-free starter guess gets.
 
 ## NHL
 
-`runitback.nhl` so far holds the event and personnel data and the projected lineups for the
-player-based wager model (`docs/multisport/PLAN.md`, H1 and H3). There is no simulator yet.
+`runitback.nhl` so far holds the event and personnel data, the projected lineups and the player
+values for the player-based wager model (`docs/multisport/PLAN.md`, H1, H3 and H2). There is no
+simulator yet.
 
 ```bash
 runitback nhl download --start 2011 --end 2027   # → data/nhl/raw/: play-by-play, schedule, players, gap shift charts
 runitback nhl events --start 2011 --end 2027     # → data/nhl/processed/{events_<season>,games,players}.parquet, prints coverage
 runitback nhl lineups                            # → data/nhl/processed/{played,projected}_lineups.parquet, prints the check vs actual
+runitback nhl player-values --start 2011 --end 2027  # → data/nhl/processed/{segments,shots}.parquet; player_values/nhl/{pv,pv_actual,fits,goalie_fits}.parquet, usage.json, values_latest.csv
 ```
 
 | Piece | File | What it does |
@@ -591,6 +593,7 @@ runitback nhl lineups                            # → data/nhl/processed/{playe
 | Download | `src/runitback/nhl/data/download.py` | sportsdataverse `nhl_pbp_full` (each release file checked by its `season` column; the file names are inconsistent), the schedule and player positions (`api.nhle.com/stats/rest`), shift charts for gap games |
 | Events | `src/runitback/nhl/data/events.py` | one row per event with the skaters (`home_1..6`, `away_1..6`) and goalies on ice, strength from the home side, `xg`; `CHANGE` rows attributed to games and sides; games with missing personnel rebuilt from the shift charts |
 | Lineups | `src/runitback/nhl/data/lineups.py` | each team-game as played (TOI, 5-on-5 lines and pairs, starting goalie) and its projected lineup from the previous game, with two starting-goalie options |
+| Player values | `src/runitback/nhl/player_values.py` | shift segments from the events; weekly, leak-free expected-goals adjusted plus-minus per 60 (offense and defense, F / D replacement levels) on the `runitback.core` fitter, plus goalies' goals saved above expected per shot; each team-game's `pv.parquet` row (`experiments/nhl/README.md`) |
 
 Coverage (share of play events with skaters on ice for both teams, after the shift-chart fallback):
 99.9–100% in every season from 2010-11. The fallback rebuilds 176 games of 2019-20 (every event but
