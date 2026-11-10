@@ -1,7 +1,7 @@
 """Command-line interface: runitback serve, runitback <nfl|nba> download | preprocess | train |
-evaluate | calibrate | simulate | serve, runitback mlb download | process | lineups | probables, and
-runitback nhl download | events | lineups, and runitback college download | players | lineups | cbbd |
-player-values."""
+evaluate | calibrate | simulate | serve, runitback mlb download | process | lineups | player-values |
+probables, runitback nhl download | events | lineups, runitback cfb download | players |
+player-values, and runitback college download | players | lineups | player-values."""
 from __future__ import annotations
 
 import csv
@@ -21,9 +21,11 @@ nba = typer.Typer(add_completion=False, help="NBA: data, training, evaluation, s
 app.add_typer(nfl, name="nfl")
 nhl = typer.Typer(add_completion=False, help="NHL: event and personnel data")
 mlb = typer.Typer(add_completion=False, help="MLB: plate-appearance data from MLB's Stats API")
+cfb = typer.Typer(add_completion=False, help="College football: play-by-play, players and quarterback values")
 app.add_typer(nba, name="nba")
 app.add_typer(mlb, name="mlb")
 app.add_typer(nhl, name="nhl")
+app.add_typer(cfb, name="cfb")
 college = typer.Typer(add_completion=False, help="College basketball (cbb / wcbb): player values and rotations")
 app.add_typer(college, name="college")
 DATA = data_dir()
@@ -634,12 +636,102 @@ def mlb_lineups(sp: str = typer.Option("probable", help="starting pitcher: proba
                                         live_dates=live or None), indent=1))
 
 
+@mlb.command("player-values")
+def mlb_player_values(out: Path = typer.Option(Path("player_values/mlb"), help="output directory"),
+                      start: int = typer.Option(2015, help="first season of plate appearances"), end: int = 2026,
+                      first_season: int = typer.Option(2016, help="first season with pv.parquet rows"),
+                      jobs: int = 0, fielding: bool = typer.Option(False, help="also fit fielders 2-9"),
+                      lineups: str = typer.Option("projected", help="projected (M3: probable SP, previous "
+                                                  "lineup vs his hand), posted (M3: the actual nine) or "
+                                                  "previous (the previous game's nine, the actual SP)")):
+    """Weekly plate-appearance adjusted plus-minus on RE24 run value and each team-game's lineup values
+    (pv.parquet, usage.json, values_latest.csv; runitback.mlb.player_values). Needs `runitback mlb
+    process` (and `runitback mlb lineups` for M3's lineups) first."""
+    import os
+
+    from .mlb import paths as mlb_paths
+    from .mlb import player_values as pv
+    from .mlb.data import statsapi
+    from .wager.mlb.data.download import team_keys
+    _mlb_log()
+    tb = pv.load(mlb_paths.processed_dir(), list(range(start, end + 1)))
+    proj = None if lineups == "previous" else pv.m3_lineups(mlb_paths.processed_dir(), lineups)
+    gv = pv.game_table(tb, first_season, jobs or os.cpu_count() or 1, lineups=proj,
+                       cfg=pv.apm_config(fielding=fielding))
+    keys = team_keys(statsapi.default_client().get("/v1/teams", sportId=1)["teams"])
+    gv.pv = pv.to_wager_keys(gv.pv, keys)
+    pv.write_game_table(gv, out, tb.players)
+    typer.echo(f"{len(gv.pv)} team-games, {len(gv.fits)} weekly fits -> {out}")
+
+
 @mlb.command("probables")
 def mlb_probables(date: str = typer.Argument(..., help="YYYY-MM-DD")):
     """Announced probable pitchers and posted batting orders for a date's games, as listed now."""
     from .mlb.data.statsapi import probables
     for row in probables(date):
         typer.echo(json.dumps(row))
+
+
+# ---------------------------------------------------------------- college football
+
+def _cfb_data() -> Path:
+    from .cfb import paths as cfb_paths
+    return cfb_paths.data_dir()
+
+
+@cfb.command("download")
+def cfb_download(start: int = typer.Option(2012, help="first season (the year it starts)"), end: int = 2026,
+                 force: bool = False):
+    """Download ESPN play-by-play (trimmed), player box scores and schedules via SportsDataverse
+    (data/cfb/raw)."""
+    from .cfb.data.download import download_season
+    _log()
+    for s in range(start, end + 1):
+        for path in download_season(s, _cfb_data() / "raw", force):
+            typer.echo(path)
+
+
+@cfb.command("players")
+def cfb_players(start: int = 2012, end: int = 2026,
+                rushes: bool = typer.Option(True, help="count quarterback runs as quarterback plays")):
+    """Passer / rusher ids (the play-by-play's, else matched by name to the box scores), quarterback
+    plays and each team-game's starter: data/cfb/processed/{qb_plays,team_games,players}.parquet
+    (runitback.cfb.data.players); prints the id coverage per season."""
+    from .cfb.data.players import build_players
+    _log()
+    data = _cfb_data()
+    summary = build_players(list(range(start, end + 1)), data / "raw", data / "processed", rushes=rushes)
+    typer.echo(json.dumps(summary, indent=1))
+
+
+@cfb.command("player-values")
+def cfb_player_values(out: Path = typer.Option(Path("player_values/cfb"), help="output directory"),
+                      start: int = typer.Option(2012, help="first season of plays"), end: int = 2026,
+                      first_season: int = typer.Option(2014, help="first season with pv.parquet rows"),
+                      rule: str = typer.Option("prev_starter", help="projected starter: prev_starter | "
+                                                                    "prev_leader"),
+                      jobs: int = 0):
+    """Weekly quarterback values (EPA per play, adjusted and shrunk) and each team-game's starting-QB
+    terms (pv.parquet, starters.parquet, usage.json, values_latest.csv; runitback.cfb.player_values).
+    Needs `runitback cfb players` first."""
+    import os
+
+    import pandas as pd
+
+    from .cfb import player_values as pv
+    from .cfb.data.download import load
+    from .cfb.data.players import game_days
+    _log()
+    data = _cfb_data()
+    proc, seasons = data / "processed", list(range(start, end + 1))
+    plays = pd.read_parquet(proc / "qb_plays.parquet")
+    plays = plays[plays.season.isin(seasons)]
+    tg = pd.read_parquet(proc / "team_games.parquet")
+    schedule = load("schedule", seasons, data / "raw")
+    games = pv.schedule_team_games(schedule, game_days(schedule), first_season)
+    gv = pv.game_table(plays, tg[tg.season.isin(seasons)], games, jobs or os.cpu_count() or 1, rule=rule)
+    pv.write_game_table(gv, out, pd.read_parquet(proc / "players.parquet"))
+    typer.echo(f"{len(gv.pv)} team-games, {len(gv.fits)} weekly fits -> {out}")
 
 
 # ---------------------------------------------------------------- college basketball
@@ -685,28 +777,6 @@ def college_lineups(gender: str = GENDER_OPT,
     from .college.lineups import build_lineups
     _log()
     typer.echo(build_lineups(_college_dir(get(gender).name) / "processed", rule).round(3).to_string(index=False))
-
-
-@college.command("cbbd")
-def college_cbbd(season: list[int] = typer.Option(..., help="season(s) to fetch (2024 on)"),
-                 reserve: int = typer.Option(25, help="stop when this many CBBD calls are left"),
-                 max_calls: int = typer.Option(0, help="at most this many calls (0: no limit)")):
-    """Men's CBBD plays with the ten on the floor, one /plays/date call per game day not yet cached
-    (data/cbb/cbbd; needs CBBD_API_KEY and `runitback college players`)."""
-    import os
-
-    import pandas as pd
-
-    from .college import cbbd_lineups as cl
-    _log()
-    key = os.environ.get(cl.KEY_ENV)
-    if not key:
-        raise typer.BadParameter(f"{cl.KEY_ENV} is not set")
-    d = _college_dir("cbb")
-    pg = pd.read_parquet(d / "processed" / "player_games.parquet", columns=["season", "game_date"])
-    days = [x for s in season for x in cl.season_days(pg, s) if x < cl.today()]
-    res = cl.fetch_days(days, d / "cbbd", key, reserve, max_calls or None)
-    typer.echo(json.dumps(res | {"missing": len(res["missing"])}))
 
 
 @college.command("player-values")
