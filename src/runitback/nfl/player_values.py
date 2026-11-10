@@ -1,9 +1,10 @@
-"""Player values in points per game over a replacement-level player, at every position.
+"""NFL player values in points per game over a replacement-level player, at every position.
 
-A regularized adjusted plus-minus on play-by-play data: each scrimmage play's EPA is regressed on
-the 22 players on the field (an offense coefficient for each of the possession team's players, a
-defense coefficient for each of the other team's) plus situation controls, with ridge shrinkage
-toward 0 and recent seasons weighted more. Players with too few plays in the window share a
+The NFL adapter of the sport-agnostic ridge adjusted plus-minus (:mod:`runitback.core.player_values`):
+each scrimmage play's EPA is regressed on the 22 players on the field (an offense coefficient for each
+of the possession team's players, a defense coefficient for each of the other team's) plus down /
+distance / field-position / season controls, with ridge shrinkage toward 0 (wider for QBs, narrower
+for OL and DL) and recent seasons weighted more. Players with too few plays in the window share a
 replacement-level coefficient for their side and position group; a player's value is his
 coefficient minus that (for defenders, with the sign flipped so that higher is better), times the
 plays he is expected to be on the field for. Kickers and punters: shrunk EPA per attempt over the
@@ -21,8 +22,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
-from scipy.sparse.linalg import lsqr
 
+from ..core.player_values import (
+    APMConfig,
+    Events,
+    codes_from_lists,
+    fit_apm,
+    fit_weekly,
+    shrunk_rates,
+)
 from ..wager.nfl.lineup import LINEUP
 from .data.players import GROUPS
 
@@ -55,6 +63,10 @@ class PlayData:
     ids: np.ndarray           # code -> player_id
     group: np.ndarray         # code -> group index in GROUPS (-1 = unknown)
 
+    def events(self) -> Events:
+        """The plays as the generic fitter's events (sides ``off`` and ``def``)."""
+        return Events(self.plays, {"off": self.off, "def": self.dfn}, self.ids, self.group)
+
 
 def play_table(data_dir: Path, raw_dir: Path, group_of: dict[str, str], width: int = 13) -> PlayData:
     plays = pd.read_parquet(data_dir / "plays.parquet",
@@ -74,19 +86,11 @@ def play_table(data_dir: Path, raw_dir: Path, group_of: dict[str, str], width: i
     def_l = np.where(home, df.away_ids, df.home_ids)
     ids = np.array(sorted({p for col in (df.home_ids, df.away_ids) for lst in col for p in lst}))
     code = {p: i for i, p in enumerate(ids)}
-
-    def to_codes(lists):
-        out = np.full((len(lists), width), -1, dtype=np.int32)
-        for i, lst in enumerate(lists):
-            c = [code[p] for p in lst[:width]]
-            out[i, :len(c)] = c
-        return out
-
     gi = {g: i for i, g in enumerate(GROUPS)}
     group = np.array([gi.get(group_of.get(p), -1) for p in ids], dtype=np.int32)
     df["t"] = df.season * 100 + df.week
-    return PlayData(df[["game_id", "t", "season", "down", "ytg", "yl", "epa"]], to_codes(off_l), to_codes(def_l),
-                    ids, group)
+    return PlayData(df[["game_id", "t", "season", "down", "ytg", "yl", "epa"]],
+                    codes_from_lists(off_l, code, width), codes_from_lists(def_l, code, width), ids, group)
 
 
 def special_table(raw_dir: Path, seasons: list[int], weeks: pd.DataFrame) -> pd.DataFrame:
@@ -135,59 +139,41 @@ def _controls(df: pd.DataFrame) -> sp.csr_matrix:
     return sp.csr_matrix((np.full(len(rows), CTRL_SCALE), (rows, cols)), shape=(n, 27 + seas.max() + 1))
 
 
-def fit_values(data: PlayData, special: pd.DataFrame, before: int, lam: float = LAMBDA) -> Values:
-    """Player values from the plays before ``before`` (season * 100 + week)."""
+def apm_config(lam: float = LAMBDA) -> APMConfig:
+    """The NFL's adjusted plus-minus settings for the generic fitter."""
+    return APMConfig(groups=tuple(GROUPS), target="epa", controls=_controls, sides=(("off", 1.0), ("def", -1.0)),
+                     group_scale=GROUP_SCALE, min_events=MIN_PLAYS, decay=DECAY, window=WINDOW, lam=lam,
+                     target_clip=EPA_CLIP)
+
+
+def _specialists(special: pd.DataFrame, before: int) -> list[pd.DataFrame]:
     cur = before // 100
-    pl = data.plays
-    sel = ((pl.t < before) & (pl.season >= cur - WINDOW)).to_numpy()
-    win = pl[sel]
-    w = DECAY ** (cur - win.season.to_numpy())
-    n_ids, G = len(data.ids), len(GROUPS)
-    tabs, blocks, scales = [], [], []
-    offset = 0
-    for side, codes in (("off", data.off[sel]), ("def", data.dfn[sel])):
-        valid = (codes >= 0)
-        valid &= data.group[np.where(valid, codes, 0)] >= 0
-        cnt = np.bincount(codes[valid], minlength=n_ids)
-        own = (cnt >= MIN_PLAYS) & (data.group >= 0)
-        own_col = np.full(n_ids, -1)
-        own_col[own] = np.arange(own.sum())
-        n_own = int(own.sum())
-        # a player without his own column uses his side's replacement column for his group
-        col_of = np.where(own, own_col, n_own + np.maximum(data.group, 0))
-        r, c = np.nonzero(valid)
-        cols = col_of[codes[r, c]]
-        scale = np.array([GROUP_SCALE.get(g, 1.0) for g in GROUPS])
-        col_scale = np.concatenate([scale[data.group[own]], scale])
-        blocks.append(sp.csr_matrix((col_scale[cols], (r, cols)), shape=(len(win), n_own + G)))
-        scales.append(col_scale)
-        tabs.append(pd.DataFrame({"side": side, "player_id": data.ids[own], "group": np.array(GROUPS)[data.group[own]],
-                                  "plays": cnt[own], "_col": offset + own_col[own],
-                                  "_repl": offset + n_own + data.group[own]}))
-        offset += n_own + G
-    X = sp.hstack([*blocks, _controls(win)]).tocsr()
-    y = np.clip(win.epa.to_numpy(), -EPA_CLIP, EPA_CLIP)
-    sw = np.sqrt(w)
-    A = sp.diags(sw) @ X
-    b = lsqr(A, sw * (y - np.average(y, weights=w)), damp=np.sqrt(lam), atol=1e-6, btol=1e-6, iter_lim=3000)[0]
-    b = b[:offset] * np.concatenate(scales)          # back to EPA per play
-    tab = pd.concat(tabs, ignore_index=True)
-    d = b[tab._col.to_numpy()] - b[tab._repl.to_numpy()]
-    tab["value_play"] = np.where(tab.side == "off", d, -d)
-    tab = tab.drop(columns=["_col", "_repl"])
     st = special[(special.t < before) & (special.season >= cur - WINDOW)]
     sts = []
-    for kind, k, per_game in (("K", K_SHRINK, FG_PER_GAME), ("P", P_SHRINK, PUNTS_PER_GAME)):
+    for kind, k in (("K", K_SHRINK), ("P", P_SHRINK)):
         s = st[st.kind == kind]
         if s.empty:
             continue
-        sw_ = DECAY ** (cur - s.season.to_numpy())
-        mu = np.average(s.epa, weights=sw_)
-        g = s.assign(w=sw_, we=sw_ * (s.epa - mu)).groupby("player_id")[["w", "we"]].sum()
-        v = g.we / (g.w + k)
-        sts.append(pd.DataFrame({"side": kind, "player_id": g.index, "group": kind,
-                                 "plays": g.w.to_numpy(), "value_play": v.to_numpy()}))
-    return Values(before, pd.concat([tab, *sts], ignore_index=True))
+        r = shrunk_rates(s, "player_id", "epa", cur, k, DECAY)
+        sts.append(pd.DataFrame({"side": kind, "player_id": r.player_id, "group": kind,
+                                 "plays": r.weight, "value_play": r.value}))
+    return sts
+
+
+def _values(apm: pd.DataFrame, special: pd.DataFrame, before: int) -> Values:
+    tab = apm.rename(columns={"events": "plays", "value": "value_play"})
+    return Values(before, pd.concat([tab, *_specialists(special, before)], ignore_index=True))
+
+
+def fit_values(data: PlayData, special: pd.DataFrame, before: int, lam: float = LAMBDA) -> Values:
+    """Player values from the plays before ``before`` (season * 100 + week)."""
+    return _values(fit_apm(data.events(), apm_config(lam), before, before // 100), special, before)
+
+
+def fit_weeks(data: PlayData, special: pd.DataFrame, weeks: list[int], jobs: int = 1) -> list[Values]:
+    """:func:`fit_values` for every week in ``weeks`` (each on the plays before it), in parallel."""
+    fits = fit_weekly(data.events(), apm_config(), weeks, lambda t: t // 100, jobs)
+    return [_values(f, special, t) for f, t in zip(fits, weeks)]
 
 
 # -- lineups -> team values -------------------------------------------------------------------------
@@ -269,8 +255,6 @@ def game_table(data_dir: Path, raw_dir: Path, first_season: int = 2016, jobs: in
     With ``upcoming``, the schedule's unplayed games are included (their charts and injury reports
     as published so far; ``download`` refreshes them), and ``lineups`` holds their projected charts
     with every backup, for the lineup editor."""
-    from joblib import Parallel, delayed
-
     from .data.players import DEPTH
     from .lineup_features import (
         MOVES,
@@ -301,7 +285,7 @@ def game_table(data_dir: Path, raw_dir: Path, first_season: int = 2016, jobs: in
     weeks = sorted({s * 100 + w for s, w in zip(target.season, target.week)})
     weeks = [t for t in weeks if (data.plays.t < t).any()]
     log.info("%d plays; fitting %d weeks", len(data.plays), len(weeks))
-    fits = Parallel(n_jobs=jobs)(delayed(fit_values)(data, special, t) for t in weeks)
+    fits = fit_weeks(data, special, weeks, jobs)
     vals = {f.before: dict(zip(zip(f.table.side, f.table.player_id), f.table.value_play)) for f in fits}
 
     off_sum = lambda v: sum(v[g] for g in OFF_GROUPS)
