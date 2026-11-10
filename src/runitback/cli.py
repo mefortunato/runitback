@@ -320,6 +320,32 @@ def nba_lineups(roster: bool = typer.Option(True, help="candidates are the game'
     typer.echo(json.dumps(build_lineups(NBA_DATA / "processed", roster=roster, live=live), indent=1))
 
 
+@nba.command("player-values")
+def nba_player_values(out: Path = typer.Option(Path("player_values/nba"), help="output directory"),
+                      start: int = typer.Option(2015, help="first season of possessions"), end: int = 2027,
+                      first_season: int = typer.Option(2016, help="first season with pv.parquet rows"),
+                      jobs: int = 0, rebuild: bool = typer.Option(False, help="rebuild possessions.parquet")):
+    """Weekly possession-level adjusted plus-minus and each team-game's lineup values (pv.parquet,
+    slots.json, values_latest.csv; runitback.nba.player_values). Needs `runitback nba players` first."""
+    import os
+
+    import pandas as pd
+
+    from .nba import player_values as pv
+    _log()
+    proc, raw = NBA_DATA / "processed", NBA_DATA / "raw"
+    seasons = list(range(start, end + 1))
+    path = proc / "possessions.parquet"
+    poss = pv.build_possessions(seasons, raw, proc) if rebuild or not path.exists() else pd.read_parquet(path)
+    poss = poss[poss.season.isin(seasons)]
+    poss, pg = pv.franchise_only(poss, pd.read_parquet(proc / "player_games.parquet"))
+    players = pd.read_parquet(proc / "players.parquet")
+    gv = pv.game_table(poss, pg, players, first_season, jobs or os.cpu_count() or 1)
+    gv.pv = pv.to_wager_teams(gv.pv, raw, seasons)
+    pv.write_game_table(gv, out, players)
+    typer.echo(f"{len(gv.pv)} team-games, {len(gv.fits)} weekly fits -> {out}")
+
+
 @nba.command("preprocess")
 def nba_preprocess(start: int = 2015, end: int = 2027):
     """Convert raw play-by-play to engine/model events and report engine replay agreement."""
