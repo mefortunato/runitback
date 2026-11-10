@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { call } from "./http";
 import { Link } from "./router";
 import ReplayAnimation from "./components/ReplayAnimation";
+import BacktestRecord from "./BacktestRecord";
 
 interface Sport { id: string; name: string; model_available: boolean }
 
@@ -51,6 +52,8 @@ export default function Home() {
       </section>
 
       <ReplayAnimation />
+
+      <BacktestRecord />
 
       <section className="sport-cards" aria-label="Sports">
         {SPORTS.map((s) => (
