@@ -316,7 +316,8 @@ Results: `lineups/ablation.md`, `lineups/report.md` (per market, pass/fail), `li
 Rather than make the play-by-play simulator carry personnel, give every player a value and put
 it straight into the wager model.
 
-**Player values** (`src/runitback/nfl/player_values.py`, `scripts/player_values.py`):
+**Player values** (`src/runitback/nfl/player_values.py`, the NFL adapter of the sport-agnostic ridge
+APM fitter in `src/runitback/core/player_values.py`; `scripts/player_values.py`):
 - **The fit.** A ridge adjusted plus-minus on each scrimmage play's EPA, 2016+, with the 22 players
   on the field. Each of the possession team's players gets an offense coefficient and each of the
   other team's a defense coefficient, plus down / distance / field-position / season controls.

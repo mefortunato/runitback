@@ -1,0 +1,157 @@
+# S4c: the ported MLB box-score model's walk-forward backtest (experiments/mlb/baseline.yaml),
+# to check it against sportsml's production Brier on the same seasons:
+#
+#   cache (5 season shards) ─► data ─► arms (2 configurations × 3 seasons) ─► report
+#
+# Every input is rebuilt from the public sources in this run: MLB's Stats API (schedules, team
+# logs, starting pitchers) and ESPN (betting lines, about 35,000 odds requests). The odds requests
+# are split over five runners because ESPN refuses a runner after a burst of them; the data job
+# merges the shards' response caches and builds the games table from them. Each season's model is
+# fit on earlier seasons only (runitback.wager.backtest.walk_forward). The report job scores both
+# arms on the same games and compares them with sportsml's recorded numbers; the results are
+# uploaded as the mlb-baseline-results artifact.
+#
+# Runs when this file or the experiment's configuration changes on a claude/ branch, or by hand.
+name: MLB baseline
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - .github/workflows/mlb-baseline.yml
+      - experiments/mlb/baseline.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mlb-baseline-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+  LAST_SEASON: "2026"
+
+jobs:
+  cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # ESPN's lines start in 2013, so the first shard is mostly Stats API requests
+        shard: ["2008 2014", "2015 2017", "2018 2020", "2021 2023", "2024 2026"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - name: Stats API and ESPN responses, seasons ${{ matrix.shard }}
+        run: |
+          read first last <<< "${{ matrix.shard }}"
+          python - "$first" "$last" <<'EOF'
+          import logging, sys
+          from runitback.wager.mlb.data.download import download
+          logging.basicConfig(level=logging.INFO)
+          logging.getLogger("httpx").setLevel(logging.WARNING)
+          games = download(None, int(sys.argv[1]), int(sys.argv[2]), "data/mlb/mlb_cache")
+          print(len(games), "team-game rows")
+          EOF
+          echo "shard=${first}" >> "$GITHUB_ENV"
+          du -sh data/mlb/mlb_cache
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlb-cache-${{ env.shard }}
+          path: data/mlb/mlb_cache
+          retention-days: 7
+
+  data:
+    needs: cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { pattern: "mlb-cache-*", path: data/mlb/mlb_cache, merge-multiple: true }
+      - name: Games with starters and lines
+        run: |
+          # every finished season and game is in the merged cache: only the last season's schedule
+          # and logs (not yet "complete" before December) are requested again
+          runitback-wager mlb download --output_file data/mlb/raw.csv \
+            --first_season 2008 --last_season "$LAST_SEASON" --cache_dir data/mlb/mlb_cache
+          runitback-wager mlb process --games data/mlb/raw.csv --output_file data/mlb/games.csv
+          ls -la data/mlb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlb-data
+          path: data/mlb/games.csv
+          retention-days: 7
+
+  arms:
+    needs: data
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [prod, prod_seed1]
+        season: [2024, 2025, 2026]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: mlb-data, path: data/mlb }
+      - name: Backtest ${{ matrix.config }} on ${{ matrix.season }}
+        # a file, not stdin: the fit runs in a spawned subprocess that re-imports the script
+        run: python scripts/mlb_baseline_arm.py ${{ matrix.config }} ${{ matrix.season }} --threads $(nproc)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arm-${{ matrix.config }}-${{ matrix.season }}
+          path: experiments/mlb/baseline/${{ matrix.config }}/${{ matrix.season }}.csv
+          retention-days: 30
+
+  report:
+    needs: [data, arms]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: mlb-data, path: data/mlb }
+      - name: Gather every job's results
+        run: mkdir -p experiments/mlb/baseline
+      - uses: actions/download-artifact@v4
+        with: { pattern: "arm-prod-*", path: experiments/mlb/baseline/prod, merge-multiple: true }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "arm-prod_seed1-*", path: experiments/mlb/baseline/prod_seed1, merge-multiple: true }
+      - name: Score
+        run: |
+          python scripts/mlb_baseline_report.py experiments/mlb/baseline.yaml \
+            --games data/mlb/games.csv --out experiments/mlb/baseline/report.md
+          cat experiments/mlb/baseline/report.md
+          cat experiments/mlb/baseline/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: mlb-baseline-results, path: experiments/mlb/baseline, retention-days: 90 }
