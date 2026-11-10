@@ -1,0 +1,127 @@
+# Everything the NBA experiments build on, rebuilt from the public sources in the calling run
+# (nothing comes from the repository or from an earlier run), as nfl-experiment-inputs.yml does for
+# the NFL. Called by the NBA experiment workflows:
+#
+#   data ─► foundation (one fold per season)
+#
+# Artifacts, all in the calling run:
+#   nba-data     data/nba/processed (events, games, pre-game ratings; with `players`, also the
+#                on-court fives, player_games and players tables) and, with `lines`,
+#                data/nba/games.csv (the wager model's games with lines)
+#   nba-fold<S>  the NBA event generator that never sees season S (runitback nba foundation):
+#                model.pt, pca_32.npz and pbp_32.parquet (pooled per possession, PCA fit on games
+#                before S), plus history.json (validation loss per epoch)            [foundation]
+name: NBA experiment inputs
+
+on:
+  workflow_call:
+    inputs:
+      seasons:
+        description: "Test seasons (JSON list, the year a season ends) for the folds"
+        type: string
+        default: "[2022, 2023, 2024, 2025, 2026]"
+      start-season:
+        description: "First season of play-by-play to download"
+        type: string
+        default: "2002"
+      end-season:
+        description: "Last season of play-by-play to download"
+        type: string
+        default: "2027"
+      foundation:
+        description: "Train the foundation folds"
+        type: boolean
+        default: true
+      lines:
+        description: "Also build the wager model's games table with lines (data/nba/games.csv)"
+        type: boolean
+        default: false
+      players:
+        description: "Also build the on-court fives and player tables (runitback nba players)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - name: Play-by-play (runitback) and, with lines, games with lines (wager model)
+        run: |
+          runitback nba download --start ${{ inputs.start-season }} --end ${{ inputs.end-season }} \
+            ${{ inputs.players && '--players' || '--no-players' }} & pbp=$!
+          if [ "${{ inputs.lines }}" = true ]; then
+            runitback-wager nba download --output_file data/nba/raw.csv & games=$!
+            wait $games
+          fi
+          wait $pbp
+          runitback nba preprocess --start ${{ inputs.start-season }} --end ${{ inputs.end-season }}
+          if [ "${{ inputs.players }}" = true ]; then
+            runitback nba players --start ${{ inputs.start-season }} --end ${{ inputs.end-season }}
+          fi
+          if [ "${{ inputs.lines }}" = true ]; then
+            runitback-wager nba process --games data/nba/raw.csv --output_file data/nba/games.csv
+          fi
+          python -c "import pandas as pd; g = pd.read_parquet('data/nba/processed/games.parquet'); \
+            print(g.groupby('season').size().to_string())"
+          ls -la data/nba data/nba/processed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nba-data
+          path: |
+            data/nba/processed
+            data/nba/games.csv
+          if-no-files-found: error
+          retention-days: 7
+
+  foundation:
+    needs: data
+    if: ${{ inputs.foundation }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        season: ${{ fromJSON(inputs.seasons) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: nba-data, path: data/nba }
+      - name: Train fold ${{ matrix.season }} (never sees it) and embed every game (PCA on games before it)
+        run: |
+          S=${{ matrix.season }}
+          # runitback.nba.foundation.TRAIN: validated on the last 40% of S-1, trained on the games before
+          runitback nba foundation --root runs/foundation --season $S --data data/nba/processed \
+            --threads $(nproc)
+          ls -la runs/foundation/fold$S
+      - name: Keep the validation history
+        run: |
+          S=${{ matrix.season }}
+          python -c "import json, torch; ck = torch.load('runs/foundation/fold$S/model.pt', weights_only=False); \
+            json.dump({'val_season': ck['val_season'], 'history': ck['history'], 'team_seasons': ck['team_seasons']}, \
+            open('runs/foundation/fold$S/history.json', 'w'), indent=1)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nba-fold${{ matrix.season }}
+          path: runs/foundation/fold${{ matrix.season }}
+          retention-days: 30
