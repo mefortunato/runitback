@@ -36,8 +36,26 @@ def download_season(season: int, raw_dir: Path, force: bool = False) -> Path:
     return path
 
 
+def numpy_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """Plain numpy columns in place of pandas' nullable ones (``Int64``, ``boolean``, ``string``
+    with ``pd.NA``), as ``sportsdataverse.nba.load_nba_pbp`` can return: missing numbers become
+    NaN, missing flags False and missing strings None, as in the release files, so preprocessing
+    sees the same values whichever way a season was downloaded."""
+    out = {}
+    for c in df.columns:
+        col = df[c]
+        if isinstance(col.dtype, pd.BooleanDtype):
+            col = col.fillna(False).astype(bool)
+        elif pd.api.types.is_extension_array_dtype(col.dtype) and pd.api.types.is_numeric_dtype(col.dtype):
+            col = col.astype("float64") if col.isna().any() else col.astype(col.dtype.numpy_dtype)
+        elif isinstance(col.dtype, pd.StringDtype) and col.isna().any():
+            col = col.astype(object).where(col.notna(), None)
+        out[c] = col
+    return pd.DataFrame(out, index=df.index)
+
+
 def load_raw(season: int, raw_dir: Path) -> pd.DataFrame:
     import pyarrow.parquet as pq
     path = raw_dir / f"pbp_{season}.parquet"
     available = set(pq.read_schema(path).names)
-    return pd.read_parquet(path, columns=[c for c in COLUMNS if c in available])
+    return numpy_dtypes(pd.read_parquet(path, columns=[c for c in COLUMNS if c in available]))

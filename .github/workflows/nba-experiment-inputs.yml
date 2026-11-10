@@ -60,6 +60,8 @@ jobs:
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -e ".[data,wager]"
+      # sportsdataverse's loader returns nullable dtypes (pd.NA ids in the early seasons);
+      # runitback.nba.data.download.load_raw normalizes them to the release files' numpy dtypes
       - name: Play-by-play (runitback) and, with lines, games with lines (wager model)
         run: |
           runitback nba download --start ${{ inputs.start-season }} --end ${{ inputs.end-season }} \

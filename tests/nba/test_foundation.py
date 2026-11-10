@@ -164,3 +164,24 @@ def test_real_games_fit_the_model_and_have_both_sides():
         pid = nba_embed.possession_ids(f["is_home"][i, :k].numpy(), f["qtr"][i, :k].numpy())
         assert 150 <= pid.max() + 1 <= 300  # ~100 possessions a team
         assert float(w[i].sum()) == pytest.approx(pid.max() + 1)
+
+
+RAW = PROCESSED.parent / "raw"
+
+
+@pytest.mark.skipif(not (RAW / "pbp_2002.parquet").exists(), reason="raw 2002 data not downloaded")
+def test_nullable_download_preprocesses_like_the_release_file():
+    """sportsdataverse's loader can return nullable dtypes (pd.NA team ids in 2002); load_raw
+    normalizes them so preprocessing gives the same games either way."""
+    from runitback.nba.data.download import COLUMNS, numpy_dtypes
+    from runitback.nba.data.preprocess import process_game
+
+    plain = pd.read_parquet(RAW / "pbp_2002.parquet")
+    plain = numpy_dtypes(plain[[c for c in COLUMNS if c in plain]])
+    nullable = plain.convert_dtypes()
+    assert nullable.team_id.isna().any() and isinstance(nullable.team_id.dtype, pd.Int64Dtype)
+    ids = plain.game_id.drop_duplicates().head(5)
+    for gid in ids:
+        a = process_game(plain[plain.game_id == gid])
+        b = process_game(numpy_dtypes(nullable[nullable.game_id == gid]))
+        assert a == b

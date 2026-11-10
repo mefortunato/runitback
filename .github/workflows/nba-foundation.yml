@@ -10,7 +10,7 @@
 # team-strength sanity check (scripts/nba_foundation_report.py), uploaded as the
 # nba-foundation-results artifact; the folds are kept as nba-foundation-models.
 #
-# Runs when this file changes on a claude/ branch, or by hand.
+# Runs when this file or nba-experiment-inputs.yml changes on a claude/ branch, or by hand.
 name: NBA foundation
 
 on:
@@ -19,6 +19,7 @@ on:
     branches: ["claude/**"]
     paths:
       - .github/workflows/nba-foundation.yml
+      - .github/workflows/nba-experiment-inputs.yml
 
 permissions:
   contents: read
