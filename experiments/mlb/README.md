@@ -61,7 +61,8 @@ A full download takes about 10 minutes from a cloud container (about 35,000 ESPN
 
 ## Next steps
 
-- M1–M3 build the plate-appearance table, player values and projected lineups. M5 compares its
+- M1–M3 build the plate-appearance table, player values (M2: `player_values.md`) and projected
+  lineups. M5 compares its
   arms against `prod` from this backtest, rerun alongside them in the same workflow run (4-seed
   ensembles for promotion decisions). M5 also moves the evaluation to the plan's last five
   complete seasons.
