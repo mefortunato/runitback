@@ -65,3 +65,56 @@ _Pending._
 1. F3 (`experiments/cfb/`, arms `prod`, `pbp32`, `pbp32_qb`) uses `prod` from here as its
    baseline.
 2. A1 adds college football to the predictions site (`web/src/App.tsx`, the nav and the server).
+
+## Foundation folds (`pbp32`, F1)
+
+**Short answer**
+- **All six folds trained and passed the leak check** (2021–2025 for the backtest, 2026 for upcoming
+  games). Each was validated on season S-1 from week 10 on (bowls included), and its team-season
+  vocabulary has no season-S entry. Run 42816728580 (`cfb-foundation.yml`), 54–97 minutes per fold
+  on a 4-core runner.
+- **Training converged within the 10 epochs.** The best epoch was the 9th or 10th in every fold, and
+  the last few epochs improved validation NLL by under 0.005.
+- **Each fold's `pbp_32.parquet` holds all 33,318 team-games** (16,659 games, 2004 to 2026 so far: the
+  games the engine replay keeps). Its 32 PCA dimensions, fit on games before S, explain 73.8–76.3% of
+  the variance of the raw 384-dimension offense/defense pooled states.
+
+| fold S | validated on | leak-free | best epoch | val NLL total (type / result / yards / elapsed) | PCA 32 explained | train time |
+|---|---|---|---|---|---|---|
+| 2021 | 2020 wk 10+ | yes | 9 / 10 | 4.825 (0.732 / 0.407 / 2.379 / 1.307) | 73.8% | 72 min |
+| 2022 | 2021 wk 10+ | yes | 10 / 10 | 4.998 (0.752 / 0.401 / 2.377 / 1.468) | 74.8% | 79 min |
+| 2023 | 2022 wk 10+ | yes | 9 / 10 | 4.899 (0.753 / 0.407 / 2.354 / 1.384) | 74.7% | 54 min |
+| 2024 | 2023 wk 10+ | yes | 10 / 10 | 4.627 (0.774 / 0.411 / 2.369 / 1.073) | 75.3% | 92 min |
+| 2025 | 2024 wk 10+ | yes | 10 / 10 | 5.882 (0.766 / 0.404 / 2.333 / 2.378) | 76.0% | 58 min |
+| 2026 | 2025 wk 10+ | yes | 9 / 10 | 6.125 (0.737 / 0.409 / 2.294 / 2.685) | 76.3% | 97 min |
+
+**The totals are not comparable across folds; the type, result and yards columns are.** The elapsed
+term only counts plays with a per-play clock (`elapsed_known`; coarse-clock plays add zero), and
+that share of the validation season varies: 33–47% of 2020–2023 games have a per-play clock,
+against 79% in 2024 and 87% in 2025. So folds 2025 and 2026 carry an elapsed loss on most of their
+validation plays. Type, result and yards are flat across folds (0.73–0.77, 0.40–0.41, 2.29–2.38
+nats).
+
+Sources: the per-fold "Fold summary" step of run 42816728580 (validation history and leak check
+from each `model.pt`, explained variance from `pca_32.npz`). The folds are the run's
+`cfb-fold<S>` artifacts (`model.pt`, `pca_32.npz`, `pbp_32.parquet`), and the processed data and
+replay summary (`replay.json`) are `cfb-data`, all kept for 30 days.
+
+**Setup**
+- **Generator.** The NFL play transformer (`runitback.nfl.train`) trained on college plays from the
+  college rules engine's preprocess (`runitback.cfb`, README "College football"). It is team-level
+  (no college personnel data): team-season tokens plus pre-game EPA/play and Elo ratings. It uses
+  the NFL fold's trunk (d_model 192, 4 layers) and 10 epochs. Settings: `runitback.cfb.foundation.TRAIN`.
+- **Folds.** `runitback cfb foundation --season S` runs the sport-agnostic fold code
+  (`runitback.core.foundation`, S3). The model is trained on 2004+ games before season S-1 week 10
+  and validated on the rest of S-1, so it never sees S. Every played game is embedded (offense and
+  defense states mean-pooled per team-game), and the PCA is fit on games before S.
+- **Keys.** `team` is the ESPN team id. The CFB wager model keys teams by school name, with FCS
+  schools pooled, so F3 joins through the schedule's `home_team_id` / `away_team_id`.
+
+### Reproducing the folds
+
+Start `CFB foundation` (`.github/workflows/cfb-foundation.yml`) from the Actions tab, or push a change
+to that file on a `claude/**` branch. It downloads `espn_cfb_pbp` for 2004–2026, preprocesses it
+(writing the engine replay summary to the job summary) and trains each fold in its own matrix job.
+Locally: `runitback cfb download`, `runitback cfb preprocess`, `runitback cfb foundation --season S`.
