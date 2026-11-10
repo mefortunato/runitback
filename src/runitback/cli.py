@@ -1,5 +1,5 @@
-"""Command-line interface: runitback serve, and runitback <nfl|nba> download | preprocess | train |
-evaluate | calibrate | simulate | serve."""
+"""Command-line interface: runitback serve, runitback <nfl|nba> download | preprocess | train |
+evaluate | calibrate | simulate | serve, and runitback nhl download | events."""
 from __future__ import annotations
 
 import csv
@@ -10,19 +10,23 @@ from pathlib import Path
 import typer
 
 from .nba import paths as nba_paths
+from .nhl import paths as nhl_paths
 from .nfl.paths import data_dir, default_checkpoint, runs_dir
 
 app = typer.Typer(add_completion=False, help="Run It Back: simulate sports games one play at a time")
 nfl = typer.Typer(add_completion=False, help="NFL: data, training, evaluation, simulation and the web app")
 nba = typer.Typer(add_completion=False, help="NBA: data, training, evaluation, simulation and the web app")
 app.add_typer(nfl, name="nfl")
+nhl = typer.Typer(add_completion=False, help="NHL: event and personnel data")
 app.add_typer(nba, name="nba")
+app.add_typer(nhl, name="nhl")
 DATA = data_dir()
 RUNS = runs_dir()
 DEFAULT_CKPT = default_checkpoint()
 NBA_DATA = nba_paths.data_dir()
 NBA_RUNS = nba_paths.runs_dir()
 NBA_CKPT = nba_paths.default_checkpoint()
+NHL_DATA = nhl_paths.data_dir()
 
 
 def _log():
@@ -422,6 +426,47 @@ def nba_sha256(ckpt: Path = NBA_RUNS / "prod" / "model.pt"):
 def nba_serve(ckpt: Path = NBA_CKPT, host: str = "127.0.0.1", port: int = 8000):
     """Run the API + web app (NBA checkpoint from --ckpt; NFL from RUNITBACK_NFL_CKPT)."""
     _serve(host, port, nba_ckpt=ckpt)
+
+
+# ---------------------------------------------------------------- NHL
+
+@nhl.command("download")
+def nhl_download(start: int = typer.Option(2011, help="first season (the year it ends: 2011 = 2010-11, the "
+                                                      "first with personnel)"),
+                 end: int = 2027, force: bool = False,
+                 refresh_latest: bool = typer.Option(True, help="re-download the last season even if cached "
+                                                                "(it may still be in progress)"),
+                 shifts: bool = typer.Option(True, help="fetch the shift charts of games whose personnel is "
+                                                        "missing from the release"),
+                 validate_games: int = typer.Option(0, help="also fetch this many complete games' shift charts "
+                                                            "per season, to check the rebuild (`events`)")):
+    """Download the nhl_pbp_full play-by-play (sportsdataverse), the schedule and players (NHL stats API),
+    and shift charts for the gaps, into data/nhl/raw."""
+    from .nhl.data.download import download_players, download_schedule, download_season, download_shifts
+    from .nhl.data.events import shift_games
+    _log()
+    raw = NHL_DATA / "raw"
+    seasons = list(range(start, end + 1))
+    for s in seasons:
+        latest = force or (refresh_latest and s == end)
+        typer.echo(f"{s}: {download_season(s, raw, latest)}")
+        download_schedule(s, raw, latest)
+        download_players(s, raw, latest)
+    if shifts:
+        for s, games in shift_games(seasons, raw, validate_games).items():
+            typer.echo(f"{s}: shift charts for {len(games)} games, {download_shifts(games, raw, force)} fetched")
+
+
+@nhl.command("events")
+def nhl_events(start: int = 2011, end: int = 2027,
+               validate_games: int = typer.Option(0, help="rebuild this many complete games per season from "
+                                                          "their shift charts and report the agreement")):
+    """Events table with the skaters and goalies on ice (data/nhl/processed/events_<season>.parquet), plus
+    games.parquet and players.parquet. Prints a per-season coverage summary."""
+    from .nhl.data.events import build_events
+    _log()
+    summary = build_events(range(start, end + 1), NHL_DATA / "raw", NHL_DATA / "processed", validate_games)
+    typer.echo(json.dumps(summary, indent=1, default=str))
 
 
 def _write_result(res, out: Path | None, scores: bool) -> None:
