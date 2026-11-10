@@ -709,6 +709,28 @@ games' shift data shows strength changes no penalty explains. Details:
   missing from the release, `play_by_play_2018` and `_2019` are both 2018-19, and 2009-10 has no
   on-ice columns.
 
+## College football
+
+`runitback.cfb` holds college football's play-by-play players and quarterback values, the input to
+the CFB player model (`docs/multisport/PLAN.md`, packages F1-F3). There is no college simulator yet;
+the CFB wager model (box score baseline) is `runitback.wager.cfb`.
+
+```bash
+runitback cfb download --start 2012 --end 2026        # → data/cfb/raw/{pbp,player_box,schedule}_<season>.parquet (SportsDataverse)
+runitback cfb players --start 2012 --end 2026         # → data/cfb/processed/{qb_plays,team_games,players}.parquet, prints id coverage
+runitback cfb player-values --start 2012 --end 2026   # → player_values/cfb/{pv.parquet,starters.parquet,usage.json,values_latest.csv}
+```
+
+- **Ids.** College play-by-play has no on-field personnel, only the passer / rusher / receiver.
+  ESPN athlete ids come with the play-by-play for over 99.6% of passes from 2014; the rest are
+  matched by name to the player box scores (`runitback.cfb.data.players`).
+- **Quarterback values** (`runitback.cfb.player_values`). EPA per quarterback play (dropbacks and
+  quarterback runs) on the `runitback.core` ridge fitter, with situation, FCS-defense and defense
+  team-season controls; refit weekly on earlier plays only, in points per game over replacement.
+- **`pv.parquet`** gives each wager team-game its projected starter's value (the previous game's
+  starter) and the starting-QB-change term (vs the team's last 7 starters), in the layout of
+  `runitback.wager.cfb.lineup.LINEUP`. Write-up: `experiments/cfb/README.md`.
+
 ## Quick start (pre-trained model)
 
 You need Python 3.10+ and Node 18+. This takes about 5 minutes and needs no data download or training.
@@ -1079,7 +1101,9 @@ client's cache, retries and throttle and the leakage-free run values. The NHL te
 events table, and the engine (power plays and their release, stacked and coincidental penalties,
 empty nets, 3-on-3 and playoff overtime, penalty shots, the shootout, and random legal play always
 finishing a game), the play-by-play conversion, a replay of four real 2024-25 games
-(`tests/nhl/fixtures`), and a full-season replay when `data/nhl/raw` exists.
+(`tests/nhl/fixtures`), and a full-season replay when `data/nhl/raw` exists. The college football tests
+cover the name-to-id mapping, quarterback plays and starters, leak-free weekly quarterback values and
+the per-game starting-QB terms, on synthetic data.
 
 ## Limitations / next steps (NFL)
 
