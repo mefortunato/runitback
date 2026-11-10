@@ -529,19 +529,22 @@ runitback mlb probables 2026-07-04               # announced probable pitchers a
 
 ## NHL
 
-`runitback.nhl` so far holds the event and personnel data for the player-based wager model
-(`docs/multisport/PLAN.md`, H1) and the player values (H2). There is no simulator yet.
+`runitback.nhl` so far holds the event and personnel data, the projected lineups and the player
+values for the player-based wager model (`docs/multisport/PLAN.md`, H1, H3 and H2). There is no
+simulator yet.
 
 ```bash
 runitback nhl download --start 2011 --end 2027   # → data/nhl/raw/: play-by-play, schedule, players, gap shift charts
 runitback nhl events --start 2011 --end 2027     # → data/nhl/processed/{events_<season>,games,players}.parquet, prints coverage
-runitback nhl player-values --start 2011 --end 2027  # → data/nhl/processed/{segments,shots}.parquet; player_values/nhl/{pv.parquet,usage.json,values_latest.csv}
+runitback nhl lineups                            # → data/nhl/processed/{played,projected}_lineups.parquet, prints the check vs actual
+runitback nhl player-values --start 2011 --end 2027  # → data/nhl/processed/{segments,shots}.parquet; player_values/nhl/{pv,pv_actual,fits,goalie_fits}.parquet, usage.json, values_latest.csv
 ```
 
 | Piece | File | What it does |
 |---|---|---|
 | Download | `src/runitback/nhl/data/download.py` | sportsdataverse `nhl_pbp_full` (each release file checked by its `season` column; the file names are inconsistent), the schedule and player positions (`api.nhle.com/stats/rest`), shift charts for gap games |
 | Events | `src/runitback/nhl/data/events.py` | one row per event with the skaters (`home_1..6`, `away_1..6`) and goalies on ice, strength from the home side, `xg`; `CHANGE` rows attributed to games and sides; games with missing personnel rebuilt from the shift charts |
+| Lineups | `src/runitback/nhl/data/lineups.py` | each team-game as played (TOI, 5-on-5 lines and pairs, starting goalie) and its projected lineup from the previous game, with two starting-goalie options |
 | Player values | `src/runitback/nhl/player_values.py` | shift segments from the events; weekly, leak-free expected-goals adjusted plus-minus per 60 (offense and defense, F / D replacement levels) on the `runitback.core` fitter, plus goalies' goals saved above expected per shot; each team-game's `pv.parquet` row (`experiments/nhl/README.md`) |
 
 Coverage (share of play events with skaters on ice for both teams, after the shift-chart fallback):
@@ -551,6 +554,52 @@ no personnel in the release) and about 150 partial games elsewhere. Rebuilt from
 2020-21). Gaps that remain: **2014-15 is not in the release** (no events at all), **2009-10 has
 no personnel** in either source (events and `xg` only), and 17 games of April 2025 have no
 overtime personnel (the NHL API has no shift charts for them).
+
+**Projected lineups** (`runitback nhl lineups`, `runitback.nhl.data.lineups`; work package H3).
+`played_lineups.parquet` rebuilds every team-game as played from the events: the skaters who
+dressed, their TOI and 5-on-5 TOI, forward lines and defense pairs (grouped greedily by shared
+5-on-5 ice time and numbered by TOI), and the starting goalie (in net at the game's first event).
+`projected_lineups.parquet` gives each team-game the **previous game's** skaters, lines and TOI.
+Nothing from the game itself is used for them. The starting goalie has no history of announced
+starters, so the goalie rows carry both options, and `lineup(proj, goalie=...)` picks one:
+
+- **(a) `goalie_prev`**: the previous game's starter. Leak-free.
+- **(b) `goalie_actual`**: the actual starter, treated as known at puck drop. **This leaks.**
+  Teams confirm starters on game day (morning skate, warm-ups), so a closing line has usually
+  priced him in. But a backtest with (b) also knows him in games where the line or the
+  prediction was made before the announcement (opening lines, morning refits), and in the rare
+  game where the announced starter is scratched in warm-ups. Rows that use it are flagged
+  `known_at_drop`. Only the starter's identity comes from the game, not his TOI or any result.
+
+Against the games as played (`evaluate`, by season: 2021-25 is the mean of 2020-21 to 2024-25,
+about 2,600 team-games a season; the range covers every complete season):
+
+| | 2021-25 | range 2011-2026 |
+|---|---|---|
+| dressed skaters projected | 93.6% | 92.7–94.6% |
+| all 18 right | 31.5% | 26–35% |
+| forwards on the projected line / D on the projected pair | 46.4% / 55.6% | 44–51% / 52–56% |
+| TOI error per skater (minutes) | 3.63 | 3.46–3.83 |
+| **(a) previous starter starts** | **47.1%** | 66.5% (2013) → 43.5% (2026) |
+| (a) on the second night of a back-to-back (15% of team-games) | 11.1% | 45% (2013) → 4.5% (2024) |
+| (b) differs from (a): games where the leak adds information | 52.9% | 34–56% |
+| leak-free reference rule (`usual_starter`, not a projection mode) | 64.5% | 62–72% |
+
+- **(a) is a weak projection, and getting weaker.** Teams now split starts: since 2020-21 the
+  previous starter starts fewer than half the time, and almost never on the second night of a
+  back-to-back. So (b) knows the starter in more than half the games where (a) does not.
+- **A schedule-aware rule recovers about a third of the gap without leaking.**
+  `usual_starter` (the goalie with the most starts in the team's last 10 games; on a back-to-back,
+  the most frequent one who did not start the night before) is right in 64.5% of 2021-25
+  team-games. It is reported by `evaluate` only. Whether H6 should use it as a third option is
+  left to that package.
+- **Skaters are stable; lines are not.** About one dressed skater changes per team-game, but
+  only about half the forwards stay on the same rebuilt line, so line slots are noisy and
+  group-level (F / D) sums are the safer input. A season opener keeps 63% of the dressed
+  skaters (47% in 2015-16, whose previous game is in 2013-14, because 2014-15 is missing).
+  Seasons are named by the year they end (2025 = 2024-25), as in the events tables.
+- **Known gaps.** No injury or roster information: a player hurt in the previous game or traded
+  since stays in. There is no live (upcoming-game) projection yet.
 
 ### NHL rules engine
 

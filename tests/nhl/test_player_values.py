@@ -8,7 +8,7 @@ from runitback.core.player_values import fit_apm
 from runitback.nhl.data.events import normalize
 from runitback.nhl.player_values import (
     MAX_SKATERS, SEG_COLUMNS, START_DZ, START_FLY, START_NZ, START_OZ, apm_config, day_number, events_from,
-    fit_values, game_table, goalie_values, player_games, player_groups, previous_lineup, season_segments, season_shots,
+    fit_values, from_projected, game_table, goalie_values, player_games, player_groups, previous_lineup, season_segments, season_shots,
     segment_rows, to_wager_teams, week_start,
 )
 from runitback.wager.nhl.lineup import LINEUP
@@ -213,3 +213,14 @@ def test_to_wager_teams():
     pv = pd.DataFrame({"game_id": [2011020001, 2020020001], "team": ["ATL", "ARI"]})
     out = to_wager_teams(pv)
     assert out.game_id.tolist() == ["2011020001", "2020020001"] and out.team.tolist() == ["WPG", "UTA"]
+
+
+def test_from_projected_picks_one_goalie():
+    proj = pd.DataFrame({
+        "game_id": [5] * 5, "team": ["BUF"] * 5, "player_id": [11, 12, 21, 1, 2], "group": ["F", "F", "D", "G", "G"],
+        "slot": [2, 1, 1, 1, 2], "goalie_prev": [False, False, False, True, False],
+        "goalie_actual": [False, False, False, False, True]})
+    prev, act = from_projected(proj, "prev"), from_projected(proj, "actual")
+    assert prev[prev.group != "G"][["player_id", "rank"]].values.tolist() == [[11, 1], [12, 0], [21, 0]]
+    assert prev[prev.group == "G"][["player_id", "rank"]].values.tolist() == [[1, 0]]
+    assert act[act.group == "G"][["player_id", "rank"]].values.tolist() == [[2, 0]]

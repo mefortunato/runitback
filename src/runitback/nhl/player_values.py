@@ -29,9 +29,11 @@ The NHL adapter of the sport-agnostic fitter (:mod:`runitback.core.player_values
   uses its week's fit, so it never sees itself or later games.
 
 ``game_table`` sums each team-game's projected lineup into the wager model's ``_pv_*`` columns
-(layout :data:`runitback.wager.nhl.lineup.LINEUP`). Until the NHL projected lineups (work package H3)
-exist, the projection is a stand-in known at puck drop: **the team's previous game's skaters (ranked
-by time on ice) and starting goalie**. Pass ``lineups`` to use another projection.
+(layout :data:`runitback.wager.nhl.lineup.LINEUP`). The projection is H3's
+(:func:`from_projected`): the team's previous game's skaters, ranked by time on ice, with the
+starting goalie either (a) the previous game's starter (leak-free; ``pv.parquet``) or (b) the actual
+starter, known at puck drop (H3's documented leak; ``pv_actual.parquet``). Without H3's table the
+same previous-game lineup is rebuilt from the segments (:func:`previous_lineup`).
 """
 from __future__ import annotations
 
@@ -446,9 +448,24 @@ def _rows(df: pd.DataFrame) -> dict:
             for k, d in df.groupby(["game_id", "team"])}
 
 
+def from_projected(proj: pd.DataFrame, goalie: str = "prev") -> pd.DataFrame:
+    """H3's ``projected_lineups.parquet`` (:mod:`runitback.nhl.data.lineups`) -> ``lineups`` for
+    :func:`game_table`: the projected skaters ranked by their slot (time on ice in the previous game)
+    and one starting goalie, (a) ``goalie="prev"`` the previous game's starter (leak-free) or (b)
+    ``"actual"`` the game's actual starter (known at puck drop: H3's documented leak)."""
+    from .data.lineups import lineup
+
+    lu = lineup(proj, goalie)
+    rank = np.where(lu.group == GOALIE, 0, lu.slot.fillna(99).astype(int) - 1)
+    return pd.DataFrame({"game_id": lu.game_id.to_numpy(), "team": lu.team.to_numpy(),
+                         "player_id": lu.player_id.astype(np.int64).to_numpy(), "group": lu.group.to_numpy(),
+                         "rank": rank})
+
+
 def game_table(seg: pd.DataFrame, shots: pd.DataFrame, games: pd.DataFrame, players: pd.DataFrame,
                first_season: int = 2013, jobs: int = 4, lineups: pd.DataFrame | None = None,
-               cfg: APMConfig | None = None, goalie_shrink: float = GOALIE_SHRINK) -> GameValues:
+               cfg: APMConfig | None = None, goalie_shrink: float = GOALIE_SHRINK,
+               fitted: GameValues | None = None) -> GameValues:
     """Leak-free weekly values for every week from ``first_season`` (each fit on the segments and shots
     before its Monday) and each team-game's ``_pv_*`` columns from its projected lineup, in goals per
     game over replacement:
@@ -458,8 +475,9 @@ def game_table(seg: pd.DataFrame, shots: pd.DataFrame, games: pd.DataFrame, play
         _pv_8 .. _pv_12  each group's change vs the mean of the team's last ``RECENT`` lineups
 
     ``lineups`` (``game_id, team, player_id, group, rank``; group F / D / G, the goalie with rank 0 is
-    the starter): the projected lineups; default :func:`previous_lineup`. ``team`` is the games
-    table's team code."""
+    the starter): the projected lineups, e.g. :func:`from_projected` (H3's); default
+    :func:`previous_lineup`. ``team`` is the games table's team code. ``fitted``: an earlier result
+    whose weekly fits and usage to reuse (another projection of the same games)."""
     cfg = cfg or apm_config()
     group_of = player_groups(players)
     events = events_from(seg, group_of)
@@ -471,11 +489,14 @@ def game_table(seg: pd.DataFrame, shots: pd.DataFrame, games: pd.DataFrame, play
     first_t = int(events.frame.t.min())
     weeks = sorted(w for w in set(tg.before) if w > first_t)
     season_at = tg.groupby("before").season.min().to_dict()
-    log.info("%d segment rows; fitting %d weeks", len(events.frame), len(weeks))
-    fits = fit_weekly(events, cfg, weeks, lambda w: season_at[w], jobs)
-    fits = {w: f.rename(columns={"events": "toi", "value": "value_60"}) for w, f in zip(weeks, fits)}
-    gfits = {w: goalie_values(shots, w, season_at[w], goalie_shrink, cfg.window, cfg.decay)
-             for w in weeks}
+    if fitted is not None:
+        fits, gfits = fitted.fits, fitted.goalie_fits
+    else:
+        log.info("%d segment rows; fitting %d weeks", len(events.frame), len(weeks))
+        fits = fit_weekly(events, cfg, weeks, lambda w: season_at[w], jobs)
+        fits = {w: f.rename(columns={"events": "toi", "value": "value_60"}) for w, f in zip(weeks, fits)}
+        gfits = {w: goalie_values(shots, w, season_at[w], goalie_shrink, cfg.window, cfg.decay)
+                 for w in weeks}
     vals = {w: dict(zip(zip(f.side, f.player_id), f.value_60)) for w, f in fits.items()}
     gvals = {w: dict(zip(f.player_id.astype(int), f.value_shot)) for w, f in gfits.items()}
 
@@ -523,12 +544,17 @@ def to_wager_teams(pv: pd.DataFrame) -> pd.DataFrame:
 
 
 def write_game_table(gv: GameValues, out: Path, players: pd.DataFrame | None = None) -> None:
-    """``<out>/pv.parquet`` (the wager model's lineup table), ``usage.json`` (minutes per slot and a
+    """``<out>/pv.parquet`` (the wager model's lineup table), ``fits.parquet`` / ``goalie_fits.parquet``
+    (every weekly fit, keyed by ``before``: the day it was fit before), ``usage.json`` (minutes per slot and a
     starter's shots faced, by season) and ``values_latest.csv`` (the latest fit: every skater's value per
     60 and per game in the top slot of his group, offense and defense, and every goalie's per shot and
     per game)."""
     out.mkdir(parents=True, exist_ok=True)
     gv.pv.to_parquet(out / "pv.parquet", index=False)
+    pd.concat([f.assign(before=w) for w, f in gv.fits.items()], ignore_index=True).to_parquet(
+        out / "fits.parquet", index=False)
+    pd.concat([f.assign(before=w) for w, f in gv.goalie_fits.items()], ignore_index=True).to_parquet(
+        out / "goalie_fits.parquet", index=False)
     (out / "usage.json").write_text(json.dumps({"toi": {str(k): v for k, v in gv.usage.toi.items()},
                                                 "shots": {str(k): v for k, v in gv.usage.shots.items()}}))
     last = max(gv.usage.toi)

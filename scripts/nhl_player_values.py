@@ -103,8 +103,26 @@ def report(args):
     games = games.assign(game_id=games.game_id.astype(str), home=games.home.map(lambda t: MOVES.get(t, t)),
                          away=games.away.map(lambda t: MOVES.get(t, t)))
 
-    # game level: projected (previous game's) lineup value difference vs the goal margin
     g = games.set_index("game_id")
+    m = None
+    if args.market.exists():   # the wager games table: `runitback-wager nhl download`
+        m = pd.read_csv(args.market, dtype={"game_id": str})
+        m = m[(m.location == 1) & m.moneyline.notna() & m.opp_moneyline.notna()].set_index("game_id")
+        imp = lambda o: np.where(o < 0, -o / (-o + 100), 100 / (o + 100))  # noqa: E731
+        ph, pa = imp(m.moneyline.to_numpy()), imp(m.opp_moneyline.to_numpy())
+        m["p_home"] = ph / (ph + pa)
+        m["logit"] = np.log(m.p_home / (1 - m.p_home))
+    else:
+        print(f"\n({args.market} missing: no market comparison)")
+    game_level(pvt, g, m, "(a) previous starter (pv.parquet)")
+    act = args.values / "pv_actual.parquet"
+    if act.exists():
+        game_level(pd.read_parquet(act), g, m, "(b) actual starter, known at puck drop (pv_actual.parquet)")
+
+
+def game_level(pvt: pd.DataFrame, g: pd.DataFrame, m: pd.DataFrame | None, label: str):
+    """Projected lineup value difference (home - away) vs the goal margin and the market."""
+    print(f"\n### {label}")
     pvt = pvt.merge(g[["home", "away", "season"]], left_on="game_id", right_index=True)
     lev = [f"_pv_{i}" for i in range(5)]
     pvt["net"] = pvt[lev].sum(1)
@@ -124,16 +142,8 @@ def report(args):
         print(f"| {s} | {len(x)} | {x['diff'].corr(x.margin):.3f} | {x.sk.corr(x.margin):.3f} | "
               f"{x.gk.corr(x.margin):.3f} | {slope:.2f} | {x.win[q == 2].mean():.3f} / {x.win[q == 0].mean():.3f} |")
 
-    # vs the market (the wager games table: `runitback-wager nhl download`)
-    if not args.market.exists():
-        print(f"\n({args.market} missing: no market comparison)")
+    if m is None:
         return
-    m = pd.read_csv(args.market, dtype={"game_id": str})
-    m = m[(m.location == 1) & m.moneyline.notna() & m.opp_moneyline.notna()].set_index("game_id")
-    imp = lambda o: np.where(o < 0, -o / (-o + 100), 100 / (o + 100))  # noqa: E731
-    ph, pa = imp(m.moneyline.to_numpy()), imp(m.opp_moneyline.to_numpy())
-    m["p_home"] = ph / (ph + pa)
-    m["logit"] = np.log(m.p_home / (1 - m.p_home))
     d.index = d.index.astype(str)
     tot = (h[["_pv_0", "_pv_1"]].sum(1) + a[["_pv_0", "_pv_1"]].sum(1) - h[["_pv_2", "_pv_3", "_pv_4"]].sum(1)
            - a[["_pv_2", "_pv_3", "_pv_4"]].sum(1))
@@ -152,6 +162,8 @@ def report(args):
     pc = np.corrcoef(res(j["diff"].to_numpy(), j.logit.to_numpy()), res(j.margin.to_numpy(), j.logit.to_numpy()))[0, 1]
     print(f"\nPartial correlation of the pv difference with the margin, the market held fixed ({len(j)} games): "
           f"{pc:+.3f} +/- {1.96 / np.sqrt(len(j)):.3f}.")
+
+
 
 
 def main():
