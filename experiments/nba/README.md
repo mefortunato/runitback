@@ -1,4 +1,4 @@
-# NBA: player values
+# NBA: player values (N2) and foundation folds (N4)
 
 Work package N2 (`docs/multisport/PLAN.md`): layer B of the NFL player model for the NBA. Each player
 gets an offense and a defense value from a possession-level adjusted plus-minus. Each team-game gets
@@ -162,3 +162,71 @@ weaker; N3's projection should show whether that is so.
    replacement / out).
 3. **Better values:** a box-score prior for rookies and low-minute players (today they sit at
    replacement until 250 minutes), and in-season weighting.
+
+## Foundation folds (`pbp32`, N4)
+
+**Short answer**
+- **All six folds trained and passed the leak checks** (2022–2026 for the backtest, 2027 for upcoming
+  games). Each was validated on the end of the season before its test season, and its team-season
+  vocabulary stops there. Run 42753563613, about 2¼–3¼ hours per fold on a 4-core runner.
+- **The embedding carries team strength, about as much as pre-game Elo and little beyond it.** A
+  ridge on each team's previous-10-game mean `pbp_32` (fit before S) correlates 0.27–0.44 with the
+  home margin in S, against 0.31–0.46 for the Elo difference; both together match Elo alone. That is
+  the NFL's pattern (layer A mainly carries team strength). Whether it helps the wager model is N5's
+  question, not this one.
+- **Every fold kept its last epoch**, so the generator was still improving at 6 epochs. More epochs
+  are a cheap thing to try if N5 finds `pbp32` worth keeping.
+
+| fold S | validated on | latest train season | leak-free | val loss (type / result / clock) | PCA 32 explained | games before S / in S | corr: pbp32 | corr: Elo | corr: both |
+|---|---|---|---|---|---|---|---|---|---|
+| 2022 | 2021 | 2021 | yes | 4.188 (1.042 / 0.799 / 2.347) | 74.5% | 24,389 / 1,323 | 0.344 | 0.361 | 0.363 |
+| 2023 | 2022 | 2022 | yes | 4.173 (1.046 / 0.797 / 2.329) | 75.8% | 25,712 / 1,319 | 0.270 | 0.307 | 0.297 |
+| 2024 | 2023 | 2023 | yes | 4.155 (1.034 / 0.801 / 2.320) | 76.2% | 27,031 / 1,319 | 0.394 | 0.416 | 0.418 |
+| 2025 | 2024 | 2024 | yes | 4.235 (1.054 / 0.806 / 2.375) | 74.9% | 28,350 / 1,321 | 0.439 | 0.450 | 0.455 |
+| 2026 | 2025 | 2025 | yes | 4.217 (1.067 / 0.799 / 2.352) | 76.1% | 29,671 / 1,320 | 0.444 | 0.459 | 0.458 |
+| 2027 | 2026 | 2026 | yes | 4.173 (1.059 / 0.796 / 2.318) | 77.4% | 30,991 / 146 | 0.371 | 0.442 | 0.429 |
+
+Each fold's `pbp_32.parquet` has all 62,274 team-games (31,137 games, 2002 to 2026-27 so far). The
+2027 row covers only the 146 games played so far this season. "corr" is the margin correlation
+described under "Checks" below; it is a sanity check of the embedding, not a wager result. The
+table is the run's `report.md` (`nba-foundation-results` artifact); the folds are its
+`nba-foundation-models` artifact.
+
+**Setup**
+- **One generator per test season ("fold").** Fold S is the existing `runitback.nba` event
+  transformer (`runitback nba train`'s production recipe: 6 epochs, d_model 192, 4 layers, pre-game
+  ratings), trained on 2002+ games before the last 40% of season S-1, validated on that 40%.
+  It never sees season S. Seasons are named by the year they end in (2026 = 2025-26).
+  Settings: `runitback.nba.foundation.TRAIN`.
+- **Folds:** 2022–2026 (the backtest's last 5 complete seasons, as `experiments/nba/port.yaml`)
+  plus 2027, the current season, for upcoming games.
+- **Game embeddings, pooled per possession** (`runitback.nba.embed`). Each game is run teacher-forced
+  through the trunk. A possession is a run of consecutive events in one period with the same team
+  on offense; its state is the mean over its events, so a free-throw trip or a timeout doesn't
+  count for more than a one-shot possession. A team-game's raw embedding is the mean possession
+  state over its offensive possessions next to the mean over its defensive ones (2 × 192).
+- **PCA to 32 dimensions** fit on the games before S only (`runitback.core.foundation`, shared with
+  the NFL). Later games are projected with the stored projection, so the table a wager model was fit
+  on never changes. Output per fold: `model.pt`, `pca_32.npz`, `pbp_32.parquet` (`game_id`, `team`,
+  `season`, `_pbp_0..31`; `game_id` is ESPN's as a string, `team` the current franchise
+  abbreviation, which is how the wager model's NBA games table keys teams too; N5 checks the join).
+- **Checks** (`scripts/nba_foundation_report.py`, run by the workflow; it fails if a fold saw its
+  test season): validation season and the checkpoint's team-season vocabulary per fold, validation
+  loss, explained variance, and a team-strength sanity check: a ridge (fit before S) from each
+  team's previous-10-game mean embedding to the home margin in S, against the same from pre-game Elo.
+- **Not done (optional in the plan):** lineup inputs from N1's on-court fives. The NFL found that
+  the generator's player embeddings didn't rank players (personnel came through the player values,
+  layers B → C), so the NBA's personnel signal is left to N2/N3.
+
+### Reproducing the folds
+
+`NBA foundation` (`.github/workflows/nba-foundation.yml`; run it from the Actions tab, or push a
+change to the file on a `claude/**` branch) calls `nba-experiment-inputs.yml`, which downloads the
+ESPN play-by-play (sportsdataverse) for 2002–2027, preprocesses it and trains each fold in its own
+job. Artifacts: `nba-data`, `nba-fold<S>`, `nba-foundation-results` (the report) and
+`nba-foundation-models` (all folds). Experiments that use the folds (N5) call
+`nba-experiment-inputs.yml` themselves rather than reading this run's artifacts.
+
+Locally: `runitback nba download --start 2002 --end 2027 --no-players`, `runitback nba preprocess
+--start 2002 --end 2027`, then `runitback nba foundation --root foundation/nba` (or `--season S` for
+one fold), and `python scripts/nba_foundation_report.py foundation/nba`.
