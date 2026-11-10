@@ -1,0 +1,40 @@
+{
+  "current_season": 2024,
+  "first": {
+    "2024": "trained, embedded"
+  },
+  "first_files": {
+    "model.pt": "05b571f65cd22e2ea21b8c6d2bb26e9f148b6e06c295febb698bada43e58c510",
+    "pca_32.npz": "7ccb3bf9e857c9d6b6b8df98b4a3f45b2ff2616f6a35ecb6d0667a9a1be667c1",
+    "pbp_32.parquet": "2dd0e44ba6304dd1d04ceb72abaf3734a2f43fd6e16682425b4b7edb9dfc2253"
+  },
+  "update": {
+    "2024": "4 new games"
+  },
+  "update_files": {
+    "model.pt": "05b571f65cd22e2ea21b8c6d2bb26e9f148b6e06c295febb698bada43e58c510",
+    "pca_32.npz": "7ccb3bf9e857c9d6b6b8df98b4a3f45b2ff2616f6a35ecb6d0667a9a1be667c1",
+    "pbp_32.parquet": "380e664f80526d6723fe03b9492ba56770892e6c7638a4f23f31fa3fe5a5e50c"
+  },
+  "noop": {
+    "2024": "0 new games"
+  },
+  "noop_files": {
+    "model.pt": "05b571f65cd22e2ea21b8c6d2bb26e9f148b6e06c295febb698bada43e58c510",
+    "pca_32.npz": "7ccb3bf9e857c9d6b6b8df98b4a3f45b2ff2616f6a35ecb6d0667a9a1be667c1",
+    "pbp_32.parquet": "380e664f80526d6723fe03b9492ba56770892e6c7638a4f23f31fa3fe5a5e50c"
+  },
+  "embed_files": {
+    "raw.parquet": "ed056f8a32b589edca54400e7c6602df1e5e31a1b99119f6c46cb27aebae01a3",
+    "pca_32.npz": "7ccb3bf9e857c9d6b6b8df98b4a3f45b2ff2616f6a35ecb6d0667a9a1be667c1",
+    "pbp_32.parquet": "950ea4e97e18168e735ee251a7d53557204ee1901bff8c71471a60105a7cd3ff",
+    "pca_4.npz": "dab49f04d1f684f10935a9ee48f14d9661bbe20079fa3daccd7568840fa39df2",
+    "pbp_4.parquet": "bd81697c99fabf233741f0ffe903658d560d63bdea804e2d19c02c2660412d56"
+  },
+  "fold_listing": [
+    "model.pt",
+    "pbp_32.parquet",
+    "pca_32.npz"
+  ],
+  "torch": "2.15.0"
+}
