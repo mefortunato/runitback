@@ -348,6 +348,7 @@ ESPN and historical ones (`GS`, `NJ`, `SEA`, ...) are mapped to the current fran
 | Rules engine | `src/runitback/nba/engine/rules.py` | `apply_outcome(state, outcome)`, legality, quarters, OT |
 | Preprocessing | `src/runitback/nba/data/preprocess.py` | ESPN rows → (state, event); results derived from what happens next |
 | Ratings | `src/runitback/nba/data/ratings.py` | efficiency vs league average (EWMA) and Elo |
+| Players | `src/runitback/nba/data/players.py` | on-court fives for every event (box-score starters + substitutions, period starts inferred, missing subs repaired); per-game player table (minutes, starter, DNP reason) and player directory |
 | Model | `src/runitback/nba/model/transformer.py` | core trunk; heads type → result → clock |
 | Sampler / API / routes | `src/runitback/nba/sim/`, `src/runitback/nba/server/app.py` | `simulate_games`, FastAPI |
 | Season simulator | `src/runitback/nba/sim/season.py` | schedule formula, standings and tiebreakers, play-in, playoffs |
@@ -402,7 +403,8 @@ model, more seasons and `calibrate` are the obvious next steps.
 
 ```bash
 pip install -e ".[data,dev]"
-runitback nba download --start 2015 --end 2027      # raw parquet → data/nba/raw/
+runitback nba download --start 2015 --end 2027      # raw parquet (play-by-play + player box) → data/nba/raw/
+runitback nba players --start 2015 --end 2027       # → data/nba/processed/{on_court,player_games,players}.parquet, prints the 5-on-court check
 runitback nba preprocess --start 2015 --end 2027    # → data/nba/processed/{games,plays,ratings}.parquet, prints engine agreement
 runitback nba train --out runs/nba/eval --val-season 2026        # hold out the last 40% of 2025-26
 runitback nba evaluate --ckpt runs/nba/eval/model.pt
