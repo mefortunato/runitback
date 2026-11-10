@@ -711,13 +711,19 @@ games' shift data shows strength changes no penalty explains. Details:
 
 ## College football
 
-`runitback.cfb` adapts the NFL engine to college rules and trains the NFL play transformer on college
-plays (docs/multisport/PLAN.md, F1). It is the generator behind the college `pbp32` foundation folds;
-there is no college personnel data, so the model is team-level (team-season tokens and pre-game
-EPA/Elo ratings, no lineups).
+`runitback.cfb` holds college football's play-by-play and player data, the NFL engine adapted to
+college rules with its generator (the college `pbp32` foundation folds), and quarterback values: the
+inputs to the CFB player model (`docs/multisport/PLAN.md`, packages F1-F3). The CFB wager model
+(box-score baseline) is `runitback.wager.cfb`.
+
+### Engine and generator (F1)
+
+The NFL engine with college rules, and the NFL play transformer trained on college plays. There is
+no college personnel data, so the model is team-level (team-season tokens and pre-game EPA/Elo
+ratings, no lineups). Results: `experiments/cfb/README.md`, "Foundation folds".
 
 ```bash
-runitback cfb download --start 2004 --end 2026     # → data/cfb/raw/pbp_<season>.parquet (sportsdataverse espn_cfb_pbp)
+runitback cfb download --start 2004 --end 2026     # → data/cfb/raw/{pbp,player_box,schedule}_<season>.parquet
 runitback cfb preprocess --start 2004 --end 2026   # → data/cfb/processed/{games,plays,ratings}.parquet, replay.json
 runitback cfb foundation --season 2025             # → foundation/cfb/fold2025/{model.pt,pca_32.npz,pbp_32.parquet}
 ```
@@ -737,6 +743,24 @@ games listed out of order. Overtime rows are often incomplete (88.8% of overtime
 so a game keeps its overtime only when all of it replays (329 games); the overtime rules are covered
 by unit tests (`tests/cfb/test_engine.py`). About half the games (9,293) have a per-play clock; the
 rest only update it every few plays.
+
+### Players and quarterback values (F2)
+
+```bash
+runitback cfb download --start 2012 --end 2026        # → data/cfb/raw/{pbp,player_box,schedule}_<season>.parquet (SportsDataverse)
+runitback cfb players --start 2012 --end 2026         # → data/cfb/processed/{qb_plays,team_games,players}.parquet, prints id coverage
+runitback cfb player-values --start 2012 --end 2026   # → player_values/cfb/{pv.parquet,starters.parquet,usage.json,values_latest.csv}
+```
+
+- **Ids.** College play-by-play has no on-field personnel, only the passer / rusher / receiver.
+  ESPN athlete ids come with the play-by-play for over 99.6% of passes from 2014; the rest are
+  matched by name to the player box scores (`runitback.cfb.data.players`).
+- **Quarterback values** (`runitback.cfb.player_values`). EPA per quarterback play (dropbacks and
+  quarterback runs) on the `runitback.core` ridge fitter, with situation, FCS-defense and defense
+  team-season controls; refit weekly on earlier plays only, in points per game over replacement.
+- **`pv.parquet`** gives each wager team-game its projected starter's value (the previous game's
+  starter) and the starting-QB-change term (vs the team's last 7 starters), in the layout of
+  `runitback.wager.cfb.lineup.LINEUP`. Write-up: `experiments/cfb/README.md`.
 
 ## Quick start (pre-trained model)
 
@@ -1108,7 +1132,9 @@ client's cache, retries and throttle and the leakage-free run values. The NHL te
 events table, and the engine (power plays and their release, stacked and coincidental penalties,
 empty nets, 3-on-3 and playoff overtime, penalty shots, the shootout, and random legal play always
 finishing a game), the play-by-play conversion, a replay of four real 2024-25 games
-(`tests/nhl/fixtures`), and a full-season replay when `data/nhl/raw` exists.
+(`tests/nhl/fixtures`), and a full-season replay when `data/nhl/raw` exists. The college football tests
+cover the name-to-id mapping, quarterback plays and starters, leak-free weekly quarterback values and
+the per-game starting-QB terms, on synthetic data.
 
 ## Limitations / next steps (NFL)
 

@@ -147,13 +147,27 @@ def test_replay_agreement_on_downloaded_seasons(tmp_path):
     assert summary["final_agreement"] >= 0.97
 
 
-def test_download_keeps_only_the_preprocess_columns(tmp_path):
-    from runitback.cfb.data.download import download_season, load_raw
+def test_download_keeps_only_the_columns_read(tmp_path):
+    from runitback.cfb.data.download import BOX_COLUMNS, PBP_COLUMNS, download_season, load, load_raw
     df = pd.read_parquet(FIXTURE)
     df["unused"] = 1
-    path = download_season(2023, tmp_path, read=lambda url: df[df.season == 2023])
-    assert path is not None and "unused" not in pd.read_parquet(path).columns
+    box = pd.DataFrame({c: [1] for c in BOX_COLUMNS} | {"unused": [1]})
+    sched = pd.DataFrame({"id": [401551789], "anything": ["kept"]})
+
+    def read(url):
+        if "espn_cfb_pbp" in url:
+            return df[df.season == 2023]
+        return box if "player_box" in url else sched
+
+    paths = download_season(2023, tmp_path, read=read)
+    assert [p.name for p in paths] == ["pbp_2023.parquet", "player_box_2023.parquet", "schedule_2023.parquet"]
+    assert "unused" not in pd.read_parquet(paths[0]).columns
+    assert list(pd.read_parquet(paths[1]).columns) == BOX_COLUMNS
+    assert list(load("schedule", [2023, 2024], tmp_path).columns) == ["id", "anything"]  # kept whole
     raw = load_raw(2023, tmp_path)
-    assert set(COLUMNS) <= set(raw.columns)
-    assert download_season(2023, tmp_path / "x", read=lambda url: (_ for _ in ()).throw(OSError("404"))) is None
+    assert set(PBP_COLUMNS) <= set(raw.columns) and set(COLUMNS) == set(PBP_COLUMNS)
     assert np.isin(raw.game_id.unique(), [401551789, 401525564]).all()
+    # the engine needs only the play-by-play; a file the release lacks is skipped
+    missing = download_season(2027, tmp_path / "x", players=False,
+                              read=lambda url: (_ for _ in ()).throw(OSError("404")))
+    assert missing == []
