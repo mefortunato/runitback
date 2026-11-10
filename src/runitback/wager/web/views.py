@@ -166,7 +166,7 @@ class SportView:
     ranking_every: int | None = None
 
 
-BUILTIN_VIEWS = ("nfl", "cfb", "mlb")  # other sports are ported later
+BUILTIN_VIEWS = ("nfl", "cfb", "nba", "cbb", "wnba", "wcbb", "mlb")  # nhl is ported later
 _views: dict[str, SportView] = {}
 
 

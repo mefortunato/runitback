@@ -1,0 +1,12 @@
+# S4a (docs/multisport/PLAN.md): does the port of sportsml's wnba model reproduce sportsml's
+# production Brier? Walk-forward over the last 5 complete seasons; each season's model is fit on
+# earlier seasons only. Run by .github/workflows/basketball-port.yml, which backtests `prod`
+# with both runitback.wager and sportsml (pinned commit) on the same games table, plus
+# `prod_seed1` (runitback, another seed) for the noise floor.
+#   python scripts/wager_arm.py prod 2025 --sport wnba --experiment experiments/wnba/port.yaml
+seasons: [2022, 2023, 2024, 2025, 2026]
+baseline: prod
+configs:
+  prod: {}                      # sportsml's production transformer (Sport.transformer defaults)
+  prod_seed1:                   # the baseline with another seed: the noise floor
+    fit: {seed: 1}

@@ -43,4 +43,13 @@ EQUIVALENT_CODE: dict[str, tuple[str, ...]] = {
     "c6b81294866cf1e201f8fb96cee17ab6691da011000a10ad0d5200f00f2904a3": (
         "8158c871cd70aabecfa85bd55019e1c18a2e199ae98a4557db53f62e95c2342c",
     ),
+    # S4c (mlb), S4d (cfb) and S4a (nba, wnba, cbb, wcbb): sports ported from sportsml and added
+    # to BUILTIN_SPORTS (core/sport.py); nothing the NFL trains on or predicts with changed. The
+    # NFL code after S4d, after S4c, and before either.
+    # nfl
+    "5a7e94f366292c2a6bf12774a323fb5098f78465e6b47b1c3a9ee44ddf7aa4d4": (
+        "174f47a238ad1c9bdf44a97bffe1ce5d61065a2ed14e1bfa0532855708513074",
+        "f297abba0effffa148a4e535957011d0747e2d1b34e55127f705e8045dd3e028",
+        "d51c92ffb1132c3abdc0a5ece6a07f8f881b88a35ae694c7b4ff5b1e73246922",
+    ),
 }

@@ -1,0 +1,191 @@
+# S4a (docs/multisport/PLAN.md): do the ported basketball wager models (nba, wnba, cbb, wcbb)
+# reproduce sportsml's production Brier? (experiments/<sport>/port.yaml)
+#
+#   data (per sport) ─► arms (sport × 5 seasons × {sportsml, prod, prod_seed1}) ─► report (per sport)
+#
+# data downloads each sport's games from the public sources (sportsdataverse's ESPN files, ESPN's
+# odds API; men's college lines from CollegeBasketballData) with runitback.wager, then has sportsml
+# (pinned commit below) read the same files and process both tables, and fails unless they are
+# byte-identical. Each arm job backtests one season: `sportsml` with sportsml's code, `prod` with
+# runitback.wager's (the same production settings and seed), `prod_seed1` runitback.wager with
+# another seed (the noise floor). report scores them (scripts/port_report.py) and uploads the
+# <sport>-port-results artifact; nothing is committed.
+#
+# Runs when this file or a port configuration changes on a claude/ branch, or by hand.
+name: Basketball port
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - .github/workflows/basketball-port.yml
+      - experiments/nba/port.yaml
+      - experiments/wnba/port.yaml
+      - experiments/cbb/port.yaml
+      - experiments/wcbb/port.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: basketball-port-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+  # mefortunato/sportsml main when the port was made
+  SPORTSML_REF: b1d16320c32d12c0fbbf4816891d35acc758fb9f
+
+jobs:
+  data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        sport: [nba, wnba, cbb, wcbb]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with: { repository: mefortunato/sportsml, ref: "${{ env.SPORTSML_REF }}", path: sportsml }
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - uses: astral-sh/setup-uv@v7
+      - name: Install runitback and sportsml
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+          (cd sportsml && UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/sportsml uv sync --locked --no-default-groups)
+      - name: Download (runitback.wager)
+        env:
+          # men's college lines: ~a dozen requests a season instead of ~5,000 from ESPN, which
+          # answers a runner that many with 403 (runitback.wager.cbb.data.cbbd)
+          CBBD_API_KEY: ${{ secrets.CBBD_API_KEY }}
+        run: |
+          if [ "${{ matrix.sport }}" = cbb ] && [ -z "$CBBD_API_KEY" ]; then
+            echo "::error::CBBD_API_KEY is not set: men's college lines would come from ~85,000 ESPN odds requests"
+            exit 1
+          fi
+          runitback-wager ${{ matrix.sport }} download --output_file data/${{ matrix.sport }}/raw.csv
+      - name: The same files through sportsml, and both processed tables
+        env:
+          CBBD_API_KEY: ${{ secrets.CBBD_API_KEY }}
+        run: |
+          s=${{ matrix.sport }}; sm=$RUNNER_TEMP/sportsml/bin/sportsml
+          # finished seasons and finished games' lines come from data/$s/espn_cache, so this
+          # makes only the current season's few requests
+          $sm $s download --output_file data/$s/raw_sportsml.csv
+          runitback-wager $s process --games data/$s/raw.csv --output_file data/$s/games.csv
+          $sm $s process --games data/$s/raw.csv --output_file data/$s/games_sportsml.csv
+          # the current season's upcoming games can get new lines between the two downloads:
+          # compare the played games
+          python - <<EOF
+          import pandas as pd
+          # the downloads: a warning only, since lines ESPN refused (403) in the first are
+          # requested again in the second
+          x, y = (pd.read_csv(f"data/$s/{n}.csv", low_memory=False) for n in ("raw", "raw_sportsml"))
+          x, y = (t[t.result.notna()].reset_index(drop=True) for t in (x, y))
+          try:
+              pd.testing.assert_frame_equal(x, y)
+              print(f"$s raw: {len(x)} played rows identical in runitback.wager and sportsml")
+          except AssertionError as e:
+              print(f"::warning::$s downloads differ (refused odds requests?): {str(e)[:300]}")
+          # the processed tables of the same raw file must be identical
+          x, y = (pd.read_csv(f"data/$s/{n}.csv", low_memory=False) for n in ("games", "games_sportsml"))
+          pd.testing.assert_frame_equal(x, y)
+          print(f"$s games: {len(x)} rows identical in runitback.wager and sportsml")
+          g = pd.read_csv("data/$s/games.csv", low_memory=False)
+          g = g[g.result.notna()]
+          print(g.groupby("season").agg(rows=("result", "size"),
+                lined=("spread_line", lambda v: v.notna().mean())).tail(8).to_string())
+          EOF
+          cmp data/$s/games.csv data/$s/games_sportsml.csv && echo "games.csv byte-identical"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.sport }}-data
+          path: data/${{ matrix.sport }}/games.csv
+          retention-days: 7
+
+  arms:
+    needs: data
+    # a sport whose data job failed fails its own arms (no games artifact), not the others'
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    # GitHub's limit is 360; a men's college fit takes 1-2 hours
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        sport: [nba, wnba, cbb, wcbb]
+        season: [2022, 2023, 2024, 2025, 2026]
+        arm: [sportsml, prod, prod_seed1]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        if: matrix.arm == 'sportsml'
+        with: { repository: mefortunato/sportsml, ref: "${{ env.SPORTSML_REF }}", path: sportsml }
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - uses: astral-sh/setup-uv@v7
+        if: matrix.arm == 'sportsml'
+      - name: Install
+        run: |
+          if [ "${{ matrix.arm }}" = sportsml ]; then
+            (cd sportsml && UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/sportsml uv sync --locked --no-default-groups)
+            echo "PY=$RUNNER_TEMP/sportsml/bin/python" >> "$GITHUB_ENV"
+            echo "PKG=sportsml" >> "$GITHUB_ENV"
+            echo "CONFIG=prod" >> "$GITHUB_ENV"
+          else
+            pip install torch --index-url https://download.pytorch.org/whl/cpu
+            pip install -e ".[wager]"
+            echo "PY=python" >> "$GITHUB_ENV"
+            echo "PKG=runitback" >> "$GITHUB_ENV"
+            echo "CONFIG=${{ matrix.arm }}" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ matrix.sport }}-data", path: "data/${{ matrix.sport }}" }
+      - name: Backtest ${{ matrix.sport }} ${{ matrix.arm }} on ${{ matrix.season }}
+        run: |
+          # scripts/wager_arm.py writes sportsml's cell as runs/sportsml_prod
+          $PY scripts/wager_arm.py $CONFIG ${{ matrix.season }} --sport ${{ matrix.sport }} --package $PKG \
+            --experiment experiments/${{ matrix.sport }}/port.yaml --output-dir runs --threads $(nproc)
+          mkdir -p out/${{ matrix.arm }}
+          name=$CONFIG; [ "$PKG" = sportsml ] && name=sportsml_prod
+          cp runs/$name/${{ matrix.season }}.csv out/${{ matrix.arm }}/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arm-${{ matrix.sport }}-${{ matrix.arm }}-${{ matrix.season }}
+          path: out
+          retention-days: 30
+
+  report:
+    needs: arms
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        sport: [nba, wnba, cbb, wcbb]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13" }
+      - run: pip install numpy pandas
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "arm-${{ matrix.sport }}-*"
+          path: experiments/${{ matrix.sport }}/port
+          merge-multiple: true
+      - name: Score
+        run: |
+          python scripts/port_report.py experiments/${{ matrix.sport }}/port --sport ${{ matrix.sport }} \
+            --out experiments/${{ matrix.sport }}/port/report.md
+          cat experiments/${{ matrix.sport }}/port/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.sport }}-port-results
+          path: experiments/${{ matrix.sport }}/port
+          retention-days: 90
