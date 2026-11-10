@@ -1,0 +1,184 @@
+# The college football box-score baseline (S4d, experiments/cfb/baseline.yaml): the sportsml
+# production transformer as ported to runitback.wager, backtested walk-forward on 2021-2025 next to
+# mefortunato/sportsml's own code (pinned below) on the same games.
+#
+#   shards (one per season: ESPN odds) ─► data ─► arms (2 packages × 2 seeds × 5 seasons) ─► report
+#
+# Every input is downloaded in this run. ESPN's odds API refuses a runner after a burst of requests
+# (a full download is ~12,000), so each season's lines are fetched by its own job and the caches
+# are merged; a refused shard fails and can be re-run on its own ("Re-run failed jobs"). The report
+# job scores every cell against sportsml_prod and uploads the cfb-baseline-results artifact.
+#
+# Runs when this file or the experiment's configuration changes on a claude/ branch, or by hand.
+name: CFB baseline
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - .github/workflows/cfb-baseline.yml
+      - experiments/cfb/baseline.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cfb-baseline-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+  # the sportsml commit the port was taken from
+  SPORTSML: "sportsml @ git+https://github.com/mefortunato/sportsml@b1d16320c32d12c0fbbf4816891d35acc758fb9f"
+  LAST_SEASON: "2025"
+
+jobs:
+  shards:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # betting lines start in 2013; earlier seasons need no odds requests
+        seasons: ["2004-2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020",
+                  "2021", "2022", "2023", "2024", "2025"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - name: Download ${{ matrix.seasons }}
+        run: |
+          range="${{ matrix.seasons }}"
+          runitback-wager cfb download --first_season "${range%-*}" --last_season "${range#*-}" \
+            --cache_dir data/cfb/espn_cache --output_file shard.csv
+          ls -la data/cfb/espn_cache
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cfb-cache-${{ matrix.seasons }}
+          path: data/cfb/espn_cache
+          retention-days: 7
+
+  data:
+    needs: shards
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { pattern: "cfb-cache-*", path: data/cfb/espn_cache, merge-multiple: true }
+      - name: Games with lines (every finished season is in the merged cache)
+        run: |
+          runitback-wager cfb download --last_season $LAST_SEASON --cache_dir data/cfb/espn_cache \
+            --output_file data/cfb/raw.csv
+          runitback-wager cfb process --games data/cfb/raw.csv --output_file data/cfb/games.csv
+          ls -la data/cfb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cfb-data
+          path: |
+            data/cfb/raw.csv
+            data/cfb/games.csv
+          retention-days: 7
+
+  arms:
+    needs: data
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [runitback, sportsml]
+        config: [prod, prod_seed1]
+        season: [2021, 2022, 2023, 2024, 2025]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install ${{ matrix.package }}
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          if [ "${{ matrix.package }}" = sportsml ]; then pip install "$SPORTSML" pyyaml
+          else pip install -e ".[wager]"; fi
+      - uses: actions/download-artifact@v4
+        with: { name: cfb-data, path: data/cfb }
+      - name: Process the raw games with sportsml's own code
+        if: matrix.package == 'sportsml'
+        run: sportsml cfb process --games data/cfb/raw.csv --output_file data/cfb/games.csv
+      - name: Backtest ${{ matrix.package }} ${{ matrix.config }} on ${{ matrix.season }}
+        run: |
+          python scripts/wager_arm.py ${{ matrix.config }} ${{ matrix.season }} --sport cfb \
+            --experiment experiments/cfb/baseline.yaml --package ${{ matrix.package }} \
+            --threads $(nproc)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arm-${{ matrix.package }}-${{ matrix.config }}-${{ matrix.season }}
+          path: experiments/cfb/baseline/*/${{ matrix.season }}.csv
+          retention-days: 30
+
+  report:
+    needs: [data, arms]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: cfb-data, path: data/cfb }
+      - name: Gather every job's results
+        uses: actions/download-artifact@v4
+        with: { pattern: "arm-*", path: experiments/cfb/baseline, merge-multiple: true }
+      - name: Score
+        run: |
+          python - <<'EOF'
+          import pathlib
+          import yaml
+          from runitback.wager.experiments import ablate
+          cfg = yaml.safe_load(open("experiments/cfb/baseline.yaml"))
+          root = pathlib.Path("experiments/cfb/baseline")
+          names = {n: c for n, c in cfg["configs"].items()}
+          names |= {f"sportsml_{n}": c for n, c in cfg["configs"].items()}
+          # every cell is cached by now: this only scores (a missing one would be refit; skip it)
+          have = {n: c for n, c in names.items()
+                  if all((root / n / f"{s}.csv").exists() for s in cfg["seasons"])}
+          print("complete configurations:", list(have))
+          for seasons, out in ((cfg["seasons"], root), ([2023, 2024, 2025], root / "last3")):
+              out.mkdir(exist_ok=True)
+              for n in have:  # ablate reads <output_dir>/<name>/<season>.csv
+                  (out / n).mkdir(exist_ok=True)
+                  for s in seasons:
+                      dst = out / n / f"{s}.csv"
+                      if not dst.exists():
+                          dst.write_bytes((root / n / f"{s}.csv").read_bytes())
+              ablate("data/cfb/games.csv", "cfb", have, seasons, str(out), cfg["baseline"], 1, 1)
+          EOF
+          python scripts/foundation_report.py experiments/cfb/baseline --baseline sportsml_prod \
+            --configs prod prod_seed1 sportsml_prod sportsml_prod_seed1 \
+            --out experiments/cfb/baseline/report.md
+          python scripts/port_parity.py experiments/cfb/baseline --a prod --b sportsml_prod \
+            --out experiments/cfb/baseline/parity.md
+          {
+            echo "## CFB baseline, 2021-2025"; cat experiments/cfb/baseline/ablation.md
+            echo; echo "## 2023-2025 (sportsml's published seasons)"; cat experiments/cfb/baseline/last3/ablation.md
+            echo; echo "## Markets"; cat experiments/cfb/baseline/report.md
+            echo; echo "## Port parity"; cat experiments/cfb/baseline/parity.md
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: cfb-baseline-results, path: experiments/cfb/baseline, retention-days: 90 }
