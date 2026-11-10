@@ -3,7 +3,7 @@
 Simulate sports games one play at a time, or replay a matchup a thousand times.
 
 Run It Back covers several sports. Each sport has its own package with its rules, data and
-vocabulary (`runitback.nfl`, `runitback.nba`). Shared pieces live in `runitback.core`: the
+vocabulary (`runitback.nfl`, `runitback.nba`; `runitback.nhl` has the data so far). Shared pieces live in `runitback.core`: the
 transformer building blocks, the score-distribution summaries, the model scheduler and training
 helpers. One server (`runitback.server`) serves every sport's API and the web app:
 
@@ -466,6 +466,29 @@ way NFL seasons do; shot locations on the court are
 illustrative because the model predicts a shot's value and result, not where it was taken; rare
 sequences are simplified (flagrant and clear-path free throws followed by possession, fouls on
 the offense during a loose ball, and coach's challenges).
+
+## NHL
+
+`runitback.nhl` so far holds the event and personnel data for the player-based wager model
+(`docs/multisport/PLAN.md`, H1). There is no simulator yet.
+
+```bash
+runitback nhl download --start 2011 --end 2027   # → data/nhl/raw/: play-by-play, schedule, players, gap shift charts
+runitback nhl events --start 2011 --end 2027     # → data/nhl/processed/{events_<season>,games,players}.parquet, prints coverage
+```
+
+| Piece | File | What it does |
+|---|---|---|
+| Download | `src/runitback/nhl/data/download.py` | sportsdataverse `nhl_pbp_full` (each release file checked by its `season` column; the file names are inconsistent), the schedule and player positions (`api.nhle.com/stats/rest`), shift charts for gap games |
+| Events | `src/runitback/nhl/data/events.py` | one row per event with the skaters (`home_1..6`, `away_1..6`) and goalies on ice, strength from the home side, `xg`; `CHANGE` rows attributed to games and sides; games with missing personnel rebuilt from the shift charts |
+
+Coverage (share of play events with skaters on ice for both teams, after the shift-chart fallback):
+99.9–100% in every season from 2010-11. The fallback rebuilds 176 games of 2019-20 (every event but
+no personnel in the release) and about 150 partial games elsewhere. Rebuilt from shift charts,
+15 complete games per season match the release's personnel on 98.8–100% of events (100% through
+2020-21). Gaps that remain: **2014-15 is not in the release** (no events at all), **2009-10 has
+no personnel** in either source (events and `xg` only), and 17 games of April 2025 have no
+overtime personnel (the NHL API has no shift charts for them).
 
 ## Quick start (pre-trained model)
 
