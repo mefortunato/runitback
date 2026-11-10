@@ -1,5 +1,5 @@
 """Command-line interface: runitback serve, runitback <nfl|nba> download | preprocess | train |
-evaluate | calibrate | simulate | serve, runitback mlb download | process | probables, and
+evaluate | calibrate | simulate | serve, runitback mlb download | process | lineups | probables, and
 runitback nhl download | events | lineups."""
 from __future__ import annotations
 
@@ -572,6 +572,23 @@ def mlb_process(start: int = typer.Option(2015, help="first season (its run valu
     summary = build_seasons(list(range(start, end + 1)), mlb_paths.feeds_dir(), mlb_paths.processed_dir(),
                             client, workers, lookback)
     typer.echo(json.dumps(summary, indent=1))
+
+
+@mlb.command("lineups")
+def mlb_lineups(sp: str = typer.Option("probable", help="starting pitcher: probable (the feed's, leaks a "
+                                                         "late scratch) or rotation (5 team-games ago)"),
+                season: list[int] = typer.Option(None, help="seasons to project (default: all processed; "
+                                                             "earlier ones are still read as history)"),
+                live: list[str] = typer.Option(None, help="also project these dates' upcoming games "
+                                                          "(YYYY-MM-DD) from the probables and posted lineups")):
+    """Projected lineups (probable starter, previous lineup vs his hand) and the posted stand-in for
+    every processed game: data/mlb/processed/{projected,posted}_lineups.parquet
+    (runitback.mlb.data.lineups); prints the check vs actual."""
+    from .mlb import paths as mlb_paths
+    from .mlb.data.lineups import build_lineups
+    _mlb_log()
+    typer.echo(json.dumps(build_lineups(mlb_paths.processed_dir(), seasons=season or None, sp=sp,
+                                        live_dates=live or None), indent=1))
 
 
 @mlb.command("probables")
