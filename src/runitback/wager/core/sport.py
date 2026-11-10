@@ -9,7 +9,7 @@ import pandas as pd
 from .lineup import LineupSpec
 from .schema import GameSchema
 
-BUILTIN_SPORTS = ("nfl", "nba", "cbb", "wcbb", "wnba", "mlb")  # nhl and cfb are ported later
+BUILTIN_SPORTS = ("nfl", "cfb", "nba", "cbb", "wcbb", "wnba", "mlb")  # nhl is ported later
 
 _registry: dict[str, Sport] = {}
 

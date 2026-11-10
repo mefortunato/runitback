@@ -3,7 +3,7 @@
 # earlier seasons only. Run by .github/workflows/basketball-port.yml, which backtests `prod`
 # with both runitback.wager and sportsml (pinned commit) on the same games table, plus
 # `prod_seed1` (runitback, another seed) for the noise floor.
-#   python scripts/wager_arm.py wcbb prod 2025 --experiment experiments/wcbb/port.yaml
+#   python scripts/wager_arm.py prod 2025 --sport wcbb --experiment experiments/wcbb/port.yaml
 seasons: [2022, 2023, 2024, 2025, 2026]
 baseline: prod
 configs:

@@ -141,17 +141,19 @@ jobs:
             pip install torch --index-url https://download.pytorch.org/whl/cpu
             pip install -e ".[wager]"
             echo "PY=python" >> "$GITHUB_ENV"
-            echo "PKG=runitback.wager" >> "$GITHUB_ENV"
+            echo "PKG=runitback" >> "$GITHUB_ENV"
             echo "CONFIG=${{ matrix.arm }}" >> "$GITHUB_ENV"
           fi
       - uses: actions/download-artifact@v4
         with: { name: "${{ matrix.sport }}-data", path: "data/${{ matrix.sport }}" }
       - name: Backtest ${{ matrix.sport }} ${{ matrix.arm }} on ${{ matrix.season }}
         run: |
-          $PY scripts/wager_arm.py ${{ matrix.sport }} $CONFIG ${{ matrix.season }} --package $PKG \
+          # scripts/wager_arm.py writes sportsml's cell as runs/sportsml_prod
+          $PY scripts/wager_arm.py $CONFIG ${{ matrix.season }} --sport ${{ matrix.sport }} --package $PKG \
             --experiment experiments/${{ matrix.sport }}/port.yaml --output-dir runs --threads $(nproc)
           mkdir -p out/${{ matrix.arm }}
-          cp runs/$CONFIG/${{ matrix.season }}.csv out/${{ matrix.arm }}/
+          name=$CONFIG; [ "$PKG" = sportsml ] && name=sportsml_prod
+          cp runs/$name/${{ matrix.season }}.csv out/${{ matrix.arm }}/
       - uses: actions/upload-artifact@v4
         with:
           name: arm-${{ matrix.sport }}-${{ matrix.arm }}-${{ matrix.season }}
