@@ -1,0 +1,25 @@
+# College football box-score baseline (S4d): the sportsml production transformer ported to
+# runitback.wager, backtested walk-forward next to sportsml's own code on the same games.
+# Run by .github/workflows/cfb-baseline.yml (one job per package x configuration x season):
+#
+#   prod / prod_seed1                    runitback.wager (this repository), seeds 0 and 1
+#   sportsml_prod / sportsml_prod_seed1  mefortunato/sportsml at the commit pinned in the workflow
+#
+# Both packages score the same raw games table (downloaded once by runitback.wager, which is
+# sportsml's downloader unchanged), each processing it with its own code. The port passes when
+# prod vs sportsml_prod is within the seed noise (prod_seed1 vs prod), and prod's Brier on
+# 2023-2025 matches sportsml's published production figure (0.1672 for market_eff in
+# sportsml/experiments/cfb/ablation/ablation.md).
+#
+# Configurations pin sportsml's production CFB settings (cfb/__init__.py: history 28, total
+# weight 1, past-line tokens and efficiency), so a later change to the sport's defaults does not
+# change what this baseline measures. Opponent strength (on in both) comes from Sport.transformer:
+# the backtest's fitter passes it positionally, so it cannot be pinned here.
+seasons: [2021, 2022, 2023, 2024, 2025]
+baseline: sportsml_prod
+configs:
+  prod:
+    model: &prod {history: 28, total_weight: 1.0, market_tokens: true, efficiency: true}
+  prod_seed1:
+    model: *prod
+    fit: {seed: 1}
