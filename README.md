@@ -417,6 +417,7 @@ runitback nba train --out runs/nba/eval --val-season 2026        # hold out the 
 runitback nba evaluate --ckpt runs/nba/eval/model.pt
 runitback nba calibrate --ckpt runs/nba/eval/model.pt --season 2025   # strength_scale by Brier
 runitback nba train --out runs/nba/prod                           # production model on all data
+runitback nba foundation --root foundation/nba                  # pbp32 folds (one generator per test season) for the wager model
 runitback serve                                                   # http://127.0.0.1:8000/nba
 runitback nba simulate BOS NYK --season 2027 --n 1000
 runitback nba season --season 2027 --seed 0 --out season.json   # full season + playoffs

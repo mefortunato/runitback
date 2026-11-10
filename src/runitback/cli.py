@@ -374,6 +374,46 @@ def nba_train(out: Path = NBA_RUNS / "prod",
         threads=threads or None, max_games=max_games or None, init=init, min_season=min_season, device=device, amp=amp)
 
 
+@nba.command("foundation")
+def nba_foundation(root: Path = typer.Option(Path("foundation/nba"), help="fold directory"),
+                   season: list[int] = typer.Option(None, help="fold (test season, the year it ends); repeat "
+                                                               "for several. Default: the last 5 complete and the current"),
+                   train: bool = typer.Option(True, help="train a fold that has no model"),
+                   existing: bool = typer.Option(False, help="only add new games to the folds already in --root "
+                                                             "(no training)"),
+                   epochs: int = typer.Option(0, help="override the fold recipe's epochs (0 = runitback.nba.foundation.TRAIN)"),
+                   data: Path = NBA_DATA / "processed", threads: int = 0):
+    """Foundation folds (pbp32) for the NBA wager model: train missing ones, embed new games."""
+    _log()
+    from .core.foundation import default_seasons, existing_folds
+    from .nba.foundation import NBA, NBAGenerator, prepare
+    gen = NBAGenerator(epochs=epochs) if epochs else NBA
+    if existing:
+        season = existing_folds(root)
+        train = False
+    elif not season:
+        season = default_seasons(gen, data)
+    for s, what in prepare(root, data, season, train=train, threads=threads or None, gen=gen).items():
+        typer.echo(f"fold{s}: {what}")
+
+
+@nba.command("embed")
+def nba_embed(ckpt: Path = typer.Option(..., help="the fold's event-model checkpoint"),
+              out: Path = typer.Option(..., help="output directory"),
+              before_season: int = typer.Option(..., help="fit the projection on games before this season "
+                                                          "(the fold's test season)"),
+              dim: list[int] = typer.Option([32], help="projection widths; repeat for several"),
+              data: Path = NBA_DATA / "processed", threads: int = 0):
+    """Per-team-game embeddings (pooled per possession) from the NBA event model, for the wager models."""
+    import torch
+    _log()
+    if threads:
+        torch.set_num_threads(threads)
+    from .nba.embed import embed_fold
+    for d in dim:
+        typer.echo(embed_fold(ckpt, data, out, before_season, d))
+
+
 @nba.command("evaluate")
 def nba_evaluate(ckpt: Path = NBA_RUNS / "eval" / "model.pt", sims: int = 100, games: int = 150,
                  out: Path = NBA_RUNS / "eval" / "report.json",

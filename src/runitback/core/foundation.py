@@ -89,6 +89,9 @@ def reduce(raw: pd.DataFrame, before_season: int, dim: int = 32) -> tuple[pd.Dat
     projection (mean, std, components, explained variance)."""
     x = raw.filter(regex=RAW_COLUMNS).to_numpy(np.float64)
     fit = (raw.season < before_season).to_numpy()
+    if fit.sum() <= dim:
+        raise ValueError(f"{int(fit.sum())} team-games before season {before_season}: too few to fit a "
+                         f"{dim}-dimension projection")
     mean, std = x[fit].mean(0), x[fit].std(0) + 1e-6
     z = (x - mean) / std
     _, s, vt = np.linalg.svd(z[fit], full_matrices=False)
