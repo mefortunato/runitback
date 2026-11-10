@@ -129,7 +129,8 @@ jobs:
 
   report:
     needs: [data, arms]
-    if: ${{ !cancelled() }}
+    # score whatever cells finished, but only once the games table exists
+    if: ${{ !cancelled() && needs.data.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

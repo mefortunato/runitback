@@ -171,7 +171,11 @@ def schedule_frame(schedule: pd.DataFrame) -> pd.DataFrame:
             "away_division": "away_classification",
         }
     )
-    games["start"] = pd.to_datetime(games["start_date"], utc=True, errors="coerce")
+    # one season's file can mix "...T04:00Z" and "...T23:30:00.000Z" (2020, 2021); without an
+    # explicit ISO8601 format pandas infers the first row's and turns the others into NaT
+    games["start"] = pd.to_datetime(
+        games["start_date"], utc=True, errors="coerce", format="ISO8601"
+    )
     for col in ("neutral_site", "conference_game", "completed", "start_time_tbd"):
         if col not in games:
             games[col] = False

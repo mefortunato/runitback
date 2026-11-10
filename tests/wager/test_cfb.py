@@ -58,6 +58,18 @@ def test_neutral_sites_and_cancelled_and_upcoming_games(games):
     assert sugar.spread_line == 3.0
 
 
+def test_kickoffs_parse_when_a_season_mixes_iso_formats():
+    # sportsdataverse's 2020 schedule has both forms; inferring the first row's format turned
+    # every other kickoff into NaT and broke the bowl weeks
+    schedule = SCHEDULE.iloc[:2].assign(
+        start_date=["2020-09-03T04:00Z", "2020-09-05T23:30:00.000Z"]
+    )
+    start = cfb.schedule_frame(schedule)["start"]
+    assert start.tolist() == [
+        pd.Timestamp("2020-09-03T04:00Z"), pd.Timestamp("2020-09-05T23:30Z")
+    ]
+
+
 def test_bowl_weeks_follow_the_regular_season_in_order(games):
     week = games.drop_duplicates("game_id").set_index("game_id")["week"]
     assert list(week[["1", "4", "6"]]) == [1, 2, 3]

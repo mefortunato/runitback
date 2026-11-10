@@ -40,6 +40,11 @@ experiments/cfb/baseline.yaml` (add `--package sportsml` with sportsml installed
   season S the model is fit on earlier seasons only and S is replayed date by date.
 - **Games.** FBS games (an FCS opponent is pooled into one team, `FCS`), box scores from 2004 and
   lines from 2013, as in sportsml.
+- **One change from sportsml.** Kickoff times are parsed as ISO 8601 explicitly. sportsdataverse's
+  2020 schedule mixes `…T04:00Z` and `…T23:30:00.000Z`, and inferring the first row's format
+  turned 1,125 of its 1,247 kickoffs into NaT, which crashes the bowl-week numbering (sportsml has
+  the same bug). The 2021–2024 games table is unchanged by the fix. Both packages read the same
+  raw table, so the comparison below is unaffected.
 - **Model.** sportsml's production CFB transformer, pinned in `baseline.yaml`: 28-game history,
   total weight 1, opponent strength, past-line tokens and efficiency rates.
 - **Arms.**
