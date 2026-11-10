@@ -1,0 +1,71 @@
+# H5 (docs/multisport/PLAN.md): the NHL event generator and its foundation folds (pbp32), one
+# generator per test season, each in its own job:
+#
+#   inputs (data, foundation: 5 backtest seasons + the current one) ─► report
+#
+# Data and the folds are rebuilt in the run (nhl-experiment-inputs.yml). Fold S's generator is
+# trained on games before the last 40% of season S-1 (validated on that 40%) and never sees S; its
+# game embeddings are projected with a PCA fit on games before S, and it simulates games of S to
+# compare their score distribution with the actual one. The report job checks the walk-forward
+# rules for every fold and summarizes validation loss, explained variance, a team-strength sanity
+# check and the simulated vs actual scores (scripts/nhl_foundation_report.py), uploaded as the
+# nhl-foundation-results artifact; the folds are kept as nhl-foundation-models.
+#
+# Runs when this file or nhl-experiment-inputs.yml changes on a claude/ branch, or by hand.
+name: NHL foundation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - .github/workflows/nhl-foundation.yml
+      - .github/workflows/nhl-experiment-inputs.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nhl-foundation-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  inputs:
+    uses: ./.github/workflows/nhl-experiment-inputs.yml
+    with:
+      seasons: "[2022, 2023, 2024, 2025, 2026, 2027]"
+
+  report:
+    needs: inputs
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+      - uses: actions/download-artifact@v4
+        with: { name: nhl-data, path: data/nhl/plays }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "nhl-fold*", path: folds }
+      - name: Report
+        run: |
+          mkdir -p runs/foundation out
+          for d in folds/nhl-fold*; do mv "$d" "runs/foundation/${d#folds/nhl-}"; done
+          ls runs/foundation
+          cp data/nhl/plays/preprocess.json out/
+          python scripts/nhl_foundation_report.py runs/foundation --data data/nhl/plays \
+            --out out/report.md --json out/report.json
+          cat out/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: nhl-foundation-results, path: out, retention-days: 90 }
+      - uses: actions/upload-artifact@v4
+        with: { name: nhl-foundation-models, path: runs/foundation, retention-days: 90 }

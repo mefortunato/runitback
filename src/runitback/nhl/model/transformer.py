@@ -1,0 +1,100 @@
+"""NHL event transformer: a causal trunk (runitback.core.transformer) with factorized next-event
+heads, each conditioned on the fields chosen before it: type -> side -> result -> elapsed clock."""
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from ...core.transformer import Block, KVCache, mlp
+from ..vocab import N_ELAPSED, PLAY_TYPES, RESULTS
+from .features import FEATURES, N_SIDES
+
+NEG = -1e9
+
+
+@dataclass
+class ModelConfig:
+    feature_sizes: dict
+    d_model: int = 192
+    n_layers: int = 4
+    n_heads: int = 6
+    max_len: int = 640  # real games: about 320 events, the longest 548 (2023-24 and 2024-25)
+    dropout: float = 0.1
+    n_cont: int = 0  # continuous team-strength inputs (0 = no ratings)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+class EventTransformer(nn.Module):
+    def __init__(self, cfg: ModelConfig):
+        super().__init__()
+        self.cfg = cfg
+        d = cfg.d_model
+        self.emb = nn.ModuleDict({f: nn.Embedding(cfg.feature_sizes[f], d) for f in FEATURES})
+        self.pos = nn.Embedding(cfg.max_len, d)
+        self.cont = nn.Linear(cfg.n_cont, d) if cfg.n_cont else None
+        self.in_ln = nn.LayerNorm(d)
+        self.drop = nn.Dropout(cfg.dropout)
+        self.blocks = nn.ModuleList([Block(d, cfg.n_heads, cfg.dropout) for _ in range(cfg.n_layers)])
+        self.ln_f = nn.LayerNorm(d)
+        nT, nR = len(PLAY_TYPES), len(RESULTS)
+        self.e_type, self.e_side, self.e_res = nn.Embedding(nT, d), nn.Embedding(N_SIDES, d), nn.Embedding(nR, d)
+        self.type_head = mlp(d, d, nT)
+        self.side_head = mlp(d, d, N_SIDES)
+        self.res_head = mlp(d, d, nR)
+        self.el_head = mlp(d, d, N_ELAPSED)
+
+    def encode(self, feats: dict[str, torch.Tensor], cache: KVCache | None = None) -> torch.Tensor:
+        x = sum(self.emb[f](feats[f]) for f in FEATURES)
+        if self.cont is not None:
+            x = x + self.cont(feats["cont"])
+        T = x.shape[1]
+        start = cache.len if cache is not None else 0
+        x = x + self.pos(torch.arange(start, start + T, device=x.device).clamp(max=self.cfg.max_len - 1))
+        x = self.drop(self.in_ln(x))
+        for i, b in enumerate(self.blocks):
+            x = b(x, cache, i)
+        if cache is not None:
+            cache.len += T
+        return self.ln_f(x)
+
+    def new_cache(self, batch: int) -> KVCache:
+        c = self.cfg
+        return KVCache(c.n_layers, batch, c.n_heads, c.max_len, c.d_model // c.n_heads,
+                       device=next(self.parameters()).device)
+
+    def type_logits(self, h):
+        return self.type_head(h)
+
+    def side_logits(self, h, t):
+        return self.side_head(h + self.e_type(t))
+
+    def result_logits(self, h, t, s):
+        return self.res_head(h + self.e_type(t) + self.e_side(s))
+
+    def elapsed_logits(self, h, t, s, r):
+        return self.el_head(h + self.e_type(t) + self.e_side(s) + self.e_res(r))
+
+    def loss(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, dict[str, float]]:
+        h = self.encode(batch["feats"])
+        valid = batch["valid"]
+        t, s, r, e = batch["type"], batch["side"], batch["result"], batch["elapsed"]
+        parts = {
+            "type": (self.type_logits(h), t, batch["type_mask"]),
+            "side": (self.side_logits(h, t), s, batch["side_mask"]),
+            "result": (self.result_logits(h, t, s), r, batch["result_mask"]),
+            "elapsed": (self.elapsed_logits(h, t, s, r), e, batch["elapsed_mask"]),
+        }
+        total, logs = 0.0, {}
+        n = valid.sum().clamp(min=1)
+        for name, (logits, tgt, mask) in parts.items():
+            logits = logits.float().masked_fill(~mask, NEG)
+            nll = F.cross_entropy(logits.flatten(0, 1), tgt.flatten(), reduction="none").view_as(tgt)
+            part = (nll * valid).sum() / n
+            total = total + part
+            logs[name] = part.item()
+        return total, logs

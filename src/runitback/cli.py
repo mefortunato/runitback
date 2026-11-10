@@ -1,6 +1,7 @@
 """Command-line interface: runitback serve, runitback <nfl|nba> download | preprocess | train |
 evaluate | calibrate | simulate | serve, runitback mlb download | process | lineups | player-values |
-probables, runitback nhl download | events | lineups, and runitback cfb download | players |
+probables, runitback nhl download | events | lineups | preprocess | train | foundation | evaluate |
+simulate, and runitback cfb download | players |
 player-values."""
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ app = typer.Typer(add_completion=False, help="Run It Back: simulate sports games
 nfl = typer.Typer(add_completion=False, help="NFL: data, training, evaluation, simulation and the web app")
 nba = typer.Typer(add_completion=False, help="NBA: data, training, evaluation, simulation and the web app")
 app.add_typer(nfl, name="nfl")
-nhl = typer.Typer(add_completion=False, help="NHL: event and personnel data")
+nhl = typer.Typer(add_completion=False, help="NHL: event and personnel data, the event generator and its folds")
 mlb = typer.Typer(add_completion=False, help="MLB: plate-appearance data from MLB's Stats API")
 cfb = typer.Typer(add_completion=False, help="College football: play-by-play, players and quarterback values")
 app.add_typer(nba, name="nba")
@@ -564,6 +565,100 @@ def nhl_lineups(start: int = typer.Option(0, help="first season (0 = every event
     _log()
     seasons = range(start, end + 1) if start else None
     typer.echo(json.dumps(build_lineups(NHL_DATA / "processed", seasons), indent=1, default=str))
+
+
+NHL_PLAYS = NHL_DATA / "plays"
+
+
+@nhl.command("preprocess")
+def nhl_preprocess(start: int = typer.Option(2011, help="first season (the year it ends)"), end: int = 2027,
+                   workers: int = typer.Option(1, help="seasons replayed in parallel"),
+                   out: Path = typer.Option(NHL_PLAYS, help="output directory")):
+    """Replay every game of data/nhl/raw (runitback nhl download) through the rules engine: the
+    generator's plays, games and pre-game ratings tables (data/nhl/plays). Prints a per-season summary."""
+    from .nhl.data.preprocess import preprocess
+    _log()
+    summary = preprocess(range(start, end + 1), NHL_DATA / "raw", out, workers)
+    typer.echo(json.dumps(summary, indent=1, default=str))
+
+
+@nhl.command("train")
+def nhl_train(out: Path = typer.Option(Path("runs/nhl/prod"), help="output directory"),
+              data: Path = NHL_PLAYS,
+              val_season: int = typer.Option(None, help="validate on the last --val-fraction of this season "
+                                                        "and train on the games before (later seasons unused)"),
+              val_fraction: float = 0.4, epochs: int = 10, d_model: int = 192, n_layers: int = 4,
+              n_heads: int = 6, batch_size: int = 32, lr: float = 1e-3, min_season: int = 2011,
+              max_games: int = 0, threads: int = 0,
+              device: str = typer.Option("auto", help="auto | cpu | cuda | mps")):
+    """Train the NHL event generator."""
+    from .nhl.train import train as run
+    _log()
+    typer.echo(run(data, out, val_season=val_season, val_fraction=val_fraction, epochs=epochs, d_model=d_model,
+                   n_layers=n_layers, n_heads=n_heads, batch_size=batch_size, lr=lr, min_season=min_season,
+                   max_games=max_games or None, threads=threads or None, device=device))
+
+
+@nhl.command("foundation")
+def nhl_foundation(root: Path = typer.Option(Path("foundation/nhl"), help="fold directory"),
+                   season: list[int] = typer.Option(None, help="fold (test season, the year it ends); repeat "
+                                                               "for several. Default: the last 5 complete and the current"),
+                   train: bool = typer.Option(True, help="train a fold that has no model"),
+                   existing: bool = typer.Option(False, help="only add new games to the folds already in --root "
+                                                             "(no training)"),
+                   epochs: int = typer.Option(0, help="override the fold recipe's epochs (0 = runitback.nhl.foundation.TRAIN)"),
+                   data: Path = NHL_PLAYS, threads: int = 0):
+    """Foundation folds (pbp32) for the NHL wager model: train missing ones, embed new games."""
+    _log()
+    from .core.foundation import default_seasons, existing_folds
+    from .nhl.foundation import NHL, NHLGenerator, prepare
+    gen = NHLGenerator(epochs=epochs) if epochs else NHL
+    if existing:
+        season = existing_folds(root)
+        train = False
+    elif not season:
+        season = default_seasons(gen, data)
+    for s, what in prepare(root, data, season, train=train, threads=threads or None, gen=gen).items():
+        typer.echo(f"fold{s}: {what}")
+
+
+@nhl.command("evaluate")
+def nhl_evaluate(ckpt: Path = typer.Option(..., help="generator checkpoint (e.g. a fold's model.pt)"),
+                 data: Path = NHL_PLAYS,
+                 season: int = typer.Option(0, help="season to simulate (0 = the checkpoint's test season: "
+                                                    "its validation season + 1)"),
+                 games: int = 200, sims: int = 50, seed: int = 0, threads: int = 0,
+                 out: Path = typer.Option(None, help="save the report as .json")):
+    """Simulated score distribution, endings and event mix against the actual games, plus moneyline
+    Brier and total-goals error (runitback.nhl.evaluate)."""
+    import torch
+    from .nhl.evaluate import run
+    _log()
+    if threads:
+        torch.set_num_threads(threads)
+    rep = run(ckpt, data, season or None, games, sims, seed)
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(rep, indent=1))
+    typer.echo(json.dumps(rep, indent=1))
+
+
+@nhl.command("simulate")
+def nhl_simulate(home: str, away: str, season: int = 2027, n: int = 1000, game_type: str = "REG",
+                 ckpt: Path = typer.Option(..., help="generator checkpoint"), seed: int = 0):
+    """Simulate one game n times: win probability, goals and how games end."""
+    from .nhl.sim.sampler import Simulator
+    from .nhl.vocab import canon_team
+    sim = Simulator.load(ckpt)
+    finals = sim.simulate(canon_team(home.upper()), canon_team(away.upper()), season, n, game_type, seed=seed)
+    h = [s.score[0] for s in finals]
+    a = [s.score[1] for s in finals]
+    done = [s.over for s in finals]
+    typer.echo(json.dumps({
+        "home": home.upper(), "away": away.upper(), "games": n, "finished": sum(done),
+        "p_home": sum(x > y for x, y in zip(h, a)) / n, "home_goals": sum(h) / n, "away_goals": sum(a) / n,
+        "overtime": sum(s.period > 3 for s in finals) / n, "shootout": sum(s.phase == 3 for s in finals) / n,
+    }, indent=1))
 
 
 def _write_result(res, out: Path | None, scores: bool) -> None:

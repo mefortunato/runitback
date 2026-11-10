@@ -1,1 +1,2 @@
-"""Run It Back — NHL: event and personnel data, and the rules engine (the simulator comes later)."""
+"""Run It Back — NHL: event and personnel data, the rules engine, and the event generator with its
+foundation folds."""
