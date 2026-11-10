@@ -37,11 +37,6 @@ on:
         default: 0
   schedule:
     - cron: "41 7 1 * *" # the 1st of each month
-  # before the workflow is on the default branch it can't be started by hand: a push that changes
-  # it on a claude/ branch starts it there
-  push:
-    branches: ["claude/**"]
-    paths: [.github/workflows/train-predictions.yml]
 
 permissions:
   contents: write # the predictions-webdata and backtest cache releases
@@ -167,8 +162,6 @@ jobs:
             --notes "Written by the Train predictions workflow; Refresh predictions exports from it."
           gh release upload predictions-webdata webdata.tar.gz --clobber
       - name: Refresh the published predictions
-        # fails until Refresh predictions is on the default branch (it can't be started before)
-        continue-on-error: ${{ github.event_name == 'push' }}
         # Refresh waits for this exact asset: a download right after the upload can still be
         # served the previous one
         run: >
