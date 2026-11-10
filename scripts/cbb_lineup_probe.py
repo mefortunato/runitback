@@ -18,10 +18,15 @@ Two sources (docs/multisport/PLAN.md, work package C1):
           ``espn_games.csv`` by ESPN game id, it shows whether CBBD covers games ESPN has no
           substitutions for. Writes ``cbbd_games.csv``. Uses two API calls per date.
 
+``minutes`` Checks CBBD's lineups against box scores on given dates (``/games/players``): each
+          player's minutes on the floor by ``onFloor`` vs box-score minutes, and the first play's
+          ten vs the listed starters. Writes ``cbbd_minutes.csv``.
+
 Outputs go to ``--out`` (never commit them). Usage::
 
     python scripts/cbb_lineup_probe.py espn --out OUT --first 2006 --last 2026
     python scripts/cbb_lineup_probe.py cbbd --out OUT --first 2010 --last 2027
+    python scripts/cbb_lineup_probe.py minutes --out OUT --dates 2023-12-02 2025-02-08 2026-02-07
     python scripts/cbb_lineup_probe.py report --out OUT
 """
 
@@ -118,7 +123,7 @@ def sample_dates(season: int) -> list[datetime.date]:
     def saturday(day: datetime.date) -> datetime.date:
         return day - datetime.timedelta(days=(day.weekday() - 5) % 7)
 
-    today = datetime.date.today()
+    today = datetime.datetime.now(datetime.timezone.utc).date()
     dates = [saturday(datetime.date(season - 1, 12, 7)), saturday(datetime.date(season, 2, 10))]
     done = [d for d in dates if d < today]
     if not done and datetime.date(season - 1, 11, 4) < today:
@@ -227,6 +232,85 @@ def run_cbbd(args) -> None:
     games.to_csv(out / "cbbd_games.csv", index=False)
 
 
+def floor_seconds(plays: list[dict]) -> tuple[dict[int, float], set[int]]:
+    """Seconds each player is on the floor by CBBD's ``onFloor``, and the ten on the first
+    play. Each play's ten get the clock time until the next play (halves of 20 minutes,
+    overtimes of 5)."""
+    plays = sorted(plays, key=lambda p: (p["period"], -p["secondsRemaining"], p["id"]))
+    seconds: dict[int, float] = defaultdict(float)
+    for i, play in enumerate(plays):
+        length = 1200 if play["period"] <= 2 else 300
+        last = length if i == 0 or plays[i - 1]["period"] != play["period"] else None
+        nxt = plays[i + 1] if i + 1 < len(plays) else None
+        stop = nxt["secondsRemaining"] if nxt and nxt["period"] == play["period"] else 0
+        start = play["secondsRemaining"] if last is None else last
+        for player in play.get("onFloor") or []:
+            seconds[player["id"]] += max(start - stop, 0)
+    first = {p["id"] for p in (plays[0].get("onFloor") or [])} if plays else set()
+    return seconds, first
+
+
+def run_minutes(args) -> None:
+    """Checks CBBD's on-floor lineups against the box score: each player's minutes on the
+    floor by ``onFloor`` vs his box-score minutes, and the first play's ten vs the starters.
+    Imputed lineups (filled in without substitution records) would miss both."""
+    key = os.environ.get("CBBD_API_KEY")
+    if not key:
+        raise SystemExit("CBBD_API_KEY is not set")
+    out = Path(args.out)
+    rows = []
+    for day in args.dates:
+        start = datetime.datetime.combine(
+            datetime.date.fromisoformat(day), datetime.time(0), datetime.timezone.utc
+        )
+        box, _ = _get(
+            "games/players", key,
+            startDateRange=start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            endDateRange=(start + datetime.timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        plays, remaining = _get("plays/date", key, date=day)
+        by_game = defaultdict(list)
+        for play in plays:
+            by_game[play["gameId"]].append(play)
+        for team in box:
+            game_plays = by_game.get(team["gameId"])
+            if not game_plays:
+                continue
+            seconds, first = floor_seconds(game_plays)
+            subs = sum(p.get("playType") == "Substitution" for p in game_plays)
+            for player in team.get("players") or []:
+                minutes = player.get("minutes")
+                if minutes is None or (minutes == 0 and not player.get("starter")):
+                    continue
+                rows.append({
+                    "date": day,
+                    "game": team["gameId"],
+                    "team": team["team"],
+                    "cbbd_subs": subs,
+                    "athlete": player["athleteId"],
+                    "espn_athlete": player.get("athleteSourceId"),
+                    "box_minutes": minutes,
+                    "floor_minutes": seconds.get(player["athleteId"], 0.0) / 60,
+                    "starter": bool(player.get("starter")),
+                    "first_play": player["athleteId"] in first,
+                })
+        print(f"{day}: {len(box)} team box scores, calls left {remaining}", flush=True)
+    frame = pd.DataFrame(rows)
+    frame["error"] = (frame["floor_minutes"] - frame["box_minutes"]).abs()
+    frame.to_csv(out / "cbbd_minutes.csv", index=False)
+    summary = frame.groupby("date").agg(
+        players=("athlete", "size"),
+        games=("game", "nunique"),
+        cbbd_subs_per_game=("cbbd_subs", "median"),
+        median_error_min=("error", "median"),
+        within_2_min=("error", lambda e: (e <= 2).mean()),
+        within_5_min=("error", lambda e: (e <= 5).mean()),
+        starters_on_first_play=("first_play", lambda s: s[frame.loc[s.index, "starter"]].mean()),
+        espn_id=("espn_athlete", lambda s: s.notna().mean()),
+    )
+    print(_markdown(summary.round(3).reset_index()))
+
+
 # --------------------------------------------------------------------------- report
 
 
@@ -276,10 +360,13 @@ def main() -> None:
     cbbd.add_argument("--out", required=True)
     cbbd.add_argument("--first", type=int, default=2010)
     cbbd.add_argument("--last", type=int, default=2027)
+    minutes = sub.add_parser("minutes")
+    minutes.add_argument("--out", required=True)
+    minutes.add_argument("--dates", nargs="+", required=True)
     report = sub.add_parser("report")
     report.add_argument("--out", required=True)
     args = parser.parse_args()
-    {"espn": run_espn, "cbbd": run_cbbd, "report": run_report}[args.command](args)
+    {"espn": run_espn, "cbbd": run_cbbd, "minutes": run_minutes, "report": run_report}[args.command](args)
 
 
 if __name__ == "__main__":
