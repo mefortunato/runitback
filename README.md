@@ -554,7 +554,25 @@ the DH rule, `source` and the game the lineup was copied from.
   after posting counts as known). For upcoming games the posted lineup is used once a team has
   posted nine, else the projection.
 
-Results on real seasons: pending (being measured).
+Check against what happened, 2018-2025 (`runitback mlb lineups`; team-games with a previous
+game; "previous game" is the naive baseline of the team's last lineup as played):
+
+| Season | Team-games | Probable SP started | Rotation SP started | Batters right (prev. game) | Right spot (prev. game) | Lineup from same hand |
+|---|---|---|---|---|---|---|
+| 2018 | 4,898 | 99.9% | 77.2% | 78.7% (74.8%) | 54.4% (49.6%) | 98.1% |
+| 2019 | 4,932 | 99.7% | 78.3% | 77.9% (74.7%) | 54.0% (49.6%) | 97.6% |
+| 2020 | 1,902 | 99.6% | 64.9% | 78.5% (74.4%) | 52.3% (47.4%) | 96.8% |
+| 2021 | 4,932 | 99.8% | 68.9% | 78.2% (74.8%) | 52.1% (47.6%) | 97.6% |
+| 2022 | 4,940 | 99.7% | 69.4% | 78.4% (74.2%) | 50.9% (46.2%) | 98.8% |
+| 2023 | 4,942 | 99.9% | 74.1% | 79.6% (74.4%) | 53.3% (46.9%) | 98.8% |
+| 2024 | 4,944 | 99.9% | 76.1% | 80.7% (75.6%) | 55.0% (48.6%) | 98.8% |
+| 2025 | 4,954 | 99.8% | 76.6% | 80.9% (76.1%) | 54.9% (47.9%) | 98.8% |
+
+The same-hand lookup beats the previous game every season, by 3.1-5.1 points of starting batters.
+The DH rule matches the lineups of all 18,237 games. Dropping batters who had not batted in the
+team's last 3-8 games (likely injured) moved the hit rate by -0.1 to +0.3 points, so it was left
+out. The probable SP's ~99.8% is the leak described above, not a forecast; the rotation rule (65-78%)
+is what a leak-free starter guess gets.
 
 ## NHL
 
