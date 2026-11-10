@@ -107,7 +107,7 @@ def report(args):
     m = None
     if args.market.exists():   # the wager games table: `runitback-wager nhl download`
         m = pd.read_csv(args.market, dtype={"game_id": str})
-        m = m[(m.location == 1) & m.moneyline.notna() & m.opp_moneyline.notna()].set_index("game_id")
+        m = m[(m.location == 1) & m.moneyline.abs().ge(100) & m.opp_moneyline.abs().ge(100)].set_index("game_id")
         imp = lambda o: np.where(o < 0, -o / (-o + 100), 100 / (o + 100))  # noqa: E731
         ph, pa = imp(m.moneyline.to_numpy()), imp(m.opp_moneyline.to_numpy())
         m["p_home"] = ph / (ph + pa)
@@ -125,8 +125,8 @@ def game_level(pvt: pd.DataFrame, g: pd.DataFrame, m: pd.DataFrame | None, label
     print(f"\n### {label}")
     pvt = pvt.merge(g[["home", "away", "season"]], left_on="game_id", right_index=True)
     lev = [f"_pv_{i}" for i in range(5)]
-    pvt["net"] = pvt[lev].sum(1)
-    pvt["skaters"] = pvt[lev[:4]].sum(1)
+    pvt["net"] = pvt[lev].sum(axis=1)
+    pvt["skaters"] = pvt[lev[:4]].sum(axis=1)
     h = pvt[pvt.team == pvt.home].set_index("game_id")
     a = pvt[pvt.team == pvt.away].set_index("game_id")
     d = pd.DataFrame({"diff": h.net - a.net, "sk": h.skaters - a.skaters, "gk": h._pv_4 - a._pv_4,
@@ -145,8 +145,8 @@ def game_level(pvt: pd.DataFrame, g: pd.DataFrame, m: pd.DataFrame | None, label
     if m is None:
         return
     d.index = d.index.astype(str)
-    tot = (h[["_pv_0", "_pv_1"]].sum(1) + a[["_pv_0", "_pv_1"]].sum(1) - h[["_pv_2", "_pv_3", "_pv_4"]].sum(1)
-           - a[["_pv_2", "_pv_3", "_pv_4"]].sum(1))
+    tot = (h[["_pv_0", "_pv_1"]].sum(axis=1) + a[["_pv_0", "_pv_1"]].sum(axis=1) - h[["_pv_2", "_pv_3", "_pv_4"]].sum(axis=1)
+           - a[["_pv_2", "_pv_3", "_pv_4"]].sum(axis=1))
     d["total_pv"] = tot.set_axis(tot.index.astype(str)).reindex(d.index)
     j = d.join(m[["logit", "p_home", "total_line", "total"]], how="inner").dropna(subset=["logit"])
     j = j.assign(goals=g.set_axis(g.index.astype(str)).eval("home_score + away_score").reindex(j.index))
