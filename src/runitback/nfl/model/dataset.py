@@ -109,6 +109,12 @@ def encode_games(plays: pd.DataFrame, games: pd.DataFrame, ts: TeamSeasonVocab, 
     r_idx = p.result.map(RS).to_numpy()
     y_idx = (np.clip(p.yards.to_numpy(), YARDS_MIN, YARDS_MIN + N_YARDS - 1) - YARDS_MIN)
     e_idx = np.clip(p.elapsed.to_numpy(), 0, MAX_ELAPSED)
+    unknown = None
+    if "elapsed_known" in p.columns:
+        # plays whose clock the source does not record play by play (runitback.cfb): the elapsed
+        # target becomes 0 and the only legal value, so it adds no loss (the next play's prev_elapsed shows 0)
+        unknown = ~p.elapsed_known.to_numpy(bool)
+        e_idx = np.where(unknown, 0, e_idx)
     first = (p.game_id != p.game_id.shift()).to_numpy()
 
     def prev(a, fill=0):
@@ -151,6 +157,8 @@ def encode_games(plays: pd.DataFrame, games: pd.DataFrame, ts: TeamSeasonVocab, 
     assert ((y_true >= lo) & (y_true <= hi)).mean() > 0.999, "targets outside legal yards range"
     lo, hi = np.minimum(lo, y_true), np.maximum(hi, y_true)
     el_hi = np.maximum(np.minimum(p.qsec.to_numpy(), MAX_ELAPSED), e_idx)
+    if unknown is not None:
+        el_hi = np.where(unknown, 0, el_hi)
 
     cont = np.zeros((len(p), len(CONT_FEATURES)), dtype=np.float32)
     if ratings is not None:

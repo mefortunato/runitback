@@ -661,6 +661,35 @@ games' shift data shows strength changes no penalty explains. Details:
   missing from the release, `play_by_play_2018` and `_2019` are both 2018-19, and 2009-10 has no
   on-ice columns.
 
+## College football
+
+`runitback.cfb` adapts the NFL engine to college rules and trains the NFL play transformer on college
+plays (docs/multisport/PLAN.md, F1). It is the generator behind the college `pbp32` foundation folds;
+there is no college personnel data, so the model is team-level (team-season tokens and pre-game
+EPA/Elo ratings, no lineups).
+
+```bash
+runitback cfb download --start 2004 --end 2026     # → data/cfb/raw/pbp_<season>.parquet (sportsdataverse espn_cfb_pbp)
+runitback cfb preprocess --start 2004 --end 2026   # → data/cfb/processed/{games,plays,ratings}.parquet, replay.json
+runitback cfb foundation --season 2025             # → foundation/cfb/fold2025/{model.pt,pca_32.npz,pbp_32.parquet}
+```
+
+| Piece | File | What it does |
+|---|---|---|
+| Rules engine | `src/runitback/cfb/engine/rules.py` | the NFL engine with tries from the 3, untimed overtime from the opponent's 25 (two-point tries required from the 3rd period, 2nd from 2021; two-point shootout from the 5th period in 2019-20, the 3rd from 2021), walk-off and defensive-score endings, one timeout per overtime period, no ties |
+| Preprocess | `src/runitback/cfb/data/preprocess.py` | ESPN rows → (state, outcome) sequences in the NFL schema: tries split out of touchdown rows, kickoffs under the kicking team, penalties folded into plays recovered from the next down, dropped pre-snap fouls and repeated plays repaired, coarse clocks interpolated and flagged (`elapsed_known`: no elapsed loss) |
+| Folds | `src/runitback/cfb/foundation.py` | `CFBGenerator`, the S3 fold generator; `.github/workflows/cfb-foundation.yml` trains one fold per test season in a matrix job, rebuilding the data from the release |
+
+**Replay check (2004-2026, 18,281 games).** Applying each real outcome to the real state reproduces the
+next state on 98.1% of regulation transitions, and on 98.7% in the 16,659 games kept (a game is kept
+when 95% of its transitions agree): 98.9-99.4% from 2014 on, 97.1-98.4% for 2004-2013. The engine
+reaches the real final score in 99.2% of games. The misses are in the feed rather than the rules:
+plays missing from it (a down skipped, a touchdown row absent), wrong down or distance fields, and
+games listed out of order. Overtime rows are often incomplete (88.8% of overtime transitions agree),
+so a game keeps its overtime only when all of it replays (329 games); the overtime rules are covered
+by unit tests (`tests/cfb/test_engine.py`). About half the games (9,293) have a per-play clock; the
+rest only update it every few plays.
+
 ## Quick start (pre-trained model)
 
 You need Python 3.10+ and Node 18+. This takes about 5 minutes and needs no data download or training.
