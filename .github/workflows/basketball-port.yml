@@ -110,6 +110,8 @@ jobs:
 
   arms:
     needs: data
+    # a sport whose data job failed fails its own arms (no games artifact), not the others'
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     # GitHub's limit is 360; a men's college fit takes 1-2 hours
     timeout-minutes: 355
