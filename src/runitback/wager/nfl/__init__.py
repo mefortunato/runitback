@@ -4,6 +4,7 @@ from ..core.efficiency import nfl_efficiency
 from ..core.sport import Sport
 from .data.download import download
 from .data.features import SCHEMA
+from .lineup import LINEUP
 
 # The play-by-play foundation's frozen game embeddings in the history tokens (experiments/nfl:
 # pbp32, at least as good as the box-score model on every market): on when this names the fold
@@ -25,6 +26,7 @@ SPORT = Sport(
     schema=SCHEMA,
     download=download,
     efficiency=nfl_efficiency,
+    lineup=LINEUP,
     # tuned on 2025 validation: early stopping otherwise hits at epoch 1
     gnn={
         "hidden_dim": 128,

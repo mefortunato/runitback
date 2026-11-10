@@ -23,6 +23,7 @@ import pandas as pd
 import scipy.sparse as sp
 from scipy.sparse.linalg import lsqr
 
+from ..wager.nfl.lineup import LINEUP
 from .data.players import GROUPS
 
 log = logging.getLogger(__name__)
@@ -212,9 +213,10 @@ def lineup_values(rows: pd.DataFrame, vals: pd.DataFrame, plays_at: dict[tuple[s
 
 # -- per-game lineup values (the wager model's ``_pv_*`` columns) ----------------------------------
 
-GROUP_COLUMNS = OFF_GROUPS + DEF_GROUPS + ("ST",)   # _pv_0 .. _pv_8 (K and P summed into ST)
-RECENT = 8      # games behind the per-group changes (about the wager model's history)
-PV_COLUMNS = [f"_pv_{i}" for i in range(11 + len(GROUP_COLUMNS))]
+# the layout is the wager model's (Sport.lineup, runitback.wager.nfl.lineup)
+GROUP_COLUMNS = LINEUP.groups   # _pv_0 .. _pv_8 (K and P summed into ST)
+RECENT = LINEUP.recent          # games behind the per-group changes (about the wager model's history)
+PV_COLUMNS = LINEUP.columns     # _pv_0 .. _pv_19
 
 
 @dataclass

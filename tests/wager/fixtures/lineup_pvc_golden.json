@@ -1,0 +1,684 @@
+{
+ "context_columns": [
+  "location",
+  "rest",
+  "opp_rest",
+  "_pv_0",
+  "_pv_1",
+  "_pv_2",
+  "_pv_3",
+  "_pv_4",
+  "_pv_5",
+  "_pv_6",
+  "_pv_7",
+  "_pv_8",
+  "_pv_9",
+  "_pv_10",
+  "_pv_11",
+  "_pv_12",
+  "_pv_13",
+  "_pv_14",
+  "_pv_15",
+  "_pv_16",
+  "_pv_17",
+  "_pv_18",
+  "_pv_19",
+  "_lu_missing",
+  "_opp_pv_0",
+  "_opp_pv_1",
+  "_opp_pv_2",
+  "_opp_pv_3",
+  "_opp_pv_4",
+  "_opp_pv_5",
+  "_opp_pv_6",
+  "_opp_pv_7",
+  "_opp_pv_8",
+  "_opp_pv_9",
+  "_opp_pv_10",
+  "_opp_pv_11",
+  "_opp_pv_12",
+  "_opp_pv_13",
+  "_opp_pv_14",
+  "_opp_pv_15",
+  "_opp_pv_16",
+  "_opp_pv_17",
+  "_opp_pv_18",
+  "_opp_pv_19",
+  "_opp_lu_missing"
+ ],
+ "pred_margin": [
+  3.680492877960205,
+  -1.6687182188034058,
+  0.7336592078208923,
+  2.332866907119751,
+  -1.0839412212371826,
+  -2.6211013793945312
+ ],
+ "pred_total": [
+  45.792266845703125,
+  45.148963928222656,
+  46.12278366088867,
+  45.92520523071289,
+  46.167823791503906,
+  45.85659408569336
+ ],
+ "weights": {
+  "margin": [
+   0.59188,
+   0.59188,
+   0.59188,
+   0.59188,
+   0.59188,
+   0.59188,
+   0.59188,
+   0.59188,
+   0.59188
+  ],
+  "total": [
+   0.09904,
+   0.09904,
+   0.09904,
+   0.09904,
+   0.09904,
+   -0.09904,
+   -0.09904,
+   -0.09904,
+   0.0
+  ]
+ },
+ "editor": {
+  "groups": [
+   {
+    "key": "QB",
+    "label": "Quarterback",
+    "column": "QB"
+   },
+   {
+    "key": "RB",
+    "label": "Running back",
+    "column": "RB"
+   },
+   {
+    "key": "WR",
+    "label": "Wide receiver",
+    "column": "WR"
+   },
+   {
+    "key": "TE",
+    "label": "Tight end",
+    "column": "TE"
+   },
+   {
+    "key": "OL",
+    "label": "Offensive line",
+    "column": "OL"
+   },
+   {
+    "key": "DL",
+    "label": "Defensive line",
+    "column": "DL"
+   },
+   {
+    "key": "LB",
+    "label": "Linebacker",
+    "column": "LB"
+   },
+   {
+    "key": "DB",
+    "label": "Defensive back",
+    "column": "DB"
+   },
+   {
+    "key": "K",
+    "label": "Kicker",
+    "column": "ST"
+   },
+   {
+    "key": "P",
+    "label": "Punter",
+    "column": "ST"
+   }
+  ],
+  "columns": [
+   "QB",
+   "RB",
+   "WR",
+   "TE",
+   "OL",
+   "DL",
+   "LB",
+   "DB",
+   "ST"
+  ],
+  "slots": {
+   "QB": [
+    10.0,
+    2.0
+   ],
+   "RB": [
+    11.0,
+    2.0
+   ],
+   "WR": [
+    12.0,
+    2.0
+   ],
+   "TE": [
+    13.0,
+    2.0
+   ],
+   "OL": [
+    14.0,
+    2.0
+   ],
+   "DL": [
+    15.0,
+    2.0
+   ],
+   "LB": [
+    16.0,
+    2.0
+   ],
+   "DB": [
+    17.0,
+    2.0
+   ],
+   "K": [
+    18.0,
+    2.0
+   ],
+   "P": [
+    19.0,
+    2.0
+   ]
+  },
+  "weights": {
+   "margin": [
+    0.59188,
+    0.59188,
+    0.59188,
+    0.59188,
+    0.59188,
+    0.59188,
+    0.59188,
+    0.59188,
+    0.59188
+   ],
+   "total": [
+    0.09904,
+    0.09904,
+    0.09904,
+    0.09904,
+    0.09904,
+    -0.09904,
+    -0.09904,
+    -0.09904,
+    0.0
+   ]
+  },
+  "home": {
+   "QB": [
+    {
+     "id": "T03_QB_0",
+     "name": "P T03 QB 0",
+     "pos": "QB",
+     "value": 0.5202,
+     "out": false
+    },
+    {
+     "id": "T03_QB_1",
+     "name": "P T03 QB 1",
+     "pos": "QB",
+     "value": 2.6405,
+     "out": false
+    },
+    {
+     "id": "T03_QB_-1",
+     "name": "P T03 QB -1",
+     "pos": "QB",
+     "value": -0.265,
+     "out": true
+    }
+   ],
+   "RB": [
+    {
+     "id": "T03_RB_0",
+     "name": "P T03 RB 0",
+     "pos": "RB",
+     "value": -0.3298,
+     "out": false
+    },
+    {
+     "id": "T03_RB_1",
+     "name": "P T03 RB 1",
+     "pos": "RB",
+     "value": 0.1591,
+     "out": false
+    },
+    {
+     "id": "T03_RB_-1",
+     "name": "P T03 RB -1",
+     "pos": "RB",
+     "value": 0.0832,
+     "out": true
+    }
+   ],
+   "WR": [
+    {
+     "id": "T03_WR_0",
+     "name": "P T03 WR 0",
+     "pos": "WR",
+     "value": 0.4185,
+     "out": false
+    },
+    {
+     "id": "T03_WR_1",
+     "name": "P T03 WR 1",
+     "pos": "WR",
+     "value": 0.0381,
+     "out": false
+    },
+    {
+     "id": "T03_WR_-1",
+     "name": "P T03 WR -1",
+     "pos": "WR",
+     "value": 0.6676,
+     "out": true
+    }
+   ],
+   "TE": [
+    {
+     "id": "T03_TE_0",
+     "name": "P T03 TE 0",
+     "pos": "TE",
+     "value": -0.2838,
+     "out": false
+    },
+    {
+     "id": "T03_TE_1",
+     "name": "P T03 TE 1",
+     "pos": "TE",
+     "value": 0.919,
+     "out": false
+    },
+    {
+     "id": "T03_TE_-1",
+     "name": "P T03 TE -1",
+     "pos": "TE",
+     "value": -0.6603,
+     "out": true
+    }
+   ],
+   "OL": [
+    {
+     "id": "T03_OL_0",
+     "name": "P T03 OL 0",
+     "pos": "OL",
+     "value": -1.0365,
+     "out": false
+    },
+    {
+     "id": "T03_OL_1",
+     "name": "P T03 OL 1",
+     "pos": "OL",
+     "value": 0.8805,
+     "out": false
+    },
+    {
+     "id": "T03_OL_-1",
+     "name": "P T03 OL -1",
+     "pos": "OL",
+     "value": 0.9981,
+     "out": true
+    }
+   ],
+   "DL": [
+    {
+     "id": "T03_DL_0",
+     "name": "P T03 DL 0",
+     "pos": "DL",
+     "value": 2.1777,
+     "out": false
+    },
+    {
+     "id": "T03_DL_1",
+     "name": "P T03 DL 1",
+     "pos": "DL",
+     "value": 0.4982,
+     "out": false
+    },
+    {
+     "id": "T03_DL_-1",
+     "name": "P T03 DL -1",
+     "pos": "DL",
+     "value": -1.0044,
+     "out": true
+    }
+   ],
+   "LB": [
+    {
+     "id": "T03_LB_0",
+     "name": "P T03 LB 0",
+     "pos": "LB",
+     "value": -0.0128,
+     "out": false
+    },
+    {
+     "id": "T03_LB_1",
+     "name": "P T03 LB 1",
+     "pos": "LB",
+     "value": 0.1793,
+     "out": false
+    },
+    {
+     "id": "T03_LB_-1",
+     "name": "P T03 LB -1",
+     "pos": "LB",
+     "value": 0.9716,
+     "out": true
+    }
+   ],
+   "DB": [
+    {
+     "id": "T03_DB_0",
+     "name": "P T03 DB 0",
+     "pos": "DB",
+     "value": -2.0425,
+     "out": false
+    },
+    {
+     "id": "T03_DB_1",
+     "name": "P T03 DB 1",
+     "pos": "DB",
+     "value": -0.3542,
+     "out": false
+    },
+    {
+     "id": "T03_DB_-1",
+     "name": "P T03 DB -1",
+     "pos": "DB",
+     "value": 1.522,
+     "out": true
+    }
+   ],
+   "K": [
+    {
+     "id": "T03_K_0",
+     "name": "P T03 K 0",
+     "pos": "K",
+     "value": -0.4227,
+     "out": false
+    },
+    {
+     "id": "T03_K_1",
+     "name": "P T03 K 1",
+     "pos": "K",
+     "value": 0.1303,
+     "out": false
+    },
+    {
+     "id": "T03_K_-1",
+     "name": "P T03 K -1",
+     "pos": "K",
+     "value": 1.3679,
+     "out": true
+    }
+   ],
+   "P": [
+    {
+     "id": "T03_P_0",
+     "name": "P T03 P 0",
+     "pos": "P",
+     "value": 1.3982,
+     "out": false
+    },
+    {
+     "id": "T03_P_1",
+     "name": "P T03 P 1",
+     "pos": "P",
+     "value": -1.8228,
+     "out": false
+    },
+    {
+     "id": "T03_P_-1",
+     "name": "P T03 P -1",
+     "pos": "P",
+     "value": -0.8899,
+     "out": true
+    }
+   ]
+  },
+  "away": {
+   "QB": [
+    {
+     "id": "T05_QB_0",
+     "name": "P T05 QB 0",
+     "pos": "QB",
+     "value": 0.1701,
+     "out": false
+    },
+    {
+     "id": "T05_QB_1",
+     "name": "P T05 QB 1",
+     "pos": "QB",
+     "value": 0.3913,
+     "out": false
+    },
+    {
+     "id": "T05_QB_-1",
+     "name": "P T05 QB -1",
+     "pos": "QB",
+     "value": -2.4174,
+     "out": true
+    }
+   ],
+   "RB": [
+    {
+     "id": "T05_RB_0",
+     "name": "P T05 RB 0",
+     "pos": "RB",
+     "value": -1.8704,
+     "out": false
+    },
+    {
+     "id": "T05_RB_1",
+     "name": "P T05 RB 1",
+     "pos": "RB",
+     "value": 0.2275,
+     "out": false
+    },
+    {
+     "id": "T05_RB_-1",
+     "name": "P T05 RB -1",
+     "pos": "RB",
+     "value": -0.6025,
+     "out": true
+    }
+   ],
+   "WR": [
+    {
+     "id": "T05_WR_0",
+     "name": "P T05 WR 0",
+     "pos": "WR",
+     "value": -0.0664,
+     "out": false
+    },
+    {
+     "id": "T05_WR_1",
+     "name": "P T05 WR 1",
+     "pos": "WR",
+     "value": -0.7552,
+     "out": false
+    },
+    {
+     "id": "T05_WR_-1",
+     "name": "P T05 WR -1",
+     "pos": "WR",
+     "value": -0.0588,
+     "out": true
+    }
+   ],
+   "TE": [
+    {
+     "id": "T05_TE_0",
+     "name": "P T05 TE 0",
+     "pos": "TE",
+     "value": 1.0623,
+     "out": false
+    },
+    {
+     "id": "T05_TE_1",
+     "name": "P T05 TE 1",
+     "pos": "TE",
+     "value": 0.8998,
+     "out": false
+    },
+    {
+     "id": "T05_TE_-1",
+     "name": "P T05 TE -1",
+     "pos": "TE",
+     "value": -0.7145,
+     "out": true
+    }
+   ],
+   "OL": [
+    {
+     "id": "T05_OL_0",
+     "name": "P T05 OL 0",
+     "pos": "OL",
+     "value": 0.1396,
+     "out": false
+    },
+    {
+     "id": "T05_OL_1",
+     "name": "P T05 OL 1",
+     "pos": "OL",
+     "value": 0.7077,
+     "out": false
+    },
+    {
+     "id": "T05_OL_-1",
+     "name": "P T05 OL -1",
+     "pos": "OL",
+     "value": 0.029,
+     "out": true
+    }
+   ],
+   "DL": [
+    {
+     "id": "T05_DL_0",
+     "name": "P T05 DL 0",
+     "pos": "DL",
+     "value": -2.0508,
+     "out": false
+    },
+    {
+     "id": "T05_DL_1",
+     "name": "P T05 DL 1",
+     "pos": "DL",
+     "value": 1.0829,
+     "out": false
+    },
+    {
+     "id": "T05_DL_-1",
+     "name": "P T05 DL -1",
+     "pos": "DL",
+     "value": 1.7025,
+     "out": true
+    }
+   ],
+   "LB": [
+    {
+     "id": "T05_LB_0",
+     "name": "P T05 LB 0",
+     "pos": "LB",
+     "value": -0.9678,
+     "out": false
+    },
+    {
+     "id": "T05_LB_1",
+     "name": "P T05 LB 1",
+     "pos": "LB",
+     "value": -0.3136,
+     "out": false
+    },
+    {
+     "id": "T05_LB_-1",
+     "name": "P T05 LB -1",
+     "pos": "LB",
+     "value": -0.1825,
+     "out": true
+    }
+   ],
+   "DB": [
+    {
+     "id": "T05_DB_0",
+     "name": "P T05 DB 0",
+     "pos": "DB",
+     "value": -0.3486,
+     "out": false
+    },
+    {
+     "id": "T05_DB_1",
+     "name": "P T05 DB 1",
+     "pos": "DB",
+     "value": 0.0058,
+     "out": false
+    },
+    {
+     "id": "T05_DB_-1",
+     "name": "P T05 DB -1",
+     "pos": "DB",
+     "value": 0.2941,
+     "out": true
+    }
+   ],
+   "K": [
+    {
+     "id": "T05_K_0",
+     "name": "P T05 K 0",
+     "pos": "K",
+     "value": -0.908,
+     "out": false
+    },
+    {
+     "id": "T05_K_1",
+     "name": "P T05 K 1",
+     "pos": "K",
+     "value": 0.1407,
+     "out": false
+    },
+    {
+     "id": "T05_K_-1",
+     "name": "P T05 K -1",
+     "pos": "K",
+     "value": -0.0482,
+     "out": true
+    }
+   ],
+   "P": [
+    {
+     "id": "T05_P_0",
+     "name": "P T05 P 0",
+     "pos": "P",
+     "value": 0.0438,
+     "out": false
+    },
+    {
+     "id": "T05_P_1",
+     "name": "P T05 P 1",
+     "pos": "P",
+     "value": 0.5227,
+     "out": false
+    },
+    {
+     "id": "T05_P_-1",
+     "name": "P T05 P -1",
+     "pos": "P",
+     "value": -0.0649,
+     "out": true
+    }
+   ]
+  }
+ }
+}

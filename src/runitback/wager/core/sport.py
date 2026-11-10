@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
+from .lineup import LineupSpec
 from .schema import GameSchema
 
 BUILTIN_SPORTS = ("nfl",)  # other sports are ported later
@@ -30,6 +31,10 @@ class Sport:
         efficiency: Derives per-game rate stats (``_eff_*`` columns) from
             a games table's box score, for the transformer's history tokens
             (see :mod:`runitback.wager.core.efficiency`).
+        lineup: The position groups behind the sport's player-value lineup
+            columns (``_pv_*``), their signs on the total and the lineup
+            editor's groups; None for a sport without player values (the
+            ``pv``/``pva``/``pvc`` lineup sets then fail).
     """
 
     name: str
@@ -39,6 +44,7 @@ class Sport:
     transformer: dict = field(default_factory=dict)
     elo: dict = field(default_factory=dict)
     efficiency: Callable[[pd.DataFrame], pd.DataFrame] | None = None
+    lineup: LineupSpec | None = None
 
 
 def register_sport(sport: Sport) -> Sport:
@@ -54,6 +60,16 @@ def get_sport(name: str) -> Sport:
         known = sorted(set(BUILTIN_SPORTS) | set(_registry))
         raise ValueError(f"unknown sport {name!r}; choose from {known}")
     return _registry[name]
+
+
+def lineup_spec(sport: str | Sport | LineupSpec | None) -> LineupSpec:
+    """``sport``'s player-value lineup layout (``Sport.lineup``); a spec is returned as is."""
+    if isinstance(sport, LineupSpec):
+        return sport
+    spec = (sport if isinstance(sport, Sport) else get_sport(sport)).lineup if sport else None
+    if spec is None:
+        raise ValueError(f"sport {getattr(sport, 'name', sport)!r} has no player-value lineup groups (Sport.lineup)")
+    return spec
 
 
 def all_sports() -> dict[str, Sport]:

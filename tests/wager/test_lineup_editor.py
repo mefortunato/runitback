@@ -17,9 +17,9 @@ from runitback.wager.web.lineups import LineupEditor, additive_weights
 
 def _predictor(n_members=2):
     n_before = 3
-    lineup_cols = lineup_context_columns("pvc")
+    lineup_cols = lineup_context_columns("pvc", "nfl")
     cols = ["a", "b", "c", *lineup_cols]
-    spec = additive_spec(n_before, "pvc")
+    spec = additive_spec(n_before, "pvc", "nfl")
     members = []
     for seed in range(n_members):
         torch.manual_seed(seed)
@@ -31,14 +31,14 @@ def _predictor(n_members=2):
         head.set_additive_scale(torch.rand(k) + 0.5, torch.randn(k), torch.rand(k) + 0.5, torch.randn(k), [14.0, 13.0])
         members.append(SimpleNamespace(head=head))
     module = SimpleNamespace(members=members) if n_members > 1 else members[0]
-    features = SimpleNamespace(context_columns=cols, lineup=None)
+    features = SimpleNamespace(context_columns=cols, lineup=None, sport="nfl")
     return SimpleNamespace(model=SimpleNamespace(module=module, features=features)), cols, n_before
 
 
 def test_weights_reproduce_the_additive_terms():
     pred, cols, n_before = _predictor()
     w = additive_weights(pred)
-    team = len(lineup_columns("pvc"))
+    team = len(lineup_columns("pvc", "nfl"))
     rng = np.random.default_rng(0)
     ctx = torch.randn(4, len(cols))
     dh, da = rng.normal(size=9), rng.normal(size=9)
@@ -87,8 +87,8 @@ def test_matchups_without_a_game_id_have_no_lineup(tmp_path):
     path = tmp_path / "pv.parquet"
     pd.DataFrame({"game_id": ["G1"], "team": ["KC"], **{f"_pv_{i}": [1.0] for i in range(20)}}).to_parquet(path)
     rows = pd.DataFrame({schema.team: ["KC", "KC"], schema.opp: ["BUF", "BUF"]})
-    out = lineup_features(rows, schema, str(path), "pvc")
+    out = lineup_features(rows, schema, str(path), "pvc", "nfl")
     assert out["_lu_missing"].tolist() == [1.0, 1.0] and out["_opp_lu_missing"].tolist() == [1.0, 1.0]
     rows[schema.game_id] = ["G1", "G2"]
-    out = lineup_features(rows, schema, str(path), "pvc")
+    out = lineup_features(rows, schema, str(path), "pvc", "nfl")
     assert out["_lu_missing"].tolist() == [0.0, 1.0] and out["_pv_11"].iloc[0] == 1.0

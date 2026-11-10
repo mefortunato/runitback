@@ -17,7 +17,9 @@ import numpy as np
 import pandas as pd
 import torch
 
+from ...core.lineup import PV_PREFIX, LineupSpec
 from ...core.schema import GameSchema, mirror, played
+from ...core.sport import lineup_spec
 
 # Pre-game strength of both teams in each token's game (opponent_strength).
 STRENGTH_COLUMNS = ["_team_elo", "_opp_elo", "_opp_margin_avg"]
@@ -74,63 +76,84 @@ def pbp_features(games: pd.DataFrame, schema: GameSchema, path: str, dim: int) -
 # team's history games, ``_cf_*`` the history re-embedded under the projected lineup minus the real
 # one. Joined for the team and, as
 # ``_opp<col>``, its opponent, into the head's context (not the history tokens).
-# ``_pv_*`` (scripts/player_values.py): the projected lineup's player values in points over
-# replacement per position group (QB, RB, WR, TE, OL, DL, LB, DB, kicking) and the offense /
-# defense change vs the previous game's lineup.
-# ``pva``: the same values plus each group's change vs the team's last 8 lineups (``_pv_11`` ..
-# ``_pv_19``), used only through sign-constrained additive terms (PairHead), so a better player
-# at any position always moves the prediction his team's way.
+# ``_pv_*`` (e.g. ``runitback nfl player-values``): the projected lineup's player values in points
+# over replacement per position group and per-side changes vs the previous game's lineup; the
+# layout is the sport's ``Sport.lineup`` (:class:`~runitback.wager.core.lineup.LineupSpec`).
+# ``pv``: the group values and the previous-game changes.
+# ``pva``: the same plus each group's change vs the team's last ``recent`` lineups, used only
+# through sign-constrained additive terms (PairHead), so a better player at any position always
+# moves the prediction his team's way.
 # ``pvc``: the same columns, with only the changes in the additive terms (the team's usual
 # strength is in its history; the term adds what is different about this week's lineup).
-LINEUP_SETS = {"lp": ("_lp_", 16), "lu": ("_lu_", 16), "cf": ("_cf_", 32), "pv": ("_pv_", 11),
-               "pva": ("_pv_", 20), "pvc": ("_pv_", 20)}
-# pva columns: groups (QB, RB, WR, TE, OL, DL, LB, DB, kicking) as levels and as changes
-PVA_LEVELS, PVA_CHANGES = tuple(range(9)), tuple(range(11, 20))
-PVA_TOTAL_SIGN = (1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 0.0)
+FOUNDATION_SETS = {"lp": ("_lp_", 16), "lu": ("_lu_", 16), "cf": ("_cf_", 32)}
+PV_SETS = ("pv", "pva", "pvc")
 LINEUP_MISSING = "_lu_missing"
 
 
-def lineup_columns(which: str | None) -> list[str]:
-    """The team-side context columns of a ``lineup_set`` ("lp", "lu", "cf", or several: "lp+lu")."""
+def lineup_sets(sport: str | LineupSpec | None = None) -> dict[str, tuple[str, int]]:
+    """Each lineup set's column prefix and width: the foundation's sets, plus the player-value
+    sets of ``sport`` when given."""
+    if sport is None:
+        return dict(FOUNDATION_SETS)
+    spec = lineup_spec(sport)
+    return FOUNDATION_SETS | {k: (PV_PREFIX, spec.width(k)) for k in PV_SETS}
+
+
+def _set_width(key: str, sport) -> tuple[str, int]:
+    if key in PV_SETS:
+        return lineup_sets(sport)[key]
+    return FOUNDATION_SETS[key]
+
+
+def lineup_columns(which: str | None, sport: str | LineupSpec | None = None) -> list[str]:
+    """The team-side context columns of a ``lineup_set`` ("lp", "lu", "cf", "pvc", or several:
+    "lp+lu"); the player-value sets need ``sport`` (its ``Sport.lineup``)."""
     if not which:
         return []
-    cols = [f"{LINEUP_SETS[k][0]}{i}" for k in which.split("+") for i in range(LINEUP_SETS[k][1])]
+    cols = []
+    for k in which.split("+"):
+        prefix, width = _set_width(k, sport)
+        cols += [f"{prefix}{i}" for i in range(width)]
     return cols + [LINEUP_MISSING]
 
 
-def additive_spec(n_before: int, which: str | None) -> dict:
-    """PairHead additive-term arguments for the ``pva`` block of lineup set ``which`` (context
-    columns: ``n_before`` others, then the team's lineup columns, then the opponent's)."""
+def additive_spec(n_before: int, which: str | None, sport: str | LineupSpec | None = None) -> dict:
+    """PairHead additive-term arguments for the ``pva`` / ``pvc`` block of lineup set ``which``
+    (context columns: ``n_before`` others, then the team's lineup columns, then the opponent's),
+    laid out by ``sport``'s ``Sport.lineup``."""
     sets = (which or "").split("+")
     mode = next((k for k in sets if k in ("pva", "pvc")), None)
     if mode is None:
         return {}
-    team = lineup_columns(which)
+    spec = lineup_spec(sport)
+    team = lineup_columns(which, spec)
     start = n_before
     for k in sets:
         if k == mode:
             break
-        start += LINEUP_SETS[k][1]
+        start += _set_width(k, spec)[1]
     opp = n_before + len(team)
-    idx = (list(PVA_LEVELS) if mode == "pva" else []) + list(PVA_CHANGES)
-    sign = list(PVA_TOTAL_SIGN) * (2 if mode == "pva" else 1)
-    kind = ([0] * len(PVA_LEVELS) if mode == "pva" else []) + [1] * len(PVA_CHANGES)
+    idx = (list(spec.levels) if mode == "pva" else []) + list(spec.changes)
+    sign = list(spec.total_sign) * (2 if mode == "pva" else 1)
+    kind = ([0] * len(spec.levels) if mode == "pva" else []) + [1] * len(spec.changes)
     pairs = [(start + i, opp + (start - n_before) + i) for i in idx]
-    mask = [start + i for i in range(LINEUP_SETS[mode][1])]
-    mask += [opp + (start - n_before) + i for i in range(LINEUP_SETS[mode][1])]
+    width = spec.width(mode)
+    mask = [start + i for i in range(width)]
+    mask += [opp + (start - n_before) + i for i in range(width)]
     return {"additive_pairs": pairs, "additive_total_sign": sign, "additive_kind": kind, "mask_context": mask}
 
 
-def lineup_context_columns(which: str | None) -> list[str]:
-    cols = lineup_columns(which)
+def lineup_context_columns(which: str | None, sport: str | LineupSpec | None = None) -> list[str]:
+    cols = lineup_columns(which, sport)
     return cols + [f"_opp{c}" for c in cols]
 
 
-def lineup_features(games: pd.DataFrame, schema: GameSchema, path: str, which: str) -> pd.DataFrame:
+def lineup_features(games: pd.DataFrame, schema: GameSchema, path: str, which: str,
+                    sport: str | LineupSpec | None = None) -> pd.DataFrame:
     """Both sides' lineup context for each row (missing flag 1 where the table has no row, or the
     rows are hypothetical matchups without a game id, e.g. power ratings)."""
     table = _read_pbp(path)
-    cols = lineup_columns(which)[:-1]
+    cols = lineup_columns(which, sport)[:-1]
     out = []
     ids = games[schema.game_id] if schema.game_id in games else pd.Series(None, index=games.index, dtype=object)
     for side, prefix in ((schema.team, ""), (schema.opp, "_opp")):
@@ -410,7 +433,7 @@ class SequenceFeatures:
             train_games = features.with_derived(train_games)
         context = location + list(schema.context)
         if features.lineup:
-            context += lineup_context_columns(features.lineup_set)
+            context += lineup_context_columns(features.lineup_set, sport)
             train_games = features.with_lineup(train_games)
         columns = list(dict.fromkeys(tokens + context))
         values = train_games.reindex(columns=columns)
@@ -471,7 +494,7 @@ class SequenceFeatures:
         """``games`` with both sides' lineup context joined (when this featurizer uses it)."""
         if not getattr(self, "lineup", None):
             return games
-        part = lineup_features(games, self.schema, self.lineup, self.lineup_set)
+        part = lineup_features(games, self.schema, self.lineup, self.lineup_set, self.sport)
         return games.drop(columns=part.columns, errors="ignore").join(part)
 
     def context(self, matchups: pd.DataFrame) -> np.ndarray:
