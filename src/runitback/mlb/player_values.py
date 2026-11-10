@@ -30,11 +30,11 @@ The MLB adapter of the sport-agnostic fitter (:mod:`runitback.core.player_values
 - **Leak-free and weekly.** Each week (Monday) is fit on the plate appearances before it, and every
   game uses its week's fit; usages come from earlier games or the previous season.
 
-:func:`game_table` writes each team-game's ``_pv_*`` columns. Until the MLB projected lineups (work
-package M3) exist, the projection is a stand-in: **the team's previous game's starting nine**
-(batting order kept), **the game's actual starting pitcher** (announced before the game; the Stats
-API keeps no history of the announcement, see M1) and the bullpen above. Pass ``lineups`` to use
-another projection.
+:func:`game_table` writes each team-game's ``_pv_*`` columns from a projected lineup and starter:
+by default M2's own stand-in, **the team's previous game's starting nine** (batting order kept) and
+**the game's actual starting pitcher**; ``runitback mlb player-values`` passes M3's projection
+(:func:`m3_lineups`: the probable starter and the previous lineup against his hand). The bullpen is
+always the projection above.
 """
 from __future__ import annotations
 
@@ -371,6 +371,19 @@ def previous_lineup(lineups: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
     pr = tg.dropna(subset=["prev"]).astype({"prev": np.int64}).merge(
         st.rename(columns={"game_pk": "prev"}), on=["prev", "team_id"])
     return pr[["game_pk", "team_id", "player_id", "spot"]].reset_index(drop=True)
+
+
+def m3_lineups(proc: Path, kind: str = "projected") -> pd.DataFrame:
+    """M3's ``projected_lineups.parquet`` (``kind="projected"``: the probable starter and the previous
+    lineup against his hand) or ``posted_lineups.parquet`` (``"posted"``: the actual nine, the
+    stand-in for the posted lineup), in :func:`game_table`'s ``lineups`` form: ``game_pk, team_id,
+    player_id, spot`` with the batters at spots 1-9 and the starting pitcher at spot 0. Vacant
+    spots (no player) are dropped."""
+    d = pd.read_parquet(Path(proc) / f"{kind}_lineups.parquet",
+                        columns=["game_pk", "team_id", "role", "spot", "player_id"]).dropna(subset=["player_id"])
+    d = d.assign(spot=np.where(d.role == "SP", 0, d.spot)).astype({"spot": int, "player_id": np.int64})
+    d = d[(d.role == "SP") | d.spot.between(1, SLOTS)]
+    return d[["game_pk", "team_id", "player_id", "spot"]].reset_index(drop=True)
 
 
 def side_values(bat_rows, sp_id, sp_bf, bullpen, vp: dict, mult: list[float], relief_bf: float

@@ -18,6 +18,7 @@ from runitback.mlb.player_values import (
     events_from,
     expected_sp_bf,
     fit_values,
+    m3_lineups,
     game_table,
     holdout_score,
     league_bf,
@@ -275,3 +276,29 @@ def test_on_real_feeds():
         assert sp[0] and (sp.all() or not sp[np.argmin(sp):].any())
     st = starters(tables["lineups"])
     assert (st.groupby(["game_pk", "team_id"]).size() == 9).all()
+
+
+def test_m3_lineups(tmp_path, tb):
+    rows = [dict(game_pk=1, team_id=10, role="SP", spot=9, player_id=1051),     # no DH: the SP bats 9th
+            *[dict(game_pk=1, team_id=10, role="B", spot=k, player_id=1000 + k) for k in range(1, 9)],
+            dict(game_pk=1, team_id=10, role="B", spot=9, player_id=1051),
+            dict(game_pk=1, team_id=20, role="SP", spot=0, player_id=2051),
+            dict(game_pk=1, team_id=20, role="B", spot=1, player_id=None)]       # a vacant spot
+    pd.DataFrame(rows).astype({"player_id": "Int64"}).to_parquet(tmp_path / "projected_lineups.parquet")
+    got = m3_lineups(tmp_path)
+    t10 = got[got.team_id == 10]
+    assert sorted(t10.spot) == list(range(10)) and t10[t10.spot == 0].player_id.item() == 1051
+    assert got[got.team_id == 20].spot.tolist() == [0]
+    # through game_table: the projection's starter is the one valued
+    prev = previous_lineup(tb.lineups, tb.games)
+    sp = tb.games[["game_pk", "home_id", "home_sp"]].rename(columns={"home_id": "team_id", "home_sp": "player_id"})
+    other = sp_ids(TEAMS[0])[0]
+    lin = pd.concat([prev, sp.assign(spot=0, player_id=other)], ignore_index=True)
+    cfg = apm_config(lam=50, min_pa=50)
+    gv = game_table(tb, first_season=2021, jobs=1, lineups=lin, cfg=cfg)
+    home = gv.pv.merge(tb.games[["game_pk", "home_id", "t"]], left_on=["game_pk", "team_id"],
+                       right_on=["game_pk", "home_id"])
+    r = home.iloc[-1]
+    fit = gv.fits[week_start(int(r.t))]
+    v = fit[(fit.side == "pit") & (fit.player_id == other)].value_pa
+    assert r._pv_1 == pytest.approx(float(v.iloc[0]) * 24, rel=1e-5)

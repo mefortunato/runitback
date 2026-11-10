@@ -635,10 +635,13 @@ def mlb_lineups(sp: str = typer.Option("probable", help="starting pitcher: proba
 def mlb_player_values(out: Path = typer.Option(Path("player_values/mlb"), help="output directory"),
                       start: int = typer.Option(2015, help="first season of plate appearances"), end: int = 2026,
                       first_season: int = typer.Option(2016, help="first season with pv.parquet rows"),
-                      jobs: int = 0, fielding: bool = typer.Option(False, help="also fit fielders 2-9")):
+                      jobs: int = 0, fielding: bool = typer.Option(False, help="also fit fielders 2-9"),
+                      lineups: str = typer.Option("projected", help="projected (M3: probable SP, previous "
+                                                  "lineup vs his hand), posted (M3: the actual nine) or "
+                                                  "previous (the previous game's nine, the actual SP)")):
     """Weekly plate-appearance adjusted plus-minus on RE24 run value and each team-game's lineup values
     (pv.parquet, usage.json, values_latest.csv; runitback.mlb.player_values). Needs `runitback mlb
-    process` first."""
+    process` (and `runitback mlb lineups` for M3's lineups) first."""
     import os
 
     from .mlb import paths as mlb_paths
@@ -647,7 +650,9 @@ def mlb_player_values(out: Path = typer.Option(Path("player_values/mlb"), help="
     from .wager.mlb.data.download import team_keys
     _mlb_log()
     tb = pv.load(mlb_paths.processed_dir(), list(range(start, end + 1)))
-    gv = pv.game_table(tb, first_season, jobs or os.cpu_count() or 1, cfg=pv.apm_config(fielding=fielding))
+    proj = None if lineups == "previous" else pv.m3_lineups(mlb_paths.processed_dir(), lineups)
+    gv = pv.game_table(tb, first_season, jobs or os.cpu_count() or 1, lineups=proj,
+                       cfg=pv.apm_config(fielding=fielding))
     keys = team_keys(statsapi.default_client().get("/v1/teams", sportId=1)["teams"])
     gv.pv = pv.to_wager_keys(gv.pv, keys)
     pv.write_game_table(gv, out, tb.players)
