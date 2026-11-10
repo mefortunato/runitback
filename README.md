@@ -408,6 +408,7 @@ model, more seasons and `calibrate` are the obvious next steps.
 pip install -e ".[data,dev]"
 runitback nba download --start 2015 --end 2027      # raw parquet (play-by-play + player box) → data/nba/raw/
 runitback nba players --start 2015 --end 2027       # → data/nba/processed/{on_court,player_games,players}.parquet, prints the 5-on-court check
+runitback nba lineups [--live]                      # → data/nba/processed/projected_lineups.parquet (+ _upcoming with --live), prints the check vs actual
 runitback nba preprocess --start 2015 --end 2027    # → data/nba/processed/{games,plays,ratings}.parquet, prints engine agreement
 runitback nba train --out runs/nba/eval --val-season 2026        # hold out the last 40% of 2025-26
 runitback nba evaluate --ckpt runs/nba/eval/model.pt
@@ -417,6 +418,31 @@ runitback serve                                                   # http://127.0
 runitback nba simulate BOS NYK --season 2027 --n 1000
 runitback nba season --season 2027 --seed 0 --out season.json   # full season + playoffs
 ```
+
+**Projected lineups** (`runitback nba lineups`, `runitback.nba.data.lineups`). Each team-game's
+expected players, minutes and starters from what is known at tip-off. NBA injury reports have no
+history, so the ESPN player box score of the game stands in for the final report. Players whose
+did-not-play `reason` is an injury are ruled out. The candidates are the players the box score lists
+for the team: the roster at tip-off, with actives and listed inactives. Each player's minutes are
+a recency-weighted mean (0.85 per game) of his last 10 available games before the game, for any
+team, scaled to 240 minutes with a 42-minute cap. The projected starters are the five with the
+highest recent start share. Nothing else from the game is used. Two things leak: players ruled out
+after the line was set count as known, and rest, personal or coach's-decision absences are not
+ruled out. Upcoming games (`--live`) use ESPN's current rosters, its `/injuries` report (Out or
+Doubtful) and the posted starters once ESPN has them. 2015–2026, against the box score and against
+the team's previous game as played:
+
+| | projected | previous game | rotation only, injury reasons removed |
+|---|---|---|---|
+| actual starters among the projected five | **90.8%** | 87.6% | 84.4% |
+| all five starters right | **60.9%** | 55.8% | 44.6% |
+| minutes MAE per player-game | **4.89** | 6.67 | 6.51 |
+| regulars (20+ min last game) who missed the game, left out | **75%** | 0% | 20% |
+
+The last column is the plan's rule taken literally (`--no-roster`): the team's last five games'
+rotation minus players with an injury reason. ESPN gives an injury reason for only about a quarter
+of the regulars who miss a game. Most of the others are not in that game's box score at all, so
+the rotation-only version is worse than simply reusing the previous game.
 
 **Season simulator** (the **Season** tab on `/nba`, `runitback nba season`, or
 `simulate_season(sim, 2027)` from `runitback.nba.sim.season`). Supports seasons 2005–2040 (the
@@ -466,6 +492,37 @@ way NFL seasons do; shot locations on the court are
 illustrative because the model predicts a shot's value and result, not where it was taken; rare
 sequences are simplified (flagrant and clear-path free throws followed by possession, fouls on
 the offense during a loose ball, and coach's challenges).
+
+## MLB
+
+`runitback.mlb` holds MLB's plate-appearance data, the input to the MLB player model
+(`docs/multisport/PLAN.md`, packages M1-M5). There is no MLB simulator yet; the MLB wager model
+(box score baseline) is `runitback.wager.mlb`.
+
+```bash
+runitback mlb download --start 2014 --end 2026   # finished games' live feeds → data/mlb/raw/feeds/<season>/<pk>.json.gz
+runitback mlb process --start 2014 --end 2026    # → data/mlb/processed/{pa,games,lineups,substitutions,players,re}_<season>.parquet
+runitback mlb probables 2026-07-04               # announced probable pitchers and posted lineups, as listed now
+```
+
+- **Source.** MLB's Stats API: the season schedule, then each game's live feed
+  (`api/v1.1/game/{pk}/feed/live`). Requests are spaced 0.1 s apart across 4 threads, with
+  backoff on 429 / 5xx; a season is about 2,500 requests and 4.5 minutes. Finished games are
+  cached (pruned, about 30 KB each, 76 MB a season) and never requested again.
+- **`pa_<S>`**: one row per plate appearance: batter, pitcher, handedness, lineup spot, the
+  base / out state at the start, just before the result (after steals, wild pitches, pickoffs)
+  and at the end, the result (`1B` .. `HR`, `BB`, `K`, `OUT`, ...), runs, the score, the
+  defense's `fielder_2` .. `fielder_9`, and RE24 run values. The state is replayed from the runner
+  movements, with the automatic runner on second in regular-season extra innings from 2020, and
+  checked against the feed (`checks_<S>.json`). On 2023-2024 (4,943 games, 373,774 plays) there
+  were 3 runner-start, 4 end-of-play bases, 1 runs and 11 fielding-credit (of 413,317)
+  disagreements, and every game's PA count equals its box score's.
+- **Run values** use run expectancy fit on the season before (`re_<S>`), so season S never sees
+  itself; the first season processed gets NaN, so start one season early.
+- **`games_<S>`** has the feed's probable and the actual starting pitchers. For finished games the
+  Stats API reports the starter as the probable (they agree in 99.8% of 2024 games), so it is
+  not a record of who was announced. `lineups_<S>` and `substitutions_<S>` are who played and
+  every change in order.
 
 ## NHL
 
@@ -854,7 +911,9 @@ the three OT eras), a replay of real 2024 games through the engine, a check that
 legality masks match sampling-time masks, sampler termination, and the API. The NBA tests cover the
 engine (and-ones, free-throw trips, quarter possession, OT, timeouts), ratings, a replay of real
 games when `data/nba/raw` exists, mask agreement when `data/nba/processed` exists, the sampler,
-the NBA API, and the combined server's routes.
+the NBA API, and the combined server's routes. The MLB tests replay three real Stats API feeds
+(`tests/mlb/fixtures`) against the feed's own bases, outs, score and box score, and cover the
+client's cache, retries and throttle and the leakage-free run values.
 
 ## Limitations / next steps (NFL)
 
