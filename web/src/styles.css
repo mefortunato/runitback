@@ -238,6 +238,23 @@ a { color: var(--accent); }
 .badge.ok { color: #1f7a3d; border-color: color-mix(in srgb, #1f7a3d 40%, transparent); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .badge.ok { color: #7bd59b; } }
 :root[data-theme="dark"] .badge.ok { color: #7bd59b; }
+.record-section { margin-bottom: 28px; }
+.record-section > h2 { font-size: 22px; margin: 0 0 6px; }
+.record-lede, .record-note { max-width: 72ch; margin: 0 0 14px; }
+.record-note { margin: 14px 0 0; font-size: 13px; }
+.record-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 14px; }
+.record-card { display: grid; gap: 14px; align-content: start; padding: 16px 18px; margin: 0; }
+.record-card header { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.record-card h3 { font-size: 20px; margin: 0; }
+.record-card h3 a { color: var(--text); text-decoration: none; }
+.record-card h3 a:hover { color: var(--accent); }
+.record { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; margin: 0; font-variant-numeric: tabular-nums; }
+.record dt { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.record dd { margin: 2px 0 0; font-size: 22px; font-weight: 700; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.record dd .muted { font-size: 12px; font-weight: 500; }
+.record-links { display: flex; gap: 6px; flex-wrap: wrap; }
+.record-links .button { padding: 5px 12px; font-size: 13px; }
+.record-source { margin: 0; font-size: 12px; }
 .replay-anim { padding: 14px 16px 16px; margin: 0 0 22px; }
 .replay-head { display: flex; align-items: center; gap: 12px; min-height: 26px; margin-bottom: 6px; }
 .replay-counter { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
