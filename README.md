@@ -467,6 +467,37 @@ illustrative because the model predicts a shot's value and result, not where it 
 sequences are simplified (flagrant and clear-path free throws followed by possession, fouls on
 the offense during a loose ball, and coach's challenges).
 
+## MLB
+
+`runitback.mlb` holds MLB's plate-appearance data, the input to the MLB player model
+(`docs/multisport/PLAN.md`, packages M1-M5). There is no MLB simulator yet; the MLB wager model
+(box score baseline) is `runitback.wager.mlb`.
+
+```bash
+runitback mlb download --start 2014 --end 2026   # finished games' live feeds → data/mlb/raw/feeds/<season>/<pk>.json.gz
+runitback mlb process --start 2014 --end 2026    # → data/mlb/processed/{pa,games,lineups,substitutions,players,re}_<season>.parquet
+runitback mlb probables 2026-07-04               # announced probable pitchers and posted lineups, as listed now
+```
+
+- **Source.** MLB's Stats API: the season schedule, then each game's live feed
+  (`api/v1.1/game/{pk}/feed/live`). Requests are spaced 0.1 s apart across 4 threads, with
+  backoff on 429 / 5xx; a season is about 2,500 requests and 4.5 minutes. Finished games are
+  cached (pruned, about 30 KB each, 76 MB a season) and never requested again.
+- **`pa_<S>`**: one row per plate appearance: batter, pitcher, handedness, lineup spot, the
+  base / out state at the start, just before the result (after steals, wild pitches, pickoffs)
+  and at the end, the result (`1B` .. `HR`, `BB`, `K`, `OUT`, ...), runs, the score, the
+  defense's `fielder_2` .. `fielder_9`, and RE24 run values. The state is replayed from the runner
+  movements, with the automatic runner on second in regular-season extra innings from 2020, and
+  checked against the feed (`checks_<S>.json`). On 2023-2024 (4,943 games, 373,774 plays) there
+  were 3 runner-start, 4 end-of-play bases, 1 runs and 11 fielding-credit (of 413,317)
+  disagreements, and every game's PA count equals its box score's.
+- **Run values** use run expectancy fit on the season before (`re_<S>`), so season S never sees
+  itself; the first season processed gets NaN, so start one season early.
+- **`games_<S>`** has the feed's probable and the actual starting pitchers. For finished games the
+  Stats API reports the starter as the probable (they agree in 99.8% of 2024 games), so it is
+  not a record of who was announced. `lineups_<S>` and `substitutions_<S>` are who played and
+  every change in order.
+
 ## Quick start (pre-trained model)
 
 You need Python 3.10+ and Node 18+. This takes about 5 minutes and needs no data download or training.
@@ -831,7 +862,9 @@ the three OT eras), a replay of real 2024 games through the engine, a check that
 legality masks match sampling-time masks, sampler termination, and the API. The NBA tests cover the
 engine (and-ones, free-throw trips, quarter possession, OT, timeouts), ratings, a replay of real
 games when `data/nba/raw` exists, mask agreement when `data/nba/processed` exists, the sampler,
-the NBA API, and the combined server's routes.
+the NBA API, and the combined server's routes. The MLB tests replay three real Stats API feeds
+(`tests/mlb/fixtures`) against the feed's own bases, outs, score and box score, and cover the
+client's cache, retries and throttle and the leakage-free run values.
 
 ## Limitations / next steps (NFL)
 

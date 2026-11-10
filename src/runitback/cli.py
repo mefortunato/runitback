@@ -1,5 +1,5 @@
-"""Command-line interface: runitback serve, and runitback <nfl|nba> download | preprocess | train |
-evaluate | calibrate | simulate | serve."""
+"""Command-line interface: runitback serve, runitback <nfl|nba> download | preprocess | train |
+evaluate | calibrate | simulate | serve, and runitback mlb download | process | probables."""
 from __future__ import annotations
 
 import csv
@@ -16,7 +16,9 @@ app = typer.Typer(add_completion=False, help="Run It Back: simulate sports games
 nfl = typer.Typer(add_completion=False, help="NFL: data, training, evaluation, simulation and the web app")
 nba = typer.Typer(add_completion=False, help="NBA: data, training, evaluation, simulation and the web app")
 app.add_typer(nfl, name="nfl")
+mlb = typer.Typer(add_completion=False, help="MLB: plate-appearance data from MLB's Stats API")
 app.add_typer(nba, name="nba")
+app.add_typer(mlb, name="mlb")
 DATA = data_dir()
 RUNS = runs_dir()
 DEFAULT_CKPT = default_checkpoint()
@@ -436,6 +438,51 @@ def _write_result(res, out: Path | None, scores: bool) -> None:
     if out and out.suffix != ".csv":
         out.write_text(json.dumps(d, indent=1))
     typer.echo(json.dumps({k: v for k, v in d.items() if k != "margin_hist"}, indent=1))
+
+# ---------------------------------------------------------------- MLB
+
+def _mlb_log():
+    _log()
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # one line per feed request otherwise
+
+
+@mlb.command("download")
+def mlb_download(start: int = typer.Option(2015, help="first season"), end: int = 2026,
+                 workers: int = typer.Option(4, help="download threads (they share one throttle)"),
+                 min_interval: float = typer.Option(0.1, help="seconds between requests, all threads")):
+    """Cache every finished game's Stats API live feed (data/mlb/raw/feeds; cached games are not
+    requested again)."""
+    from .mlb import paths as mlb_paths
+    from .mlb.data import statsapi
+    from .mlb.data.ingest import download
+    _mlb_log()
+    client = statsapi.Client(min_interval=min_interval)
+    typer.echo(json.dumps(download(list(range(start, end + 1)), mlb_paths.feeds_dir(), client, workers)))
+
+
+@mlb.command("process")
+def mlb_process(start: int = typer.Option(2015, help="first season (its run values need the season "
+                                                     "before it, so start one season early)"),
+                end: int = 2026, workers: int = 4, min_interval: float = 0.1,
+                lookback: int = typer.Option(1, help="seasons of run expectancy behind each season")):
+    """Plate-appearance, games, lineups, substitutions and players tables per season
+    (data/mlb/processed), downloading any feed not cached yet."""
+    from .mlb import paths as mlb_paths
+    from .mlb.data import statsapi
+    from .mlb.data.ingest import build_seasons
+    _mlb_log()
+    client = statsapi.Client(min_interval=min_interval)
+    summary = build_seasons(list(range(start, end + 1)), mlb_paths.feeds_dir(), mlb_paths.processed_dir(),
+                            client, workers, lookback)
+    typer.echo(json.dumps(summary, indent=1))
+
+
+@mlb.command("probables")
+def mlb_probables(date: str = typer.Argument(..., help="YYYY-MM-DD")):
+    """Announced probable pitchers and posted batting orders for a date's games, as listed now."""
+    from .mlb.data.statsapi import probables
+    for row in probables(date):
+        typer.echo(json.dumps(row))
 
 
 if __name__ == "__main__":
