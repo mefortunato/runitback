@@ -26,11 +26,8 @@ from collections.abc import Callable
 import httpx
 import pandas as pd
 
-try:  # college football is not ported to runitback yet; its ESPN provider needs it
-    from ..cfb.data import download as cfb
-    from ..cfb.data.download import FCS
-except ImportError:
-    cfb, FCS = None, "FCS"
+from ..cfb.data import download as cfb
+from ..cfb.data.download import FCS
 
 logger = logging.getLogger(__name__)
 

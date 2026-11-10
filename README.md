@@ -15,7 +15,9 @@ helpers. One server (`runitback.server`) serves every sport's API and the web ap
 
 The predictions pages come from `runitback.wager`, the game-level models ported from sportsml
 (`runitback-wager <sport> ...`, the `wager` extra). They are precomputed static JSON; see
-[Predictions data](#predictions-data).
+[Predictions data](#predictions-data). Ported so far: `nfl`, `cfb` and `mlb` (the backtests
+against sportsml are in `experiments/cfb/README.md` and `experiments/mlb/README.md`; site pages
+for the new sports come later).
 
 ## NFL
 
