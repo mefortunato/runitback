@@ -3,7 +3,7 @@
 Simulate sports games one play at a time, or replay a matchup a thousand times.
 
 Run It Back covers several sports. Each sport has its own package with its rules, data and
-vocabulary (`runitback.nfl`, `runitback.nba`). Shared pieces live in `runitback.core`: the
+vocabulary (`runitback.nfl`, `runitback.nba`; `runitback.nhl` has the data so far). Shared pieces live in `runitback.core`: the
 transformer building blocks, the score-distribution summaries, the model scheduler and training
 helpers. One server (`runitback.server`) serves every sport's API and the web app:
 
@@ -409,6 +409,7 @@ model, more seasons and `calibrate` are the obvious next steps.
 pip install -e ".[data,dev]"
 runitback nba download --start 2015 --end 2027      # raw parquet (play-by-play + player box) → data/nba/raw/
 runitback nba players --start 2015 --end 2027       # → data/nba/processed/{on_court,player_games,players}.parquet, prints the 5-on-court check
+runitback nba lineups [--live]                      # → data/nba/processed/projected_lineups.parquet (+ _upcoming with --live), prints the check vs actual
 runitback nba player-values --start 2015 --end 2027 # → data/nba/processed/possessions.parquet; player_values/nba/{pv.parquet,slots.json,values_latest.csv}
 runitback nba preprocess --start 2015 --end 2027    # → data/nba/processed/{games,plays,ratings}.parquet, prints engine agreement
 runitback nba train --out runs/nba/eval --val-season 2026        # hold out the last 40% of 2025-26
@@ -419,6 +420,31 @@ runitback serve                                                   # http://127.0
 runitback nba simulate BOS NYK --season 2027 --n 1000
 runitback nba season --season 2027 --seed 0 --out season.json   # full season + playoffs
 ```
+
+**Projected lineups** (`runitback nba lineups`, `runitback.nba.data.lineups`). Each team-game's
+expected players, minutes and starters from what is known at tip-off. NBA injury reports have no
+history, so the ESPN player box score of the game stands in for the final report. Players whose
+did-not-play `reason` is an injury are ruled out. The candidates are the players the box score lists
+for the team: the roster at tip-off, with actives and listed inactives. Each player's minutes are
+a recency-weighted mean (0.85 per game) of his last 10 available games before the game, for any
+team, scaled to 240 minutes with a 42-minute cap. The projected starters are the five with the
+highest recent start share. Nothing else from the game is used. Two things leak: players ruled out
+after the line was set count as known, and rest, personal or coach's-decision absences are not
+ruled out. Upcoming games (`--live`) use ESPN's current rosters, its `/injuries` report (Out or
+Doubtful) and the posted starters once ESPN has them. 2015–2026, against the box score and against
+the team's previous game as played:
+
+| | projected | previous game | rotation only, injury reasons removed |
+|---|---|---|---|
+| actual starters among the projected five | **90.8%** | 87.6% | 84.4% |
+| all five starters right | **60.9%** | 55.8% | 44.6% |
+| minutes MAE per player-game | **4.89** | 6.67 | 6.51 |
+| regulars (20+ min last game) who missed the game, left out | **75%** | 0% | 20% |
+
+The last column is the plan's rule taken literally (`--no-roster`): the team's last five games'
+rotation minus players with an injury reason. ESPN gives an injury reason for only about a quarter
+of the regulars who miss a game. Most of the others are not in that game's box score at all, so
+the rotation-only version is worse than simply reusing the previous game.
 
 **Season simulator** (the **Season** tab on `/nba`, `runitback nba season`, or
 `simulate_season(sim, 2027)` from `runitback.nba.sim.season`). Supports seasons 2005–2040 (the
@@ -499,6 +525,29 @@ runitback mlb probables 2026-07-04               # announced probable pitchers a
   Stats API reports the starter as the probable (they agree in 99.8% of 2024 games), so it is
   not a record of who was announced. `lineups_<S>` and `substitutions_<S>` are who played and
   every change in order.
+
+## NHL
+
+`runitback.nhl` so far holds the event and personnel data for the player-based wager model
+(`docs/multisport/PLAN.md`, H1). There is no simulator yet.
+
+```bash
+runitback nhl download --start 2011 --end 2027   # → data/nhl/raw/: play-by-play, schedule, players, gap shift charts
+runitback nhl events --start 2011 --end 2027     # → data/nhl/processed/{events_<season>,games,players}.parquet, prints coverage
+```
+
+| Piece | File | What it does |
+|---|---|---|
+| Download | `src/runitback/nhl/data/download.py` | sportsdataverse `nhl_pbp_full` (each release file checked by its `season` column; the file names are inconsistent), the schedule and player positions (`api.nhle.com/stats/rest`), shift charts for gap games |
+| Events | `src/runitback/nhl/data/events.py` | one row per event with the skaters (`home_1..6`, `away_1..6`) and goalies on ice, strength from the home side, `xg`; `CHANGE` rows attributed to games and sides; games with missing personnel rebuilt from the shift charts |
+
+Coverage (share of play events with skaters on ice for both teams, after the shift-chart fallback):
+99.9–100% in every season from 2010-11. The fallback rebuilds 176 games of 2019-20 (every event but
+no personnel in the release) and about 150 partial games elsewhere. Rebuilt from shift charts,
+15 complete games per season match the release's personnel on 98.8–100% of events (100% through
+2020-21). Gaps that remain: **2014-15 is not in the release** (no events at all), **2009-10 has
+no personnel** in either source (events and `xg` only), and 17 games of April 2025 have no
+overtime personnel (the NHL API has no shift charts for them).
 
 ## Quick start (pre-trained model)
 
