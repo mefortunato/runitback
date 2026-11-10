@@ -3,9 +3,10 @@
 Simulate sports games one play at a time, or replay a matchup a thousand times.
 
 Run It Back covers several sports. Each sport has its own package with its rules, data and
-vocabulary (`runitback.nfl`, `runitback.nba`; `runitback.nhl` has the data so far). Shared pieces live in `runitback.core`: the
-transformer building blocks, the score-distribution summaries, the model scheduler and training
-helpers. One server (`runitback.server`) serves every sport's API and the web app:
+vocabulary (`runitback.nfl`, `runitback.nba`; `runitback.nhl` has the data and the rules engine so
+far). Shared pieces live in `runitback.core`: the transformer building blocks, the
+score-distribution summaries, the model scheduler and training helpers. One server
+(`runitback.server`) serves every sport's API and the web app:
 
 - `/`: a landing page that explains the model and links to each sport
 - `/nfl`: NFL predictions (spread, moneyline, over/under for upcoming games, recent results,
@@ -549,6 +550,69 @@ no personnel in the release) and about 150 partial games elsewhere. Rebuilt from
 no personnel** in either source (events and `xg` only), and 17 games of April 2025 have no
 overtime personnel (the NHL API has no shift charts for them).
 
+### NHL rules engine
+
+The rules engine and vocabulary (work package H4); the generator model and pages come in later
+packages. Games are modeled one
+**event** at a time. Hockey has no possession to track, so each event belongs to the team that did
+it (`side`), or to nobody (a stoppage, the end of a period).
+
+| Piece | File | Notes |
+|---|---|---|
+| Vocabularies | `src/runitback/nhl/vocab.py` | event types, results, phases, teams, rule constants |
+| Rules engine | `src/runitback/nhl/engine/rules.py` | `apply_outcome(state, outcome)`, legality, penalty box, overtime, shootout |
+| Replay check | `src/runitback/nhl/engine/replay.py` | sportsdataverse `nhl_pbp_full` rows → engine outcomes, replayed and compared with the data |
+
+**Events** (`play_type` → `result`, plus `side` and `elapsed` seconds): `faceoff` (won) · `shot`
+(goal, saved, missed, blocked; credited to the shooting team) · `hit` · `giveaway` · `takeaway` ·
+`penalty` (minor, matched_minor, double_minor, major, coincidental, misconduct, penalty_shot;
+credited to the penalized team) · `delayed_penalty` · `stoppage` (goalie_freeze, icing, offside,
+out_of_play, timeout, other) · `goalie_pull`, `goalie_return` · `period_end` · `shootout` (goal,
+saved, missed). Phases: faceoff (play is stopped), live, penalty shot, shootout.
+
+**Engine rules:** play restarts with a faceoff after every stoppage, goal and penalty. Minors
+(2:00), double minors (4:00) and majors (5:00) take a skater off; at most two penalties per team are
+served at once (a third waits) and a team never has fewer than three skaters. A power-play goal
+ends the shortest minor of the team with more penalties being served (a double minor's current
+two minutes); majors are served in full. Penalties assessed at one stoppage are labeled by what
+they do (rules 19.1 and 19.5): one minor each at full 5-on-5 strength is played 4-on-4
+(`matched_minor`, never released by a goal); otherwise equal time cancels (`coincidental`), so a
+minor against a double minor leaves a two-minute power play. Two minors to one player are a double
+minor. A penalty shot is one attempt by the fouled team, then a faceoff. A pulled goalie adds an
+extra attacker until the goalie returns or the period ends. Penalty time carries across periods.
+Regular-season overtime is 5 minutes of 3-on-3 (4-on-4 before 2015-16): a penalty gives the
+other team an extra skater, and a player leaving the box makes it 4-on-4 until the next stoppage.
+Playoff overtime is 20-minute 5-on-5 periods. An overtime goal ends the game. A regular-season
+game tied after overtime goes to a shootout (three rounds, then sudden death, decided as soon as
+one team cannot catch up; the winner gets one goal). Periods end only on a `period_end` event,
+once the clock is under 4 minutes in play (0:00 at a stoppage).
+
+**Engine replay check** (`python -m runitback.nhl.engine.replay 2011 ... 2025`): every real event
+is applied to the engine, and the engine's next state is compared with what the data says
+independently: the score (goal rows), the period, the skaters on the ice for each team and whether
+each net is empty (the shift-based on-ice columns at the next event), and whether the next real
+event is legal in the engine's state. The penalty box is never reset from the data. Over
+**5.59M transitions in 17,877 games (2010-11 to 2024-25), the engine agrees on 99.72%** (99.65%
+before repairing feed gaps). Every season is at or above 99.6%, except 2019-20 (97.93%), where many
+games' shift data shows strength changes no penalty explains. Details:
+
+- The on-ice columns have one-second resolution and show the end of a second at stoppages, so they
+  are compared at the last event of each second, and a penalty ending in that second may go
+  either way. Games with no shift data (174 in 2019-20), or where a goalie is missing from it on
+  more than 15% of events, are not compared on the ice (279 games in all); their score, period
+  and legality still are.
+- Repairs for gaps in the feed (2,545 implied events, mostly before 2019): an implied stoppage
+  before a faceoff during play, an implied faceoff before play after a stoppage (credited to the
+  team that acts; faceoffs listed up to 2 seconds late are moved instead), and an implied period
+  end where one is missing.
+- The data lists shootout attempts with each team's goals after its misses; the order is rebuilt
+  so the teams alternate and the shootout is decided on the last attempt (where several orders
+  fit, the first is used). Penalty-shot calls are listed after the attempt and are moved before it.
+- Files: the release's file names don't follow one season convention (`play_by_play_2011` is
+  2010-11, `play_by_play_2015` is 2015-16), so the season comes from the `season` column. 2014-15 is
+  missing from the release, `play_by_play_2018` and `_2019` are both 2018-19, and 2009-10 has no
+  on-ice columns.
+
 ## Quick start (pre-trained model)
 
 You need Python 3.10+ and Node 18+. This takes about 5 minutes and needs no data download or training.
@@ -915,7 +979,11 @@ engine (and-ones, free-throw trips, quarter possession, OT, timeouts), ratings, 
 games when `data/nba/raw` exists, mask agreement when `data/nba/processed` exists, the sampler,
 the NBA API, and the combined server's routes. The MLB tests replay three real Stats API feeds
 (`tests/mlb/fixtures`) against the feed's own bases, outs, score and box score, and cover the
-client's cache, retries and throttle and the leakage-free run values.
+client's cache, retries and throttle and the leakage-free run values. The NHL tests cover the
+events table, and the engine (power plays and their release, stacked and coincidental penalties,
+empty nets, 3-on-3 and playoff overtime, penalty shots, the shootout, and random legal play always
+finishing a game), the play-by-play conversion, a replay of four real 2024-25 games
+(`tests/nhl/fixtures`), and a full-season replay when `data/nhl/raw` exists.
 
 ## Limitations / next steps (NFL)
 
