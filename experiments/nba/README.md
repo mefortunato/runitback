@@ -165,9 +165,32 @@ weaker; N3's projection should show whether that is so.
 
 ## Foundation folds (`pbp32`, N4)
 
-**Short answer:** pending the first run of `.github/workflows/nba-foundation.yml`; the fold
-table goes here (from the run's `nba-foundation-results` artifact, `report.md`). Whether `pbp32`
-helps the wager model is N5's question, not this one.
+**Short answer**
+- **All six folds trained and passed the leak checks** (2022–2026 for the backtest, 2027 for upcoming
+  games). Each was validated on the end of the season before its test season, and its team-season
+  vocabulary stops there. Run 42753563613, about 2¼–3¼ hours per fold on a 4-core runner.
+- **The embedding carries team strength, about as much as pre-game Elo and little beyond it.** A
+  ridge on each team's previous-10-game mean `pbp_32` (fit before S) correlates 0.27–0.44 with the
+  home margin in S, against 0.31–0.46 for the Elo difference; both together match Elo alone. That is
+  the NFL's pattern (layer A mainly carries team strength). Whether it helps the wager model is N5's
+  question, not this one.
+- **Every fold kept its last epoch**, so the generator was still improving at 6 epochs. More epochs
+  are a cheap thing to try if N5 finds `pbp32` worth keeping.
+
+| fold S | validated on | latest train season | leak-free | val loss (type / result / clock) | PCA 32 explained | games before S / in S | corr: pbp32 | corr: Elo | corr: both |
+|---|---|---|---|---|---|---|---|---|---|
+| 2022 | 2021 | 2021 | yes | 4.188 (1.042 / 0.799 / 2.347) | 74.5% | 24,389 / 1,323 | 0.344 | 0.361 | 0.363 |
+| 2023 | 2022 | 2022 | yes | 4.173 (1.046 / 0.797 / 2.329) | 75.8% | 25,712 / 1,319 | 0.270 | 0.307 | 0.297 |
+| 2024 | 2023 | 2023 | yes | 4.155 (1.034 / 0.801 / 2.320) | 76.2% | 27,031 / 1,319 | 0.394 | 0.416 | 0.418 |
+| 2025 | 2024 | 2024 | yes | 4.235 (1.054 / 0.806 / 2.375) | 74.9% | 28,350 / 1,321 | 0.439 | 0.450 | 0.455 |
+| 2026 | 2025 | 2025 | yes | 4.217 (1.067 / 0.799 / 2.352) | 76.1% | 29,671 / 1,320 | 0.444 | 0.459 | 0.458 |
+| 2027 | 2026 | 2026 | yes | 4.173 (1.059 / 0.796 / 2.318) | 77.4% | 30,991 / 146 | 0.371 | 0.442 | 0.429 |
+
+Each fold's `pbp_32.parquet` has all 62,274 team-games (31,137 games, 2002 to 2026-27 so far). The
+2027 row covers only the 146 games played so far this season. "corr" is the margin correlation
+described under "Checks" below; it is a sanity check of the embedding, not a wager result. The
+table is the run's `report.md` (`nba-foundation-results` artifact); the folds are its
+`nba-foundation-models` artifact.
 
 **Setup**
 - **One generator per test season ("fold").** Fold S is the existing `runitback.nba` event
