@@ -1,6 +1,6 @@
 """Command-line interface: runitback serve, runitback <nfl|nba> download | preprocess | train |
 evaluate | calibrate | simulate | serve, runitback mlb download | process | lineups | probables, and
-runitback nhl download | events."""
+runitback nhl download | events | lineups."""
 from __future__ import annotations
 
 import csv
@@ -508,6 +508,19 @@ def nhl_events(start: int = 2011, end: int = 2027,
     _log()
     summary = build_events(range(start, end + 1), NHL_DATA / "raw", NHL_DATA / "processed", validate_games)
     typer.echo(json.dumps(summary, indent=1, default=str))
+
+
+@nhl.command("lineups")
+def nhl_lineups(start: int = typer.Option(0, help="first season (0 = every events_<season>.parquet)"),
+                end: int = 2027):
+    """Each game's projected lines and goalie from the team's previous game
+    (data/nhl/processed/projected_lineups.parquet, plus played_lineups.parquet). Goalie rows carry
+    both (a) the previous starter (`goalie_prev`) and (b) the actual starter, known at puck drop
+    (`goalie_actual`). Prints the check against the games as played."""
+    from .nhl.data.lineups import build_lineups
+    _log()
+    seasons = range(start, end + 1) if start else None
+    typer.echo(json.dumps(build_lineups(NHL_DATA / "processed", seasons), indent=1, default=str))
 
 
 def _write_result(res, out: Path | None, scores: bool) -> None:
