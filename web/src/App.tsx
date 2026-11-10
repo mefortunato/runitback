@@ -39,6 +39,10 @@ export default function App() {
   const nav = navSports(exported);
   if (current && !nav.includes(current)) nav.push(current);  // a direct link still shows its tab
   useEffect(() => { document.title = page?.title ?? "Not found · Run It Back"; }, [page?.title]);
+  // on a phone the tabs scroll sideways: keep the current sport's in view
+  useEffect(() => {
+    document.querySelector(".site-header nav a.selected")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [path, nav.length]);
   const tab = (to: string, label: string) => {
     const on = to === "/" ? path === "/" : path === to || path.startsWith(to + "/");
     return <Link key={to} to={to} className={on ? "selected" : ""} aria-current={on ? "page" : undefined}>{label}</Link>;
