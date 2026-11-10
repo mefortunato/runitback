@@ -1,4 +1,4 @@
-"""Web views of the sports added after the NFL, college football and NBA."""
+"""Web views of the sports ported from sportsml after the NFL."""
 
 import pandas as pd
 import pytest
@@ -20,10 +20,14 @@ def fixture_games(sport: str) -> pd.DataFrame:
         from .test_wnba import TODAY, schedule
 
         return build_games(schedule(), pd.DataFrame(), today=TODAY)
-    raise ValueError(f"no fixture games for {sport!r}")  # nhl and mlb are ported later
+    from runitback.wager.mlb.data.download import build_games
+
+    from .test_mlb import LINES, LOGS, PEOPLE, SCHEDULE, TEAMS, TODAY
+
+    return build_games([SCHEDULE], LOGS, PEOPLE, TEAMS, LINES, today=TODAY)
 
 
-@pytest.mark.parametrize("sport", ["cbb", "wcbb", "wnba"])
+@pytest.mark.parametrize("sport", ["cbb", "wcbb", "wnba", "mlb"])  # nhl is ported later
 def test_views_show_their_games(sport):
     assert sport in BUILTIN_VIEWS
     view = get_view(sport)

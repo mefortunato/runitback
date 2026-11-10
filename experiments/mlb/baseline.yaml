@@ -1,0 +1,14 @@
+# S4c: the ported MLB box-score model (runitback.wager.mlb), backtested walk-forward on the seasons
+# of sportsml's MLB ablation (sportsml experiments/mlb/ablation.yaml), to check that the port
+# reproduces sportsml's production Brier there: market_eff, 0.2438 on 7,386 games.
+#   .github/workflows/mlb-baseline.yml (or: runitback-wager mlb ablate --config experiments/mlb/baseline.yaml)
+# Write-up: experiments/mlb/README.md
+seasons: [2024, 2025, 2026]
+baseline: prod
+# token options pinned as in sportsml's production MLB model (runitback.wager.mlb.SPORT)
+configs:
+  prod:
+    model: {market_tokens: true, efficiency: true}
+  prod_seed1:                   # the same with another seed: the noise floor
+    model: {market_tokens: true, efficiency: true}
+    fit: {seed: 1}

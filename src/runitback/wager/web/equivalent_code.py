@@ -43,10 +43,12 @@ EQUIVALENT_CODE: dict[str, tuple[str, ...]] = {
     "c6b81294866cf1e201f8fb96cee17ab6691da011000a10ad0d5200f00f2904a3": (
         "8158c871cd70aabecfa85bd55019e1c18a2e199ae98a4557db53f62e95c2342c",
     ),
-    # S4a: the basketball sports ported from sportsml and added to BUILTIN_SPORTS (core/sport.py);
-    # nothing the NFL trains on or predicts with changed.
+    # S4c (mlb) and S4a (nba, wnba, cbb, wcbb): sports ported from sportsml and added to
+    # BUILTIN_SPORTS (core/sport.py); nothing the NFL trains on or predicts with changed. The NFL
+    # code before S4c, and after S4c alone.
     # nfl
-    "9e42a198a6dae313e4afed914cbe9dcff811f3aba007d90f87c86faaa1c30a9e": (
+    "c591e49a923ead85bc2e814ebcf5e75a6dbdd704972a148a1a5015910c307f08": (
+        "f297abba0effffa148a4e535957011d0747e2d1b34e55127f705e8045dd3e028",
         "d51c92ffb1132c3abdc0a5ece6a07f8f881b88a35ae694c7b4ff5b1e73246922",
     ),
 }
