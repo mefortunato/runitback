@@ -15,8 +15,10 @@ The MLB adapter of the sport-agnostic fitter (:mod:`runitback.core.player_values
 - **Role-specific players.** A player's batting, pitching and fielding coefficients are separate
   columns with separate replacement levels (a two-way player has both). Groups: ``B`` batters,
   ``PB`` pitchers batting (primary position P; mostly pre-2022 National League), ``P`` pitchers,
+  ``XP`` position players pitching,
   ``F`` / ``C`` fielders (catchers apart). Players under ``MIN_PA`` plate appearances in a role (in
-  the window) share that role's replacement-level coefficient; a value is the coefficient over it
+  the window) share that role's replacement-level coefficient (position players pitching, ``XP``, have
+  their own: they allow about 0.13 runs per PA more than pitchers); a value is the coefficient over it
   (pitching and fielding with the sign flipped, so higher is better).
 - **Runs per game, through usage.** The lineup table's groups are the wager layout's
   (:data:`runitback.wager.mlb.lineup.LINEUP`): ``BAT`` the nine starters' batting values times
@@ -51,12 +53,14 @@ from ..wager.mlb.lineup import LINEUP
 
 log = logging.getLogger(__name__)
 
-GROUPS = ("B", "PB", "P", "F", "C")
+GROUPS = ("B", "PB", "P", "XP", "F", "C")
+PITCHERS = ("P", "TWP")            # primary positions of real pitchers (two-way players included)
 BAT_SIDE, PIT_SIDE, FLD_SIDE = ("bat", 1.0), ("pit", -1.0), ("fld", -1.0)
 WINDOW = 3                      # previous seasons in each fit (plus the current one)
 DECAY = 0.7                     # weight of a PA from k seasons back: DECAY ** k
 MIN_PA = 300                    # PAs in a role (in the window) for a player's own coefficient
-LAMBDA = 1000.0                 # ridge penalty (tuned on the next season's PAs; see experiments/mlb)
+LAMBDA = 300.0                  # ridge penalty (tuned on the next season's PAs; see experiments/mlb)
+P_SCALE = 0.7                   # pitchers' shrink scale: their values are shrunk harder than batters'
 CTRL_SCALE = 30.0               # controls are scaled up, i.e. barely penalized
 TARGET = "run_value"
 FIELDERS = [f"fielder_{p}" for p in range(2, 10)]
@@ -184,8 +188,8 @@ def events_from(pa: pd.DataFrame, players: pd.DataFrame, fielding: bool = False)
         seg = np.unique(vals.astype(np.int64))
         if side == "bat":
             grp = [gi["PB"] if position.get(int(p)) == "P" else gi["B"] for p in seg]
-        elif side == "pit":
-            grp = [gi["P"]] * len(seg)
+        elif side == "pit":   # position players pitching (blowouts) must not set the pitchers' replacement level
+            grp = [gi["P"] if position.get(int(p), "P") in PITCHERS else gi["XP"] for p in seg]
         else:
             grp = [gi["C"] if position.get(int(p)) == "C" else gi["F"] for p in seg]
         filled = np.where(np.isfinite(arr), arr, -1).astype(np.int64) if arr.dtype.kind == "f" else arr
@@ -219,8 +223,8 @@ def apm_config(lam: float = LAMBDA, window: int = WINDOW, decay: float = DECAY, 
                fielding: bool = False, group_scale: dict | None = None) -> APMConfig:
     """The MLB's adjusted plus-minus settings for the generic fitter."""
     return APMConfig(groups=GROUPS, target=TARGET, controls=_controls, sides=sides(fielding),
-                     group_scale=group_scale or {}, min_events=min_pa, decay=decay, window=window, lam=lam,
-                     iter_lim=1000)
+                     group_scale={"P": P_SCALE} if group_scale is None else group_scale, min_events=min_pa,
+                     decay=decay, window=window, lam=lam, iter_lim=1000)
 
 
 def fit_values(events: MLBEvents, before: int, season: int, cfg: APMConfig | None = None) -> pd.DataFrame:
@@ -438,13 +442,22 @@ def game_table(tb: Tables, first_season: int = 2016, jobs: int = 4, lineups: pd.
             e = league.get(season, (np.nan,))[0]
         return float(e) if np.isfinite(e) else 0.0
 
+    def actual(h, team, season, vp, mult, relief):
+        """A team-game's actual starting nine and starter, with its projected bullpen."""
+        hk = (h, team)
+        if hk not in actual_bat:
+            return None
+        s_id = actual_sp.get(hk)
+        s_id = int(s_id) if s_id is not None and pd.notna(s_id) else None
+        return side_values(actual_bat[hk], s_id, bf_of(h, s_id, season), pens.get(hk), vp, mult, relief)
+
     tg = pd.concat([games[["game_pk", "season", "t", "order", "home_id"]].rename(columns={"home_id": "team_id"}),
                     games[["game_pk", "season", "t", "order", "away_id"]].rename(columns={"away_id": "team_id"})])
     tg = tg.sort_values(["team_id", "order"], kind="stable")
     rows = []
     n = len(GROUP_COLUMNS)
     for team, d in tg.groupby("team_id"):
-        hist: list[tuple[int, int]] = []          # (game_pk, season) of the team's earlier games
+        hist: list[int] = []                      # game_pk of the team's earlier games
         for g in d.itertuples():
             key = (g.game_pk, team)
             vp = vals.get(week_start(g.t)) if g.season >= first_season else None
@@ -455,18 +468,11 @@ def game_table(tb: Tables, first_season: int = 2016, jobs: int = 4, lineups: pd.
                 cur = side_values(proj_bat[key], sp_id, bf_of(g.game_pk, sp_id, g.season), pens.get(key), vp,
                                   mult, relief)
 
-                def actual(h):
-                    hk = (h, team)
-                    if hk not in actual_bat:
-                        return None
-                    s_id = actual_sp.get(hk)
-                    s_id = int(s_id) if s_id is not None and pd.notna(s_id) else None
-                    return side_values(actual_bat[hk], s_id, bf_of(h, s_id, g.season), pens.get(hk), vp, mult,
-                                       relief)
-
-                prev = actual(hist[-1]) if hist else None
-                recent = [r for r in (actual(h) for h in hist[-RECENT:]) if r is not None]
-                row = {"game_pk": g.game_pk, "team_id": team} | {f"_pv_{j}": cur[k] for j, k in enumerate(GROUP_COLUMNS)}
+                args = (team, g.season, vp, mult, relief)
+                prev = actual(hist[-1], *args) if hist else None
+                recent = [r for r in (actual(h, *args) for h in hist[-RECENT:]) if r is not None]
+                row = {"game_pk": g.game_pk, "team_id": team}
+                row |= {f"_pv_{j}": cur[k] for j, k in enumerate(GROUP_COLUMNS)}
                 row[f"_pv_{n}"] = sum(cur[k] - prev[k] for k in OFF_COLUMNS) if prev else 0.0
                 row[f"_pv_{n + 1}"] = sum(cur[k] - prev[k] for k in PIT_COLUMNS) if prev else 0.0
                 for j, k in enumerate(GROUP_COLUMNS):

@@ -119,7 +119,7 @@ def main():
     t.add_argument("--lam", type=float, nargs="+", default=[300, 1000, 3000, 10000])
     t.add_argument("--window", type=int, nargs="+", default=[pv.WINDOW])
     t.add_argument("--min-pa", type=int, nargs="+", default=[pv.MIN_PA])
-    t.add_argument("--p-scale", type=float, nargs="+", default=[1.0])
+    t.add_argument("--p-scale", type=float, nargs="+", default=[pv.P_SCALE])
     t.add_argument("--fielding", type=int, nargs="+", default=[0])
     t.add_argument("--decay", type=float, default=pv.DECAY)
     r = sub.add_parser("report")

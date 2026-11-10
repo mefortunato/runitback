@@ -7,9 +7,28 @@ import pytest
 
 from runitback.core.player_values import fit_apm
 from runitback.mlb.player_values import (
-    BULLPEN_GAMES, GROUPS, PV_COLUMNS, SP_SHRINK, Tables, apm_config, bullpens, day_number, events_from,
-    expected_sp_bf, fit_values, game_table, holdout_score, league_bf, pitcher_games, prepare_games, prepare_pa,
-    previous_lineup, slot_pa, starters, to_wager_keys, week_start,
+    BULLPEN_GAMES,
+    GROUPS,
+    PV_COLUMNS,
+    SP_SHRINK,
+    Tables,
+    apm_config,
+    bullpens,
+    day_number,
+    events_from,
+    expected_sp_bf,
+    fit_values,
+    game_table,
+    holdout_score,
+    league_bf,
+    pitcher_games,
+    prepare_games,
+    prepare_pa,
+    previous_lineup,
+    slot_pa,
+    starters,
+    to_wager_keys,
+    week_start,
 )
 from runitback.wager.mlb.lineup import LINEUP
 
@@ -122,6 +141,10 @@ def test_events_role_specific_codes(tb):
     assert bat_code != pit_code
     assert GROUPS[ev.group[bat_code]] == "PB" and GROUPS[ev.group[pit_code]] == "P"
     assert ev.codes("bat", [999999])[0] == -1
+    # a position player pitching (a blowout) has his own replacement group
+    pa.loc[pa.index[5:8], "pitcher_id"] = bat_ids(20)[0]
+    ev = events_from(pa, players)
+    assert GROUPS[ev.group[ev.codes("pit", [bat_ids(20)[0]])[0]]] == "XP"
     assert (ev.sides["bat"][:5, 0] == bat_code).all()
 
 
