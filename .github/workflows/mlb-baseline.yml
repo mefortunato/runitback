@@ -118,15 +118,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with: { name: mlb-data, path: data/mlb }
       - name: Backtest ${{ matrix.config }} on ${{ matrix.season }}
-        run: |
-          python - "${{ matrix.config }}" "${{ matrix.season }}" <<'EOF'
-          import os, sys, yaml
-          from runitback.wager.experiments import run_experiments
-          name, season = sys.argv[1], int(sys.argv[2])
-          cfg = yaml.safe_load(open("experiments/mlb/baseline.yaml"))
-          run_experiments("data/mlb/games.csv", "mlb", {name: cfg["configs"][name]}, [season],
-                          "experiments/mlb/baseline", n_jobs=1, threads=os.cpu_count())
-          EOF
+        # a file, not stdin: the fit runs in a spawned subprocess that re-imports the script
+        run: python scripts/mlb_baseline_arm.py ${{ matrix.config }} ${{ matrix.season }} --threads $(nproc)
       - uses: actions/upload-artifact@v4
         with:
           name: arm-${{ matrix.config }}-${{ matrix.season }}
