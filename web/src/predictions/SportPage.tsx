@@ -37,16 +37,18 @@ export function parseRoute(rest: string[]): Route {
   return { page: "missing" };
 }
 
-/** A sport's pages: the predictions (precomputed, from sportsml's wager models) and the play-by-play
- * generator (live, from the server). A sport without predictions yet shows the generator only. */
+/** A sport's pages: the predictions (precomputed, from the wager models) and, for a sport with a
+ * simulator, the play-by-play generator (live, from the server). A sport without predictions yet
+ * shows the generator only, or says the predictions aren't published yet. */
 export default function SportPage({ sport, label, rest, generator }: {
-  sport: string; label: string; rest: string[]; generator: () => ReactNode;
+  sport: string; label: string; rest: string[]; generator?: () => ReactNode;
 }) {
   const { data: sports, error } = useData(() => api.sports().catch(() => [] as SportInfo[]), []);
   const route = parseRoute(rest);
   if (!sports && !error) return <p className="muted">Loading…</p>;
   const info = sports?.find((s) => s.sport === sport);
-  const page = !info && route.page !== "missing" ? "generator" : route.page;
+  const page = generator && (route.page === "generator" || (!info && route.page !== "missing")) ? "generator"
+    : route.page === "generator" ? "missing" : route.page;
 
   const tabs = info ? [
     { label: "Upcoming", to: links.upcoming(sport), active: page === "upcoming" },
@@ -57,8 +59,8 @@ export default function SportPage({ sport, label, rest, generator }: {
     ...(info.challenge_games && (info.has_spread || info.markets?.length)
       ? [{ label: "Beat the model", to: links.challenge(sport), active: page === "challenge" }] : []),
   ] : [];
-  const gen = { label: "Play-by-play generator", to: links.generator(sport), active: page === "generator" };
-  const current = [...tabs, gen].find((t) => t.active);
+  const gen = generator && { label: "Play-by-play generator", to: links.generator(sport), active: page === "generator" };
+  const current = [...tabs, ...(gen ? [gen] : [])].find((t) => t.active);
 
   return (
     <div className="predictions">
@@ -74,15 +76,26 @@ export default function SportPage({ sport, label, rest, generator }: {
             {tabs.map((t) => <option key={t.label} value={t.to}>{t.label}</option>)}
           </select>
         )}
-        {tabs.length > 0 && <span className="sep" aria-hidden="true" />}
-        <Link to={gen.to} className={cx(gen.active && "active")} aria-current={gen.active ? "page" : undefined}>{gen.label}</Link>
+        {gen && tabs.length > 0 && <span className="sep" aria-hidden="true" />}
+        {gen && <Link to={gen.to} className={cx(gen.active && "active")} aria-current={gen.active ? "page" : undefined}>{gen.label}</Link>}
       </nav>
       <Suspense fallback={<p className="muted">Loading…</p>}>
-        {page === "generator" ? generator()
-          : !info || route.page === "missing" ? (
+        {page === "generator" && generator ? generator()
+          : !info && page !== "missing" ? (
+            <section className="card">
+              <h1>{label} predictions</h1>
+              <p>The {label} predictions aren't published yet. Try the <Link to="/">home page</Link>.</p>
+            </section>
+          )
+          : !info || page === "missing" ? (
             <section className="card">
               <h1>Page not found</h1>
-              <p>Try the {info && <><Link to={links.upcoming(sport)}>{label} predictions</Link> or the </>}<Link to={gen.to}>generator</Link>.</p>
+              <p>
+                Try the {info && <Link to={links.upcoming(sport)}>{label} predictions</Link>}
+                {info && gen && " or the "}
+                {gen && <Link to={gen.to}>generator</Link>}
+                {!info && !gen && <Link to="/">home page</Link>}.
+              </p>
             </section>
           )
           : route.page === "upcoming" ? <Upcoming info={info} season={route.season} date={route.date} />

@@ -1,7 +1,7 @@
 """Command-line interface: runitback serve, runitback <nfl|nba> download | preprocess | train |
 evaluate | calibrate | simulate | serve, runitback mlb download | process | lineups | player-values |
-probables, runitback nhl download | events | lineups, and runitback cfb download | players |
-player-values."""
+probables, runitback nhl download | events | lineups, and runitback cfb download | preprocess | train |
+foundation | players | player-values."""
 from __future__ import annotations
 
 import csv
@@ -11,6 +11,7 @@ from pathlib import Path
 
 import typer
 
+from .cfb import paths as cfb_paths
 from .nba import paths as nba_paths
 from .nhl import paths as nhl_paths
 from .nfl.paths import data_dir, default_checkpoint, runs_dir
@@ -21,7 +22,8 @@ nba = typer.Typer(add_completion=False, help="NBA: data, training, evaluation, s
 app.add_typer(nfl, name="nfl")
 nhl = typer.Typer(add_completion=False, help="NHL: event and personnel data")
 mlb = typer.Typer(add_completion=False, help="MLB: plate-appearance data from MLB's Stats API")
-cfb = typer.Typer(add_completion=False, help="College football: play-by-play, players and quarterback values")
+cfb = typer.Typer(add_completion=False, help="College football: play-by-play, the college rules engine and its "
+                                              "generator, players and quarterback values")
 app.add_typer(nba, name="nba")
 app.add_typer(mlb, name="mlb")
 app.add_typer(nhl, name="nhl")
@@ -33,6 +35,7 @@ NBA_DATA = nba_paths.data_dir()
 NBA_RUNS = nba_paths.runs_dir()
 NBA_CKPT = nba_paths.default_checkpoint()
 NHL_DATA = nhl_paths.data_dir()
+CFB_DATA = cfb_paths.data_dir()
 
 
 def _log():
@@ -570,6 +573,47 @@ def nhl_lineups(start: int = typer.Option(0, help="first season (0 = every event
     typer.echo(json.dumps(build_lineups(NHL_DATA / "processed", seasons), indent=1, default=str))
 
 
+@nhl.command("player-values")
+def nhl_player_values(out: Path = typer.Option(Path("player_values/nhl"), help="output directory"),
+                      start: int = typer.Option(2011, help="first season of segments"), end: int = 2027,
+                      first_season: int = typer.Option(2013, help="first season with pv.parquet rows"),
+                      jobs: int = 0, rebuild: bool = typer.Option(False, help="rebuild segments.parquet and "
+                                                                               "shots.parquet")):
+    """Weekly expected-goals adjusted plus-minus per shift segment, goalies' goals saved above expected,
+    and each team-game's lineup values from H3's projected lineups (pv.parquet with the previous
+    starter, pv_actual.parquet with the actual one; fits.parquet, goalie_fits.parquet, usage.json,
+    values_latest.csv; runitback.nhl.player_values). Needs `runitback nhl events` and `lineups` first."""
+    import os
+
+    import pandas as pd
+
+    from .nhl import player_values as pv
+    _log()
+    proc = NHL_DATA / "processed"
+    seasons = list(range(start, end + 1))
+    paths = proc / "segments.parquet", proc / "shots.parquet"
+    if rebuild or not all(p.exists() for p in paths):
+        seg, shots = pv.build_segments(seasons, proc)
+    else:
+        seg, shots = (pd.read_parquet(p) for p in paths)
+    seg, shots = seg[seg.season.isin(seasons)], shots[shots.season.isin(seasons)]
+    players = pd.read_parquet(proc / "players.parquet")
+    games = pd.read_parquet(proc / "games.parquet")
+    proj_path = proc / "projected_lineups.parquet"
+    proj = pd.read_parquet(proj_path) if proj_path.exists() else None
+    if proj is None:
+        typer.echo(f"{proj_path} missing (`runitback nhl lineups`): previous-game lineups rebuilt from the segments")
+    lineups = pv.from_projected(proj, "prev") if proj is not None else None
+    gv = pv.game_table(seg, shots, games, players, first_season, jobs or os.cpu_count() or 1, lineups=lineups)
+    gv.pv = pv.to_wager_teams(gv.pv)
+    pv.write_game_table(gv, out, players)
+    if proj is not None:   # (b) the actual starter, known at puck drop (H3's documented leak)
+        act = pv.game_table(seg, shots, games, players, first_season, lineups=pv.from_projected(proj, "actual"),
+                            fitted=gv)
+        pv.to_wager_teams(act.pv).to_parquet(out / "pv_actual.parquet", index=False)
+    typer.echo(f"{len(gv.pv)} team-games, {len(gv.fits)} weekly fits -> {out}")
+
+
 def _write_result(res, out: Path | None, scores: bool) -> None:
     if out and out.suffix == ".csv":
         with out.open("w", newline="") as f:
@@ -682,14 +726,18 @@ def _cfb_data() -> Path:
 
 
 @cfb.command("download")
-def cfb_download(start: int = typer.Option(2012, help="first season (the year it starts)"), end: int = 2026,
-                 force: bool = False):
+def cfb_download(start: int = typer.Option(2004, help="first season (the year it starts; espn_cfb_pbp starts in "
+                                                      "2004, QB values use 2012+)"), end: int = 2026,
+                 force: bool = False,
+                 players: bool = typer.Option(True, help="also player box scores and schedules (QB values); "
+                                                         "the engine and its generator need only the play-by-play"),
+                 refresh_latest: bool = typer.Option(True, help="re-download the last season even if cached")):
     """Download ESPN play-by-play (trimmed), player box scores and schedules via SportsDataverse
     (data/cfb/raw)."""
     from .cfb.data.download import download_season
     _log()
     for s in range(start, end + 1):
-        for path in download_season(s, _cfb_data() / "raw", force):
+        for path in download_season(s, _cfb_data() / "raw", force or (refresh_latest and s == end), players=players):
             typer.echo(path)
 
 
@@ -734,6 +782,53 @@ def cfb_player_values(out: Path = typer.Option(Path("player_values/cfb"), help="
     gv = pv.game_table(plays, tg[tg.season.isin(seasons)], games, jobs or os.cpu_count() or 1, rule=rule)
     pv.write_game_table(gv, out, pd.read_parquet(proc / "players.parquet"))
     typer.echo(f"{len(gv.pv)} team-games, {len(gv.fits)} weekly fits -> {out}")
+
+
+@cfb.command("preprocess")
+def cfb_preprocess(start: int = 2004, end: int = 2026,
+                   min_agreement: float = typer.Option(0.95, help="drop games whose engine replay agrees on "
+                                                                  "fewer of their transitions")):
+    """Convert raw play-by-play to the engine/model format (data/cfb/processed) and report the engine
+    replay agreement (also written to processed/replay.json)."""
+    from .cfb.data.preprocess import preprocess as run
+    _log()
+    out = CFB_DATA / "processed"
+    summary = run(list(range(start, end + 1)), CFB_DATA / "raw", out, min_agreement=min_agreement)
+    (out / "replay.json").write_text(json.dumps(summary, indent=1))
+    typer.echo(json.dumps({k: v for k, v in summary.items() if k != "misses"}, indent=1))
+
+
+@cfb.command("train")
+def cfb_train(out: Path = cfb_paths.runs_dir() / "prod", data: Path = CFB_DATA / "processed",
+              val_season: int = typer.Option(None, help="hold out this season's weeks --val-week and later "
+                                                        "(bowls included); later seasons are never seen"),
+              val_week: int = 10, epochs: int = 10, max_games: int = 0, threads: int = 0,
+              device: str = typer.Option("auto", help="auto, cpu, cuda, cuda:N or mps")):
+    """Train the college generator (the NFL play transformer, team-level, on college plays)."""
+    from .cfb.foundation import CFBGenerator
+    _log()
+    gen = CFBGenerator(val_week=val_week, epochs=epochs, device=device, max_games=max_games or None)
+    typer.echo(gen.train(data, out, val_season, threads or None))
+
+
+@cfb.command("foundation")
+def cfb_foundation(root: Path = typer.Option(Path("foundation/cfb"), help="fold directory"),
+                   season: list[int] = typer.Option(None, help="fold (test season); repeat for several. "
+                                                               "Default: the backtest's last 5 and the current"),
+                   train: bool = typer.Option(True, help="train a fold that has no model"),
+                   existing: bool = typer.Option(False, help="only add new games to the folds already in --root"),
+                   data: Path = CFB_DATA / "processed", threads: int = 0):
+    """College foundation folds (pbp32): train missing ones, embed every played game."""
+    _log()
+    from .cfb.foundation import CFB, prepare
+    from .core.foundation import default_seasons, existing_folds
+    if existing:
+        season = existing_folds(root)
+        train = False
+    elif not season:
+        season = default_seasons(CFB, data)
+    for s, what in prepare(root, data, season, train=train, threads=threads or None).items():
+        typer.echo(f"fold{s}: {what}")
 
 
 if __name__ == "__main__":
