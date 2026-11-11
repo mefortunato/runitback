@@ -12,6 +12,7 @@ const Game = lazy(() => import("./pages/Game"));
 const Recent = lazy(() => import("./pages/Recent"));
 const Rankings = lazy(() => import("./pages/Rankings"));
 const Performance = lazy(() => import("./pages/Performance"));
+const Players = lazy(() => import("./pages/Players"));
 const TeamMapPage = lazy(() => import("./pages/Map"));
 const Challenge = lazy(() => import("./pages/Challenge"));
 
@@ -19,7 +20,7 @@ type Route =
   | { page: "upcoming"; season?: number; date?: number }
   | { page: "recent"; season?: number; date?: number }
   | { page: "game"; gameId: string }
-  | { page: "rankings" | "performance" | "map" | "challenge" | "generator" }
+  | { page: "rankings" | "players" | "performance" | "map" | "challenge" | "generator" }
   | { page: "missing" };
 
 const int = (s?: string) => (s !== undefined && /^\d+$/.test(s) ? Number(s) : undefined);
@@ -32,7 +33,7 @@ export function parseRoute(rest: string[]): Route {
     ? { page: "upcoming", season: int(head), date: int(a) } : { page: "missing" };
   if (head === "recent") return { page: "recent", season: int(a), date: int(b) };
   if (head === "games" && a) return { page: "game", gameId: decodeURIComponent(a) };
-  if (["rankings", "performance", "map", "challenge", "generator"].includes(head) && a === undefined)
+  if (["rankings", "players", "performance", "map", "challenge", "generator"].includes(head) && a === undefined)
     return { page: head as "rankings" };
   return { page: "missing" };
 }
@@ -54,6 +55,7 @@ export default function SportPage({ sport, label, rest, generator }: {
     { label: "Upcoming", to: links.upcoming(sport), active: page === "upcoming" },
     { label: "Recent", to: links.recent(sport), active: page === "recent" },
     { label: "Rankings", to: links.rankings(sport), active: page === "rankings" },
+    ...(info.has_players ? [{ label: "Players", to: links.players(sport), active: page === "players" }] : []),
     ...(info.has_team_map ? [{ label: "Team map", to: links.teamMap(sport), active: page === "map" }] : []),
     ...(info.challenge_games ? [{ label: "Performance", to: links.performance(sport), active: page === "performance" }] : []),
     ...(info.challenge_games && (info.has_spread || info.markets?.length)
@@ -102,6 +104,7 @@ export default function SportPage({ sport, label, rest, generator }: {
           : route.page === "recent" ? <Recent info={info} season={route.season} date={route.date} />
           : route.page === "game" ? <Game info={info} gameId={route.gameId} />
           : route.page === "rankings" ? <Rankings info={info} />
+          : route.page === "players" ? <Players info={info} />
           : route.page === "performance" ? <Performance info={info} />
           : route.page === "map" ? <TeamMapPage info={info} />
           : <Challenge info={info} />}
