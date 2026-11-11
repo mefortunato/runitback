@@ -747,13 +747,20 @@ def _college_dir(gender: str) -> Path:
 @college.command("download")
 def college_download(gender: str = GENDER_OPT, start: int = typer.Option(None, help="first season (default: the "
                                                                                      "gender's first with minutes)"),
-                     end: int = 2027, force: bool = False):
-    """Download ESPN player box scores (sportsdataverse) to data/<gender>/raw."""
+                     end: int = 2027, force: bool = False,
+                     pbp: bool = typer.Option(True, help="men's: also the ESPN play-by-play of the seasons "
+                                                         "with substitutions (2025 on)")):
+    """Download ESPN player box scores (and, for men's, play-by-play) from sportsdataverse to
+    data/<gender>/raw."""
     from .college.data import download_box, gender as get
+    from .college.espn_lineups import FIRST_SEASON, download_pbp
     _log()
     g = get(gender)
+    raw = _college_dir(g.name) / "raw"
     for s in range(start or g.first_season, end + 1):
-        typer.echo(download_box(g, s, _college_dir(g.name) / "raw", force))
+        typer.echo(download_box(g, s, raw, force))
+        if g.name == "cbb" and pbp and s >= FIRST_SEASON:
+            typer.echo(download_pbp(s, raw, force))
 
 
 @college.command("players")
@@ -784,13 +791,14 @@ def college_player_values(gender: str = GENDER_OPT,
                           out: Path = typer.Option(None, help="output directory (default player_values/<gender>)"),
                           first_season: int = typer.Option(0, help="first season with pv.parquet rows "
                                                                    "(default: cbb 2012, wcbb 2017)"),
-                          apm: bool = typer.Option(True, help="men's: adjusted plus-minus from the cached CBBD "
-                                                              "days (data/cbb/cbbd) around the box values")):
+                          apm: bool = typer.Option(True, help="men's: adjusted plus-minus on the ESPN "
+                                                              "substitution lineups (2025 on) around the box values"),
+                          end: int = 2027):
     """Weekly leak-free player values and each team-game's lineup values (pv.parquet, ppg.json,
     values_latest.csv; runitback.college.player_values). Needs `players` and `lineups` first."""
     import pandas as pd
 
-    from .college import cbbd_lineups as cl
+    from .college import espn_lineups as el
     from .college import player_values as pv
     from .college.data import gender as get
     _log()
@@ -802,13 +810,10 @@ def college_player_values(gender: str = GENDER_OPT,
     proj = pd.read_parquet(proc / "projected_lineups.parquet")
     players = pd.read_parquet(proc / "players.parquet")
     poss = None
-    if g == "cbb" and apm and (d / "cbbd").exists():
-        plays = cl.load_days(d / "cbbd")
-        if len(plays):
-            poss, stats = cl.season_possessions(plays, pg)
-            poss.to_parquet(proc / "possessions.parquet", index=False)
-            typer.echo(json.dumps(stats))
-    gv = pv.build(pg, tg, proj, first_season or pv.FIRST_SEASON[g], poss, players, apm_from=cl.FIRST_SEASON)
+    if g == "cbb" and apm:
+        poss, check = el.build_possessions(list(range(el.FIRST_SEASON, end + 1)), d / "raw", proc)
+        typer.echo(check.to_string(index=False))
+    gv = pv.build(pg, tg, proj, first_season or pv.FIRST_SEASON[g], poss, players, apm_from=el.FIRST_SEASON)
     pv.write_game_table(gv, out or Path(f"player_values/{g}"), players)
     typer.echo(f"{len(gv.pv)} team-games, {len(gv.fits)} weekly fits -> {out or Path(f'player_values/{g}')}")
 

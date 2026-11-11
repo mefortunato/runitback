@@ -1,18 +1,18 @@
 """College basketball player values and the per-game lineup table (``pv.parquet``).
 
-Per the C1 decision (``experiments/cbb/lineup_probe.md``):
+Following C1 (``experiments/cbb/lineup_probe.md``) and the decision recorded in
+``experiments/cbb/README.md`` (no CollegeBasketballData, for its monthly call limit):
 
 - **Women's (``wcbb``): box-score values** throughout (:mod:`.box_values`).
-- **Men's (``cbb``): box-score values before 2023-24, adjusted plus-minus from 2023-24 on.** The
-  adjusted plus-minus is the NBA's possession-level fit (:mod:`runitback.nba.player_values`, on the
-  generic :mod:`runitback.core.player_values`) on CBBD's possessions with the ten on the floor
-  (:mod:`.cbbd_lineups`), **shrunk toward the box-score values**: each possession's target is its
-  points minus what the ten players' box values predict, so the ridge pulls every player toward his
-  box value rather than toward replacement. A player's value is his box value plus his own
-  coefficient over his group's replacement coefficient (players under ``MIN_MINUTES`` on the floor
-  keep their box value). The first fits of 2023-24 have few possessions behind them and stay close to
-  the box values. Weeks without CBBD possessions before them (or a season whose days are not
-  cached) fall back to the box values.
+- **Men's (``cbb``): box-score values, plus adjusted plus-minus where lineups exist** (ESPN's
+  substitutions, from mid-February 2025; :mod:`.espn_lineups`). The adjusted plus-minus is the
+  NBA's possession-level fit (:mod:`runitback.nba.player_values`, on the generic
+  :mod:`runitback.core.player_values`), **shrunk toward the box-score values**: each possession's
+  target is its points minus what the ten players' box values predict, so the ridge pulls every
+  player toward his box value rather than toward replacement. A player's value is his box value plus
+  his own coefficient over his group's replacement coefficient (players under ``MIN_MINUTES`` on the
+  floor keep their box value). Weeks with no possessions before them (every week before
+  February 2025) use the box values alone, and the first weeks after stay close to them.
 
 Values are in points per possession over replacement (offense: points the team scores; defense:
 points it saves; higher is better on both). A player's **points per game** are his value times the
@@ -60,8 +60,8 @@ FIRST_SEASON = {"cbb": 2012, "wcbb": 2017}   # first season with a full box-valu
 APM_WINDOW = 2                  # previous seasons in each fit (plus the current one)
 APM_DECAY = 0.7
 POSS_PER_MIN = 70 / 40          # possessions per side per minute on the floor (college pace)
-MIN_MINUTES = 250               # minutes on the floor (in the window) for a player's own coefficient
-APM_LAMBDA = 5000.0             # ridge penalty (the NBA's; tune once the CBBD seasons are in)
+MIN_MINUTES = 500               # minutes on the floor (in the window) for a player's own coefficient
+APM_LAMBDA = 3000.0             # ridge penalty (tuned on later possessions: experiments/cbb/README.md)
 CTRL_SCALE = 30.0
 POINTS_CLIP = 4.0
 N_START = 5
@@ -70,7 +70,7 @@ N_START = 5
 # -- men's adjusted plus-minus around the box prior ------------------------------------------------
 
 def events_from(poss: pd.DataFrame, group_of: dict[int, str]) -> Events:
-    """CBBD possessions as the generic fitter's events (sides ``off`` / ``def``; target ``points``)."""
+    """Men's possessions (:mod:`.espn_lineups`) as the generic fitter's events (sides ``off`` / ``def``; target ``points``)."""
     poss = poss.sort_values(["t", "game_id"], kind="stable").reset_index(drop=True)
     off = poss[[f"off_{i}" for i in range(1, 6)]].to_numpy(dtype=np.int64)
     dfn = poss[[f"def_{i}" for i in range(1, 6)]].to_numpy(dtype=np.int64)
@@ -139,6 +139,32 @@ def fit_apm_prior(events: Events, prior: pd.DataFrame, before: int, season: int,
     return out
 
 
+def predict_points(events: Events, values: pd.DataFrame, rows: np.ndarray) -> np.ndarray:
+    """Each of ``rows``' possessions: its offense's values minus its defense's (points over the
+    average, before the intercept)."""
+    v = _value_arrays(events, values)
+    return v["off"][events.sides["off"][rows]].sum(1) - v["def"][events.sides["def"][rows]].sum(1)
+
+
+def holdout_score(events: Events, prior: pd.DataFrame, before: int, season: int, test: np.ndarray,
+                  cfg: APMConfig | None = None) -> dict:
+    """Fit at ``before`` and predict the ``test`` possessions' points (clipped as the fit's target)
+    from the box prior alone and from the adjusted plus-minus around it: the squared-error reduction
+    per possession vs a constant (x 1e-4) and the correlation, for each."""
+    cfg = cfg or apm_config()
+    post = fit_apm_prior(events, prior, before, season, cfg)
+    rows = np.flatnonzero(test)
+    y = np.clip(events.frame.points.to_numpy()[rows].astype(float), -cfg.target_clip, cfg.target_clip)
+    yc = y - y.mean()
+    out = {}
+    for name, tab in (("box", prior), ("apm", post)):
+        pred = predict_points(events, tab, rows)
+        pred = pred - pred.mean()
+        out[f"{name}_gain"] = float(1e4 * ((yc ** 2).mean() - ((yc - pred) ** 2).mean()))
+        out[f"{name}_corr"] = float(np.corrcoef(pred, y)[0, 1])
+    return out
+
+
 # -- weekly values -----------------------------------------------------------------------------------
 
 def week_cutoffs(pg: pd.DataFrame, first_season: int) -> pd.DataFrame:
@@ -153,7 +179,7 @@ def week_cutoffs(pg: pd.DataFrame, first_season: int) -> pd.DataFrame:
 def weekly_values(box: BoxModel, games: pd.DataFrame, poss: pd.DataFrame | None = None,
                   players: pd.DataFrame | None = None, cfg: APMConfig | None = None,
                   apm_from: int | None = None) -> dict[int, pd.DataFrame]:
-    """{Monday: values table} for every week in ``games``: the box values, and with ``poss`` (CBBD
+    """{Monday: values table} for every week in ``games``: the box values, and with ``poss`` (men's
     possessions), from season ``apm_from`` on, the adjusted plus-minus around them wherever
     possessions exist before the Monday."""
     season_at = games.groupby("before").season.min().to_dict()
@@ -257,7 +283,7 @@ def build(pg: pd.DataFrame, tg: pd.DataFrame, proj: pd.DataFrame, first_season: 
           poss: pd.DataFrame | None = None, players: pd.DataFrame | None = None,
           box_cfg: BoxConfig | None = None, apm_cfg: APMConfig | None = None, apm_from: int | None = None
           ) -> GameValues:
-    """Weekly values and ``pv`` for every team-game from ``first_season`` (``poss``: men's CBBD
+    """Weekly values and ``pv`` for every team-game from ``first_season`` (``poss``: men's
     possessions for the adjusted plus-minus)."""
     box = BoxModel.build(pg, tg, box_cfg)
     games = week_cutoffs(pg, first_season)

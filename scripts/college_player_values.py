@@ -67,6 +67,8 @@ def change_check(pv: pd.DataFrame, pg: pd.DataFrame, recent: int = 8) -> pd.Data
     rows = []
     big = j.dchg.abs() >= j.dchg.abs().quantile(0.9)
     for name, d in [("all", j), ("top-decile change", j[big]), ("2022-2026", j[j.season.between(2022, 2026)])]:
+        if len(d) < 30:
+            continue
         X = np.column_stack([np.ones(len(d)), d.dform, d.dchg])
         b, *_ = np.linalg.lstsq(X, d.margin.to_numpy(), rcond=None)
         sigma2 = ((d.margin.to_numpy() - X @ b) ** 2).sum() / (len(d) - 3)
@@ -119,6 +121,37 @@ def report(args):
     print("\n" + _table(w.groupby("group").total.describe()[["count", "mean", "50%", "max"]].round(2).reset_index()))
 
 
+def level_check(pv: pd.DataFrame, pg: pd.DataFrame) -> pd.DataFrame:
+    """Home - away level difference vs the final margin: one row per game (``season, d, margin``)."""
+    tm = pg.drop_duplicates(["game_id", "team_id"])[["game_id", "team_id", "home", "team_score", "opp_score"]]
+    pv = pv.assign(lvl=pv[[f"_pv_{i}" for i in range(6)]].sum(axis=1))
+    m = pv.merge(tm, on=["game_id", "team_id"])
+    j = m[m.home].merge(m[~m.home][["game_id", "lvl"]], on="game_id", suffixes=("", "_a"))
+    return pd.DataFrame({"game_id": j.game_id, "season": j.season, "d": j.lvl - j.lvl_a,
+                         "margin": j.team_score - j.opp_score})
+
+
+def apm_effect(args):
+    """Men's: the lineup table with the adjusted plus-minus (``--values``) vs box values alone
+    (``--box``), on the games after the first ESPN lineups (``--since``)."""
+    proc = _dir("cbb") / "processed"
+    pg = pd.read_parquet(proc / "player_games.parquet")
+    a, b = (pd.read_parquet(Path(x) / "pv.parquet") for x in (args.values, args.box))
+    la, lb = level_check(a, pg), level_check(b, pg)
+    dates = pg.drop_duplicates("game_id").set_index("game_id").game_date
+    rows = []
+    for name, keep in [("2025 (from the first lineups)", lambda d: (d.season == 2025) & (d.game_id.map(dates) >= args.since)),
+                       ("2026", lambda d: d.season == 2026), ("2026 from January", lambda d: (d.season == 2026)
+                                                                 & (d.game_id.map(dates) >= "2026-01-01")),
+                       ("2027 (so far)", lambda d: d.season == 2027)]:
+        x, y = la[keep(la)], lb[keep(lb)]
+        ca, cb = change_check(a[a.game_id.isin(set(x.game_id))], pg), change_check(b[b.game_id.isin(set(y.game_id))], pg)
+        rows.append({"games": name, "n": len(x),
+                     "corr with margin: box / +apm": f"{np.corrcoef(y.d, y.margin)[0, 1]:.3f} / {np.corrcoef(x.d, x.margin)[0, 1]:.3f}",
+                     "margin per change pt: box / +apm": f"{cb.iloc[0, 3]:.2f} / {ca.iloc[0, 3]:.2f} (± {ca.iloc[0, 4]:.2f})"})
+    print(_table(pd.DataFrame(rows)))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -136,8 +169,12 @@ def main():
     r.add_argument("--first", type=int, default=2022)
     r.add_argument("--min-minutes", type=float, default=600)
     r.add_argument("--top", type=int, default=10)
+    e = sub.add_parser("apm-effect")
+    e.add_argument("--values", default="player_values/cbb")
+    e.add_argument("--box", default="player_values/cbb_box")
+    e.add_argument("--since", default="2025-02-10")
     args = ap.parse_args()
-    {"tune": tune, "report": report}[args.cmd](args)
+    {"tune": tune, "report": report, "apm-effect": apm_effect}[args.cmd](args)
 
 
 if __name__ == "__main__":
