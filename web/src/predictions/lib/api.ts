@@ -15,6 +15,7 @@ import type {
 	MarketAnswer,
 	OddsFile,
 	Performance,
+	PlayerRanks,
 	Pick,
 	Rankings,
 	TeamMap,
@@ -162,6 +163,7 @@ export const api = {
 	/** Current sportsbook lines; null when the site was built without them. */
 	odds: (name: string) => load<OddsFile>(`${name}/odds.json`).catch(() => null),
 	rankings: (name: string) => load<Rankings>(`${name}/rankings.json`),
+	players: (name: string) => load<PlayerRanks>(`${name}/players.json`),
 	/** Null for a model without team embeddings, or an export without the map. */
 	teamMap: (name: string) => load<TeamMap | null>(`${name}/map.json`).catch(() => null),
 	challengeNext: async (name: string, exclude: string[] = [], market: Market = 'spread') => {

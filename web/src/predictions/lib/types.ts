@@ -38,6 +38,8 @@ export interface SportInfo {
 	has_spread: boolean;
 	/** Whether the model has team embeddings to map (absent: older exports). */
 	has_team_map?: boolean;
+	/** Whether the export has the players page (player values ranked by position). */
+	has_players?: boolean;
 	challenge_games: number;
 	/** Markets the challenge offers (older exports: spread only). */
 	markets?: Market[];
@@ -465,4 +467,35 @@ export interface Recent {
 	dates: RecentDate[];
 	games: PlayedGame[];
 	all: PlayedGame[];
+}
+
+/** `<sport>/players.json`: this season's players ranked by value within each position group. */
+export interface PlayerRanks {
+	season: number;
+	/** The last week played. */
+	through: number;
+	/** What `value` is. */
+	unit: string;
+	/** What `rate` is. */
+	detail: string;
+	positions: PlayerGroup[];
+}
+
+export interface PlayerGroup {
+	key: string;
+	label: string;
+	side: 'off' | 'def' | 'special';
+	/** Best first. */
+	players: RankedPlayer[];
+}
+
+export interface RankedPlayer {
+	id: string;
+	name: string;
+	team: string;
+	games: number;
+	snaps: number;
+	value: number;
+	rate: number;
+	rank: number;
 }

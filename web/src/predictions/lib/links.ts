@@ -11,6 +11,7 @@ export const links = {
   game: (sport: string, gameId: string) => `/${sport}/games/${encodeURIComponent(gameId)}`,
   challenge: (sport: string) => `/${sport}/challenge`,
   rankings: (sport: string) => `/${sport}/rankings`,
+  players: (sport: string) => `/${sport}/players`,
   teamMap: (sport: string) => `/${sport}/map`,
   performance: (sport: string) => `/${sport}/performance`,
   generator: (sport: string) => `/${sport}/generator`,

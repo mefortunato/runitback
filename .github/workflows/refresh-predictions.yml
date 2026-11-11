@@ -11,6 +11,8 @@
 # latest depth charts and injury reports (`runitback nfl player-values`): the model's lineup terms
 # and the game pages' lineup editor read them.
 #
+# The players page (player values ranked by position) is exported from the same player values.
+#
 # Lines come from The Odds API (ODDS_API_KEY secret; no game within 8 days: no request). The
 # schedule fits its free tier's 150 requests a month: about 23 runs a week in season, more on
 # game days (times in UTC, before each Eastern kickoff window). Without the key the previous
@@ -126,6 +128,7 @@ jobs:
           runitback-wager web export --data_dir webdata --output_dir out --sports '[nfl]'
           --refresh true --require_refresh false --odds "{nfl: oddsapi}"
           --odds_history previous --challenge_from previous
+          --player_values "{nfl: $RUNITBACK_NFL_PLAYER_VALUES}"
       - name: Publish to the bucket
         # files first, then removals: a page loading mid-sync sees old or new files, never none
         run: |
