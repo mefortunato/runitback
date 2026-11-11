@@ -7,8 +7,10 @@
 #                            projected_lineups) and player_values/<gender> (pv.parquet, ppg.json,
 #                            values_latest.csv)
 #
-# Men's adjusted plus-minus uses the on-floor lineups rebuilt from ESPN's substitution events in
-# sportsdataverse's play-by-play (2025 on), downloaded in the same run. No API key is needed.
+# Men's adjusted plus-minus (`cbbd: true`) fetches every 2024+ game day from CollegeBasketballData,
+# one call a day (about 150 a season), and needs the CBBD_API_KEY secret. A key's monthly call limit
+# is usually below a full backfill (experiments/cbb/README.md), so it is off by default: the men's
+# values are then the box-score values throughout.
 name: College player values
 
 on:
@@ -19,11 +21,21 @@ on:
         type: choice
         options: [cbb, wcbb]
         default: cbb
+      cbbd:
+        description: "Men's: fetch CBBD lineups (2024+) for the adjusted plus-minus"
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       gender:
         type: string
         default: cbb
+      cbbd:
+        type: boolean
+        default: false
+    secrets:
+      CBBD_API_KEY:
+        required: false
 
 permissions:
   contents: read
@@ -43,13 +55,18 @@ jobs:
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -e ".[data,wager]"
-      - name: Player box scores (and men's play-by-play), player tables and projected rotations
+      - name: Player box scores, player tables and projected rotations
         run: |
           G=${{ inputs.gender }}
           runitback college download --gender $G
           runitback college players --gender $G
           runitback college lineups --gender $G
-      - name: Weekly values and pv.parquet (men's - the ESPN lineup check is printed first)
+      - name: CBBD lineups (men's, 2024 on)
+        if: ${{ inputs.cbbd && inputs.gender == 'cbb' }}
+        env:
+          CBBD_API_KEY: ${{ secrets.CBBD_API_KEY }}
+        run: runitback college cbbd --season 2024 --season 2025 --season 2026 --season 2027
+      - name: Weekly values and pv.parquet
         run: |
           G=${{ inputs.gender }}
           runitback college player-values --gender $G
