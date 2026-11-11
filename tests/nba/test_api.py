@@ -62,5 +62,5 @@ def test_combined_app_serves_both_sports_and_legacy_nfl_paths():
     c = TestClient(combined.app)
     assert c.get("/api/nfl/teams").json()["seasons"] == [2025]
     assert c.get("/api/teams").json()["seasons"] == [2025]  # pre-NBA clients
-    sports = {s["id"] for s in c.get("/api/sports").json()["sports"]}
+    sports = {s["id"] for s in c.get("/api/sports").json()["sports"] if s["generator"]}
     assert sports == {"nfl", "nba"}

@@ -577,13 +577,15 @@ is what a leak-free starter guess gets.
 
 ## NHL
 
-`runitback.nhl` so far holds the event and personnel data and the projected lineups for the
-player-based wager model (`docs/multisport/PLAN.md`, H1 and H3). There is no simulator yet.
+`runitback.nhl` so far holds the event and personnel data, the projected lineups and the player
+values for the player-based wager model (`docs/multisport/PLAN.md`, H1, H3 and H2). There is no
+simulator yet.
 
 ```bash
 runitback nhl download --start 2011 --end 2027   # → data/nhl/raw/: play-by-play, schedule, players, gap shift charts
 runitback nhl events --start 2011 --end 2027     # → data/nhl/processed/{events_<season>,games,players}.parquet, prints coverage
 runitback nhl lineups                            # → data/nhl/processed/{played,projected}_lineups.parquet, prints the check vs actual
+runitback nhl player-values --start 2011 --end 2027  # → data/nhl/processed/{segments,shots}.parquet; player_values/nhl/{pv,pv_actual,fits,goalie_fits}.parquet, usage.json, values_latest.csv
 ```
 
 | Piece | File | What it does |
@@ -591,6 +593,7 @@ runitback nhl lineups                            # → data/nhl/processed/{playe
 | Download | `src/runitback/nhl/data/download.py` | sportsdataverse `nhl_pbp_full` (each release file checked by its `season` column; the file names are inconsistent), the schedule and player positions (`api.nhle.com/stats/rest`), shift charts for gap games |
 | Events | `src/runitback/nhl/data/events.py` | one row per event with the skaters (`home_1..6`, `away_1..6`) and goalies on ice, strength from the home side, `xg`; `CHANGE` rows attributed to games and sides; games with missing personnel rebuilt from the shift charts |
 | Lineups | `src/runitback/nhl/data/lineups.py` | each team-game as played (TOI, 5-on-5 lines and pairs, starting goalie) and its projected lineup from the previous game, with two starting-goalie options |
+| Player values | `src/runitback/nhl/player_values.py` | shift segments from the events; weekly, leak-free expected-goals adjusted plus-minus per 60 (offense and defense, F / D replacement levels) on the `runitback.core` fitter, plus goalies' goals saved above expected per shot; each team-game's `pv.parquet` row (`experiments/nhl/README.md`) |
 
 Coverage (share of play events with skaters on ice for both teams, after the shift-chart fallback):
 99.9–100% in every season from 2010-11. The fallback rebuilds 176 games of 2019-20 (every event but
@@ -711,9 +714,40 @@ games' shift data shows strength changes no penalty explains. Details:
 
 ## College football
 
-`runitback.cfb` holds college football's play-by-play players and quarterback values, the input to
-the CFB player model (`docs/multisport/PLAN.md`, packages F1-F3). There is no college simulator yet;
-the CFB wager model (box score baseline) is `runitback.wager.cfb`.
+`runitback.cfb` holds college football's play-by-play and player data, the NFL engine adapted to
+college rules with its generator (the college `pbp32` foundation folds), and quarterback values: the
+inputs to the CFB player model (`docs/multisport/PLAN.md`, packages F1-F3). The CFB wager model
+(box-score baseline) is `runitback.wager.cfb`.
+
+### Engine and generator (F1)
+
+The NFL engine with college rules, and the NFL play transformer trained on college plays. There is
+no college personnel data, so the model is team-level (team-season tokens and pre-game EPA/Elo
+ratings, no lineups). Results: `experiments/cfb/README.md`, "Foundation folds".
+
+```bash
+runitback cfb download --start 2004 --end 2026     # → data/cfb/raw/{pbp,player_box,schedule}_<season>.parquet
+runitback cfb preprocess --start 2004 --end 2026   # → data/cfb/processed/{games,plays,ratings}.parquet, replay.json
+runitback cfb foundation --season 2025             # → foundation/cfb/fold2025/{model.pt,pca_32.npz,pbp_32.parquet}
+```
+
+| Piece | File | What it does |
+|---|---|---|
+| Rules engine | `src/runitback/cfb/engine/rules.py` | the NFL engine with tries from the 3, untimed overtime from the opponent's 25 (two-point tries required from the 3rd period, 2nd from 2021; two-point shootout from the 5th period in 2019-20, the 3rd from 2021), walk-off and defensive-score endings, one timeout per overtime period, no ties |
+| Preprocess | `src/runitback/cfb/data/preprocess.py` | ESPN rows → (state, outcome) sequences in the NFL schema: tries split out of touchdown rows, kickoffs under the kicking team, penalties folded into plays recovered from the next down, dropped pre-snap fouls and repeated plays repaired, coarse clocks interpolated and flagged (`elapsed_known`: no elapsed loss) |
+| Folds | `src/runitback/cfb/foundation.py` | `CFBGenerator`, the S3 fold generator; `.github/workflows/cfb-foundation.yml` trains one fold per test season in a matrix job, rebuilding the data from the release |
+
+**Replay check (2004-2026, 18,281 games).** Applying each real outcome to the real state reproduces the
+next state on 98.1% of regulation transitions, and on 98.7% in the 16,659 games kept (a game is kept
+when 95% of its transitions agree): 98.9-99.4% from 2014 on, 97.1-98.4% for 2004-2013. The engine
+reaches the real final score in 99.2% of games. The misses are in the feed rather than the rules:
+plays missing from it (a down skipped, a touchdown row absent), wrong down or distance fields, and
+games listed out of order. Overtime rows are often incomplete (88.8% of overtime transitions agree),
+so a game keeps its overtime only when all of it replays (329 games); the overtime rules are covered
+by unit tests (`tests/cfb/test_engine.py`). About half the games (9,293) have a per-play clock; the
+rest only update it every few plays.
+
+### Players and quarterback values (F2)
 
 ```bash
 runitback cfb download --start 2012 --end 2026        # → data/cfb/raw/{pbp,player_box,schedule}_<season>.parquet (SportsDataverse)

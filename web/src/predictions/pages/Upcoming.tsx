@@ -3,6 +3,7 @@ import { Link } from "../../router";
 import { api } from "../lib/api";
 import { dateText, seasonText } from "../lib/format";
 import { links } from "../lib/links";
+import { sportById } from "../../sports";
 import { gameOdds } from "../lib/odds";
 import type { SportInfo } from "../lib/types";
 import { SORT_LABELS, sortGames, sortOptions, type GameSort } from "../lib/upcoming";
@@ -61,8 +62,8 @@ export default function Upcoming({ info, season, date }: { info: SportInfo; seas
         <div className="card">
           <h2>No upcoming games</h2>
           <p className="muted">
-            The schedule has no unplayed games right now. Try <Link to={links.challenge(info.sport)}>beating the model on past games</Link>,
-            or <Link to={links.generator(info.sport)}>generate a game play by play</Link>.
+            The schedule has no unplayed games right now. Try <Link to={links.challenge(info.sport)}>beating the model on past games</Link>
+            {sportById(info.sport)?.generator ? <>, or <Link to={links.generator(info.sport)}>generate a game play by play</Link></> : null}.
           </p>
         </div>
       ) : (

@@ -1,0 +1,127 @@
+# College football foundation folds (F1, docs/multisport/PLAN.md): the college play-by-play
+# generator per test season and its pbp32 game embeddings, through the sport-agnostic fold code
+# (runitback.core.foundation, `runitback cfb foundation`).
+#
+#   data (espn_cfb_pbp 2004+, engine replay check) ─► folds (one job per test season) ─► summary
+#
+# Everything is rebuilt from the public source in this run (sportsdataverse's espn_cfb_pbp release);
+# nothing comes from the repository or an earlier run. Fold S trains on games before season S-1
+# week 10 (validated on the rest of S-1, bowls included), so it never sees S; its PCA is fit on
+# games before S. Artifacts: cfb-data (processed tables and the replay summary, replay.json) and
+# cfb-fold<S> (model.pt, pca_32.npz, pbp_32.parquet).
+#
+# Runs when this file changes on a claude/ branch, or by hand.
+name: CFB foundation
+
+on:
+  workflow_dispatch:
+    inputs:
+      seasons:
+        description: "Test seasons (JSON list): the backtest's last 5 complete seasons and the current one"
+        default: "[2021, 2022, 2023, 2024, 2025, 2026]"
+      end-season:
+        description: "Last season of play-by-play to download"
+        default: "2026"
+  push:
+    branches: ["claude/**"]
+    paths:
+      - .github/workflows/cfb-foundation.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cfb-foundation-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+  SEASONS: ${{ inputs.seasons || '[2021, 2022, 2023, 2024, 2025, 2026]' }}
+  END_SEASON: ${{ inputs.end-season || '2026' }}
+
+jobs:
+  data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      seasons: ${{ steps.seasons.outputs.seasons }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+      - name: Play-by-play and the engine replay check
+        run: |
+          runitback cfb download --start 2004 --end $END_SEASON
+          runitback cfb preprocess --start 2004 --end $END_SEASON
+          ls -la data/cfb/processed
+      - name: Replay summary
+        run: |
+          python - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          s = json.load(open("data/cfb/processed/replay.json"))
+          print("## College engine replay")
+          print(f"- games kept: {s['kept']} of {s['games']} ({s['clock_known']} with a per-play clock)")
+          print(f"- regulation transitions: {s['agreement']:.4f} of {s['total']} agree "
+                f"({s['kept_agreement']:.4f} in the games kept)")
+          print(f"- overtime transitions: {s['ot_agreement']:.4f} of {s['ot_total']}")
+          print(f"- final score reached: {s['final_agreement']:.4f} of {s['final_n']} games")
+          print("\n| mismatch | transitions |\n|---|---|")
+          for k, v in list(s["misses"].items())[:15]:
+              print(f"| `{k}` | {v} |")
+          EOF
+      - id: seasons
+        run: echo "seasons=$SEASONS" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cfb-data
+          path: data/cfb/processed
+          retention-days: 30
+
+  folds:
+    needs: data
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        season: ${{ fromJSON(needs.data.outputs.seasons) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+      - uses: actions/download-artifact@v4
+        with: { name: cfb-data, path: data/cfb/processed }
+      - name: Train fold ${{ matrix.season }} (never sees it) and embed every game (PCA on games before it)
+        run: runitback cfb foundation --root runs/foundation/cfb --season ${{ matrix.season }} --threads $(nproc)
+      - name: Fold summary
+        run: |
+          python - <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
+          import numpy as np, pandas as pd, torch
+          S = ${{ matrix.season }}
+          d = f"runs/foundation/cfb/fold{S}"
+          ck = torch.load(f"{d}/model.pt", map_location="cpu", weights_only=False)
+          emb = pd.read_parquet(f"{d}/pbp_32.parquet")
+          var = np.load(f"{d}/pca_32.npz")["explained"].sum()
+          last = ck["history"][-1] if ck["history"] else {}
+          print(f"### Fold {S}\n- validated on {ck['val_season']} weeks {ck['val_week']}+; "
+                f"{len(ck['team_seasons'])} team-seasons; never saw {S}: "
+                f"{not any(k.endswith(f'_{S}') for k in ck['team_seasons'])}")
+          print(f"- {len(emb)} team-games embedded ({emb.season.min()}-{emb.season.max()}), "
+                f"32 dimensions explain {100 * var:.1f}% of the variance")
+          print("- validation NLL by epoch: " + ", ".join(f"{h['val_total']:.3f}" for h in ck["history"] if "val_total" in h))
+          print("- last epoch: " + ", ".join(f"{k[4:]} {v:.3f}" for k, v in last.items() if k.startswith("val_")))
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cfb-fold${{ matrix.season }}
+          path: runs/foundation/cfb/fold${{ matrix.season }}
+          retention-days: 30

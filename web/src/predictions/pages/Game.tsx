@@ -3,6 +3,7 @@ import { Link } from "../../router";
 import { api } from "../lib/api";
 import { dateText, kickoffLabel, marginLabel, seasonText, signed, spreadLabel } from "../lib/format";
 import { links } from "../lib/links";
+import { sportById } from "../../sports";
 import { gameOdds, withLine } from "../lib/odds";
 import type { SportInfo } from "../lib/types";
 import LineCalculator from "../components/LineCalculator";
@@ -87,7 +88,7 @@ export default function Game({ info, gameId }: { info: SportInfo; gameId: string
               {result.covered === "push" ? "Push" : coveredTeam ? `${coveredTeam.team} covered` : "Final"}
             </span>
           )}
-          <Link className="pill" to={generate}>▶ Generate this matchup play by play</Link>
+          {sportById(info.sport)?.generator && <Link className="pill" to={generate}>▶ Generate this matchup play by play</Link>}
         </div>
         <div className={s.chart}>
           <SpreadChart home={game.home} away={game.away} spread={game.spread} model={prediction?.margin ?? null} result={result?.margin ?? null} />
