@@ -1,0 +1,33 @@
+# N5 (docs/multisport/PLAN.md): the NBA wager model on the play-by-play foundation (pbp32, N4) and
+# the player values (pvc, N2 on N3's projected rotations), walk-forward over the last 5 complete
+# seasons. Run by .github/workflows/nba-wager-experiment.yml, which rebuilds every input in the run
+# (games with lines, foundation folds, projected lineups, weekly player values) and uploads the
+# nba-wager-results artifact; see experiments/nba/README.md.
+#   python scripts/wager_arm.py pbp32_pvc_e4 2025 --sport nba --experiment experiments/nba/wager.yaml
+#   prod          the S4a box-score production model (the baseline)
+#   pbp32         + the frozen foundation's 32-dim game embeddings in the history tokens
+#   pbp32_pvc     + each group's change in projected-rotation value vs the team's last 10
+#                 rotations, through sign-constrained additive terms on margin and total
+#   prod_pvc      the player values without the foundation (in case pbp32 does not pass)
+# The *_e4 versions average 4 seeds: promotion decisions compare _e4 with _e4 (seed noise ±0.002).
+seasons: [2022, 2023, 2024, 2025, 2026]
+baseline: prod
+configs:
+  prod: {}
+  pbp32:
+    model: {pbp: "runs/foundation/fold{season}/pbp_32.parquet", pbp_dim: 32}
+  pbp32_pvc:
+    model: {pbp: "runs/foundation/fold{season}/pbp_32.parquet", pbp_dim: 32,
+            lineup: "player_values/nba/pv.parquet", lineup_set: pvc}
+  prod_e4:
+    fit: {ensemble: 4}
+  pbp32_e4:
+    model: {pbp: "runs/foundation/fold{season}/pbp_32.parquet", pbp_dim: 32}
+    fit: {ensemble: 4}
+  pbp32_pvc_e4:
+    model: {pbp: "runs/foundation/fold{season}/pbp_32.parquet", pbp_dim: 32,
+            lineup: "player_values/nba/pv.parquet", lineup_set: pvc}
+    fit: {ensemble: 4}
+  prod_pvc_e4:
+    model: {lineup: "player_values/nba/pv.parquet", lineup_set: pvc}
+    fit: {ensemble: 4}

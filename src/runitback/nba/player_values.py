@@ -24,9 +24,10 @@ The NBA adapter of the sport-agnostic fitter (:mod:`runitback.core.player_values
   its week's fit, so it never sees itself or later games.
 
 ``game_table`` sums each team-game's projected rotation into the wager model's ``_pv_*`` columns
-(layout :data:`runitback.wager.nba.lineup.LINEUP`). Until the NBA projected lineups (work package N3)
-exist, the projected rotation is a stand-in known at tip-off: **the team's previous game's rotation**
-(players who played, ranked by minutes). Pass ``lineups`` to use another projection.
+(layout :data:`runitback.wager.nba.lineup.LINEUP`). The projection is N3's projected lineups
+(:func:`projected_rotation` of ``projected_lineups.parquet``; ``runitback nba player-values
+--lineups``), or by default the N2 stand-in known at tip-off: **the team's previous game's rotation**
+(players who played, ranked by minutes).
 """
 from __future__ import annotations
 
@@ -222,6 +223,7 @@ def franchise_only(poss: pd.DataFrame, pg: pd.DataFrame) -> tuple[pd.DataFrame, 
 def build_possessions(seasons: list[int], raw_dir: Path, processed_dir: Path) -> pd.DataFrame:
     """``possessions.parquet`` (processed_dir) for the seasons with play-by-play in raw_dir, from
     N1's ``on_court.parquet``. Logs the points per possession and possessions per team-game."""
+    from .data.download import numpy_dtypes
     from .data.players import _read
 
     oc = pd.read_parquet(processed_dir / "on_court.parquet",
@@ -232,7 +234,8 @@ def build_possessions(seasons: list[int], raw_dir: Path, processed_dir: Path) ->
         if not path.exists():
             log.warning("season %d: %s missing; skipped", s, path.name)
             continue
-        pbp = _read(path, PBP_COLUMNS)
+        # pyarrow-backed columns (pd.NA ids) as the release files' numpy dtypes, as load_raw does
+        pbp = numpy_dtypes(_read(path, PBP_COLUMNS))
         p = season_possessions(pbp, oc[oc.game_id.isin(set(pbp.game_id.astype(str)))])
         per_game = p.groupby(["game_id", "off_home"]).size().mean() if len(p) else float("nan")
         log.info("season %d: %d possessions, %.1f per team-game, %.3f points each", s, len(p), per_game,
@@ -384,6 +387,15 @@ def previous_rotation(pg: pd.DataFrame, target: pd.DataFrame | None = None) -> p
     return pr[["game_id", "team", "player_id", "rank"]].reset_index(drop=True)
 
 
+def projected_rotation(proj: pd.DataFrame) -> pd.DataFrame:
+    """N3's projected lineups (``projected_lineups.parquet``, :mod:`runitback.nba.data.lineups`) as
+    :func:`game_table`'s ``lineups``: each team-game's available players, ranked by projected
+    minutes (players ruled out, ``rank == -1``, are left out)."""
+    d = proj[(proj.status == "available") & (proj["rank"] >= 0)]
+    d = d.assign(game_id=d.game_id.astype(str), rank=d["rank"].astype(int))
+    return d[["game_id", "team", "player_id", "rank"]].reset_index(drop=True)
+
+
 def game_table(poss: pd.DataFrame, pg: pd.DataFrame, players: pd.DataFrame, first_season: int = 2016,
                jobs: int = 4, lineups: pd.DataFrame | None = None, cfg: APMConfig | None = None) -> GameValues:
     """Leak-free weekly values for every week from ``first_season`` (each fit on the possessions
@@ -482,3 +494,51 @@ def write_game_table(gv: GameValues, out: Path, players: pd.DataFrame | None = N
     last["pts_as_starter"] = last.value_poss * starter
     last.sort_values(["side", "pts_as_starter"], ascending=[True, False]).to_csv(
         out / "values_latest.csv", index=False, float_format="%.4f")
+
+
+# -- the swap test (experiments/nba, scripts/nba_lineup_swap.py) --------------------------------------
+
+SWAPS = ("best", "worst", "replacement", "out")
+REPLACEMENT_ID = -1                 # a player with no value of his own: replacement level (0)
+
+
+def swap_rotation(rows: list[tuple[int, int]], group_of: dict, group: str, kind: str,
+                  ref: int | None = None) -> list[tuple[int, int]] | None:
+    """A projected rotation (``(rank, player_id)`` rows) with its top-ranked ``group`` player (the
+    group's starter) changed: to player ``ref`` in the same slot (``best`` / ``worst``: a regular from
+    another team), to a replacement-level player (``replacement``), or ruled out (``out``: everyone
+    below him moves up a slot). None when the team has no player in ``group`` or ``ref`` is already
+    in its rotation."""
+    rows = sorted(rows)
+    starter = next(((k, p) for k, p in rows if group_of.get(p, DEFAULT_GROUP) == group), None)
+    if starter is None:
+        return None
+    if kind == "out":
+        rest = [p for k, p in rows if (k, p) != starter]
+        return list(enumerate(rest))
+    if kind == "replacement":
+        new = REPLACEMENT_ID
+    elif kind in ("best", "worst"):
+        if ref is None or any(p == ref for _, p in rows):
+            return None
+        new = ref
+    else:
+        raise ValueError(f"unknown swap {kind!r}; choose from {SWAPS}")
+    return [(k, new if (k, p) == starter else p) for k, p in rows]
+
+
+def swap_refs(fit: pd.DataFrame, min_poss: int) -> dict[tuple[str, str], int]:
+    """``{(group, "best" | "worst"): player_id}``: each group's best and worst regular by offense plus
+    defense value per possession in ``fit`` (:func:`fit_values`), among players with their own
+    coefficient on both sides and at least ``min_poss`` possessions on court in the fit's window."""
+    tab = fit.pivot_table(index=["player_id", "group"], columns="side", values="value_poss", aggfunc="sum")
+    poss = fit.groupby("player_id").possessions.min()
+    tab = tab.dropna()
+    tab = tab[poss.reindex(tab.index.get_level_values(0)).to_numpy() >= min_poss]
+    value = tab.sum(axis=1)
+    out = {}
+    for g in GROUPS:
+        v = value[value.index.get_level_values(1) == g]
+        if len(v):
+            out[(g, "best")], out[(g, "worst")] = int(v.idxmax()[0]), int(v.idxmin()[0])
+    return out

@@ -327,9 +327,12 @@ def nba_lineups(roster: bool = typer.Option(True, help="candidates are the game'
 def nba_player_values(out: Path = typer.Option(Path("player_values/nba"), help="output directory"),
                       start: int = typer.Option(2015, help="first season of possessions"), end: int = 2027,
                       first_season: int = typer.Option(2016, help="first season with pv.parquet rows"),
-                      jobs: int = 0, rebuild: bool = typer.Option(False, help="rebuild possessions.parquet")):
+                      jobs: int = 0, rebuild: bool = typer.Option(False, help="rebuild possessions.parquet"),
+                      lineups: Path = typer.Option(None, help="projected lineups to sum (`runitback nba lineups`' "
+                                                   "projected_lineups.parquet); default the previous game's rotation")):
     """Weekly possession-level adjusted plus-minus and each team-game's lineup values (pv.parquet,
-    slots.json, values_latest.csv; runitback.nba.player_values). Needs `runitback nba players` first."""
+    slots.json, values_latest.csv; runitback.nba.player_values). Needs `runitback nba players` first
+    (and `runitback nba lineups` for --lineups)."""
     import os
 
     import pandas as pd
@@ -343,7 +346,8 @@ def nba_player_values(out: Path = typer.Option(Path("player_values/nba"), help="
     poss = poss[poss.season.isin(seasons)]
     poss, pg = pv.franchise_only(poss, pd.read_parquet(proc / "player_games.parquet"))
     players = pd.read_parquet(proc / "players.parquet")
-    gv = pv.game_table(poss, pg, players, first_season, jobs or os.cpu_count() or 1)
+    proj = pv.projected_rotation(pd.read_parquet(lineups)) if lineups else None
+    gv = pv.game_table(poss, pg, players, first_season, jobs or os.cpu_count() or 1, lineups=proj)
     gv.pv = pv.to_wager_teams(gv.pv, raw, seasons)
     pv.write_game_table(gv, out, players)
     typer.echo(f"{len(gv.pv)} team-games, {len(gv.fits)} weekly fits -> {out}")

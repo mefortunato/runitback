@@ -218,3 +218,55 @@ def test_franchise_games_drop_all_star_games():
     assert franchise_games(pg) == {"1"}
     p, g = franchise_only(poss, pg)
     assert p.game_id.tolist() == ["1"] and set(g.team) == {"BOS", "NYK"}
+
+
+# -- N5: projected rotations and the swap test --------------------------------------------------------
+
+def test_projected_rotation_keeps_available_players_in_rank_order():
+    from runitback.nba.player_values import projected_rotation
+
+    proj = pd.DataFrame({"game_id": ["1", "1", "1"], "team": "BOS", "player_id": [10, 11, 12],
+                         "status": ["available", "out", "available"], "rank": [1, -1, 0]})
+    out = projected_rotation(proj)
+    assert out.player_id.tolist() == [10, 12] and out["rank"].tolist() == [1, 0]
+    assert list(out.columns) == ["game_id", "team", "player_id", "rank"]
+
+
+def test_swap_rotation():
+    from runitback.nba.player_values import REPLACEMENT_ID, swap_rotation
+
+    group_of = {1: "G", 2: "F", 3: "G", 4: "C", 9: "G"}
+    rows = [(0, 2), (1, 1), (2, 4), (3, 3)]
+    # the group's starter is its top-ranked player (1, slot 1), not the team's
+    assert swap_rotation(rows, group_of, "G", "best", 9) == [(0, 2), (1, 9), (2, 4), (3, 3)]
+    assert swap_rotation(rows, group_of, "G", "replacement") == [(0, 2), (1, REPLACEMENT_ID), (2, 4), (3, 3)]
+    assert swap_rotation(rows, group_of, "G", "out") == [(0, 2), (1, 4), (2, 3)]
+    assert swap_rotation(rows, group_of, "G", "worst", 3) is None      # already in the rotation
+    assert swap_rotation([(0, 2)], group_of, "C", "out") is None
+
+
+def test_swap_values_move_with_the_player():
+    from runitback.nba.player_values import side_values, swap_rotation
+
+    group_of = {1: "G", 2: "G", 3: "C"}
+    vp = {("off", 1): 0.02, ("def", 1): 0.01, ("off", 2): 0.0, ("def", 2): 0.0, ("off", 3): 0.01, ("def", 3): 0.0}
+    mult = [75.0, 70.0, 40.0]
+    rows = [(0, 1), (1, 2), (2, 3)]
+    cur = side_values(rows, vp, group_of, mult)
+    rep = side_values(swap_rotation(rows, group_of, "G", "replacement"), vp, group_of, mult)
+    assert cur["G_OFF"] - rep["G_OFF"] == 1.5 and cur["G_DEF"] - rep["G_DEF"] == 0.75
+    out = side_values(swap_rotation(rows, group_of, "G", "out"), vp, group_of, mult)
+    # the center moves up to slot 1: more of his value counts
+    assert out["G_OFF"] == 0.0 and out["C_OFF"] == 0.01 * 70.0
+
+
+def test_swap_refs_pick_regulars_by_both_ends():
+    from runitback.nba.player_values import swap_refs
+
+    fit = pd.DataFrame({"side": ["off", "def"] * 4, "player_id": [1, 1, 2, 2, 3, 3, 4, 4],
+                        "group": ["G"] * 6 + ["C"] * 2, "possessions": [5000] * 4 + [100] * 2 + [5000] * 2,
+                        "value_poss": [0.03, -0.02, 0.0, 0.02, 0.5, 0.5, 0.01, 0.01]})
+    refs = swap_refs(fit, 1000)
+    # 3 is the best per possession but not a regular; 2 (0.02) beats 1 (0.01) on both ends combined
+    assert refs[("G", "best")] == 2 and refs[("G", "worst")] == 1
+    assert refs[("C", "best")] == refs[("C", "worst")] == 4

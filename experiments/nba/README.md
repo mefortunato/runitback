@@ -1,4 +1,4 @@
-# NBA: player values (N2) and foundation folds (N4)
+# NBA: player values (N2), foundation folds (N4) and the wager model on them (N5)
 
 Work package N2 (`docs/multisport/PLAN.md`): layer B of the NFL player model for the NBA. Each player
 gets an offense and a defense value from a possession-level adjusted plus-minus. Each team-game gets
@@ -230,3 +230,59 @@ job. Artifacts: `nba-data`, `nba-fold<S>`, `nba-foundation-results` (the report)
 Locally: `runitback nba download --start 2002 --end 2027 --no-players`, `runitback nba preprocess
 --start 2002 --end 2027`, then `runitback nba foundation --root foundation/nba` (or `--season S` for
 one fold), and `python scripts/nba_foundation_report.py foundation/nba`.
+
+## The wager model on the foundation and the player values (N5)
+
+Does the NBA wager model get better with the foundation's game embeddings (`pbp32`, N4) and the
+player values of each game's projected rotation (`pvc`, N2 on N3's projection), and does changing a
+starter move its prediction the right way at every position?
+
+**Short answer: pending the first run of `NBA wager experiment`** (`.github/workflows/
+nba-wager-experiment.yml`). The tables below are filled from its `nba-wager-results` artifact.
+
+### Setup
+
+- **Walk-forward, 2022–2026** (5 folds, about 1,300 games each). For each test season S the wager
+  model, the foundation fold and its PCA see only games before S; the player values are refit weekly
+  on possessions before each game's Monday.
+- **Arms** (`experiments/nba/wager.yaml`):
+  - `prod`: the S4a box-score production model, the baseline.
+  - `pbp32`: + fold S's frozen 32-dim per-possession game embeddings in the history tokens.
+  - `pbp32_pvc`: + each position group's (G / F / C, offense and defense) change in the projected
+    rotation's value vs the team's last 10 rotations, through sign-constrained additive terms on the
+    margin and the total (the NFL's production `pvc`). The values are hidden from the head's MLP.
+  - `prod_pvc`: the player values without the foundation, in case `pbp32` does not pass.
+  - `_e4`: the same with 4 seeds averaged. Promotion compares `_e4` with `_e4`.
+- **Projected rotation** (N3, `runitback nba lineups`): the game's box-score roster minus players
+  with an injury did-not-play reason, ranked by recency-weighted minutes. **The documented leak:**
+  there is no history of NBA injury reports, so a player ruled out after the line was set counts as
+  known at tip-off (see N3's notes in `runitback.nba.data.lineups`). `runitback nba player-values
+  --lineups data/nba/processed/projected_lineups.parquet` sums it into `pv.parquet`.
+- **Join fix.** The NBA games table's ESPN ids come back from `games.csv` as integers, while the
+  embedding and value tables key games by the id string, so every row would have been "missing".
+  `runitback.wager.models.transformer.data.game_keys` puts both on the string; the NFL's string ids
+  are untouched (`tests/wager/test_nba_lineup.py`).
+- **Swap test** (`scripts/nba_lineup_swap.py`): `pbp32_pvc_e4` fit on the seasons before 2026, then
+  every 2026 game re-predicted with one change to the home team's projected rotation: the top-ranked
+  G, F or C replaced by the group's best / worst regular (offense + defense value per possession in
+  the fit before the season, at least 2,000 minutes on court in the window), by a replacement-level
+  player, or ruled out (everyone below him moves up a slot). A position passes when the margin and
+  the win probability move with the value in every game where it moved by more than 0.05 points.
+
+### Wager performance
+
+Paired Brier difference (negative is better) ± 95% CI half-width. Pending.
+
+### Swap test
+
+Pending.
+
+### Reproducing
+
+Run `NBA wager experiment` from the Actions tab, or push a change to `experiments/nba/wager.yaml` or
+the workflow on a `claude/**` branch. It rebuilds the games with lines and the foundation folds
+(`nba-experiment-inputs.yml`), and in its `values` job downloads the 2015–2027 play-by-play and
+player box scores and runs `runitback nba players`, `lineups` and `player-values --lineups`. One
+cell locally: `python scripts/wager_arm.py pbp32_pvc_e4 2025 --sport nba --experiment
+experiments/nba/wager.yaml` (with `runs/foundation/fold2025/` and `player_values/nba/pv.parquet` in
+place).
