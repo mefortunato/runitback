@@ -8,8 +8,10 @@ regression with:
 - **shrinkage per group**: a player's column is scaled by his group's shrink scale ``c``, so it is
   penalized ``c**2`` less (a wider prior; e.g. NFL quarterbacks, whose plays swing more);
 - **recency**: an event from ``k`` seasons back is weighted ``decay ** k``, over ``window`` seasons
-  back plus the current one up to the fit;
-- **replacement level**: players with fewer than ``min_events`` events (in the window) on a side
+  back plus the current one up to the fit (times the event's own weight, if the config names a
+  ``weight`` column: e.g. an NHL shift segment's length, for a target that is a rate);
+- **replacement level**: players with fewer than ``min_events`` events (in the window; with
+  ``count_weight``, that much of the ``weight`` column instead, e.g. minutes on ice) on a side
   share one replacement column per (side, group); a player's value is his coefficient minus his
   group's replacement coefficient, times the side's sign (``-1`` for defense, so that higher is
   better).
@@ -68,6 +70,8 @@ class APMConfig:
     window: int = 4                # previous seasons in each fit (plus the current one)
     lam: float = 3000.0            # ridge penalty on (scaled) player coefficients
     target_clip: float | None = None
+    weight: str | None = None      # column of per-event weights (default: every event weighs 1)
+    count_weight: bool = False     # min_events (and the events column) count the weight, not events
     atol: float = 1e-6
     btol: float = 1e-6
     iter_lim: int = 3000
@@ -94,6 +98,8 @@ def fit_apm(events: Events, cfg: APMConfig, before: int, season: int) -> pd.Data
     sel = ((fr.t < before) & (fr.season >= season - cfg.window)).to_numpy()
     win = fr[sel]
     w = cfg.decay ** (season - win.season.to_numpy())
+    if cfg.weight is not None:
+        w = w * win[cfg.weight].to_numpy(dtype=float)
     n_ids, G = len(events.ids), len(cfg.groups)
     groups = np.array(cfg.groups)
     scale = np.array([cfg.group_scale.get(g, 1.0) for g in cfg.groups])
@@ -103,7 +109,11 @@ def fit_apm(events: Events, cfg: APMConfig, before: int, season: int) -> pd.Data
         codes = events.sides[side][sel]
         valid = (codes >= 0)
         valid &= events.group[np.where(valid, codes, 0)] >= 0
-        cnt = np.bincount(codes[valid], minlength=n_ids)
+        if cfg.count_weight:
+            ew = np.broadcast_to(win[cfg.weight].to_numpy(dtype=float)[:, None], codes.shape)
+            cnt = np.bincount(codes[valid], weights=ew[valid], minlength=n_ids)
+        else:
+            cnt = np.bincount(codes[valid], minlength=n_ids)
         own = (cnt >= cfg.min_events) & (events.group >= 0)
         own_col = np.full(n_ids, -1)
         own_col[own] = np.arange(own.sum())

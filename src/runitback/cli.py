@@ -569,6 +569,47 @@ def nhl_lineups(start: int = typer.Option(0, help="first season (0 = every event
     typer.echo(json.dumps(build_lineups(NHL_DATA / "processed", seasons), indent=1, default=str))
 
 
+@nhl.command("player-values")
+def nhl_player_values(out: Path = typer.Option(Path("player_values/nhl"), help="output directory"),
+                      start: int = typer.Option(2011, help="first season of segments"), end: int = 2027,
+                      first_season: int = typer.Option(2013, help="first season with pv.parquet rows"),
+                      jobs: int = 0, rebuild: bool = typer.Option(False, help="rebuild segments.parquet and "
+                                                                               "shots.parquet")):
+    """Weekly expected-goals adjusted plus-minus per shift segment, goalies' goals saved above expected,
+    and each team-game's lineup values from H3's projected lineups (pv.parquet with the previous
+    starter, pv_actual.parquet with the actual one; fits.parquet, goalie_fits.parquet, usage.json,
+    values_latest.csv; runitback.nhl.player_values). Needs `runitback nhl events` and `lineups` first."""
+    import os
+
+    import pandas as pd
+
+    from .nhl import player_values as pv
+    _log()
+    proc = NHL_DATA / "processed"
+    seasons = list(range(start, end + 1))
+    paths = proc / "segments.parquet", proc / "shots.parquet"
+    if rebuild or not all(p.exists() for p in paths):
+        seg, shots = pv.build_segments(seasons, proc)
+    else:
+        seg, shots = (pd.read_parquet(p) for p in paths)
+    seg, shots = seg[seg.season.isin(seasons)], shots[shots.season.isin(seasons)]
+    players = pd.read_parquet(proc / "players.parquet")
+    games = pd.read_parquet(proc / "games.parquet")
+    proj_path = proc / "projected_lineups.parquet"
+    proj = pd.read_parquet(proj_path) if proj_path.exists() else None
+    if proj is None:
+        typer.echo(f"{proj_path} missing (`runitback nhl lineups`): previous-game lineups rebuilt from the segments")
+    lineups = pv.from_projected(proj, "prev") if proj is not None else None
+    gv = pv.game_table(seg, shots, games, players, first_season, jobs or os.cpu_count() or 1, lineups=lineups)
+    gv.pv = pv.to_wager_teams(gv.pv)
+    pv.write_game_table(gv, out, players)
+    if proj is not None:   # (b) the actual starter, known at puck drop (H3's documented leak)
+        act = pv.game_table(seg, shots, games, players, first_season, lineups=pv.from_projected(proj, "actual"),
+                            fitted=gv)
+        pv.to_wager_teams(act.pv).to_parquet(out / "pv_actual.parquet", index=False)
+    typer.echo(f"{len(gv.pv)} team-games, {len(gv.fits)} weekly fits -> {out}")
+
+
 def _write_result(res, out: Path | None, scores: bool) -> None:
     if out and out.suffix == ".csv":
         with out.open("w", newline="") as f:
