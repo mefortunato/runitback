@@ -875,6 +875,28 @@ def college_lineups(gender: str = GENDER_OPT,
     typer.echo(build_lineups(_college_dir(get(gender).name) / "processed", rule).round(3).to_string(index=False))
 
 
+@college.command("cbbd")
+def college_cbbd(season: list[int] = typer.Option(..., help="season(s) to fetch (2024 on)"),
+                 reserve: int = typer.Option(25, help="stop when this many CBBD calls are left"),
+                 max_calls: int = typer.Option(0, help="at most this many calls (0: no limit)")):
+    """Men's CBBD plays with the ten on the floor, one /plays/date call per game day not yet cached
+    (data/cbb/cbbd; needs CBBD_API_KEY and `runitback college players`)."""
+    import os
+
+    import pandas as pd
+
+    from .college import cbbd_lineups as cl
+    _log()
+    key = os.environ.get(cl.KEY_ENV)
+    if not key:
+        raise typer.BadParameter(f"{cl.KEY_ENV} is not set")
+    d = _college_dir("cbb")
+    pg = pd.read_parquet(d / "processed" / "player_games.parquet", columns=["season", "game_date"])
+    days = [x for s in season for x in cl.season_days(pg, s) if x < cl.today()]
+    res = cl.fetch_days(days, d / "cbbd", key, reserve, max_calls or None)
+    typer.echo(json.dumps(res | {"missing": len(res["missing"])}))
+
+
 @college.command("player-values")
 def college_player_values(gender: str = GENDER_OPT,
                           out: Path = typer.Option(None, help="output directory (default player_values/<gender>)"),

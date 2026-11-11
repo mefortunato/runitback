@@ -50,18 +50,24 @@ SUFFIX = re.compile(r"\b(jr|sr|ii|iii|iv|v)\b")
 # ----------------------------------------------------------------------------------- fetching
 
 def _get(path: str, key: str, **params) -> tuple[list[dict], int | None]:
-    """One CBBD request (a day of plays is tens of MB, so a transfer cut off midway is retried)."""
+    """One CBBD request (a day of plays is tens of MB, so a transfer cut off midway is retried, as is a
+    429: CBBD rate-limits concurrent requests, so fetch one day at a time)."""
     import requests
 
-    for attempt in range(4):
+    for attempt in range(6):
         try:
             r = requests.get(f"{API}/{path}", headers={"Authorization": f"Bearer {key}"}, params=params,
                              timeout=600)
+            if r.status_code == 429 and attempt < 5:        # rate limited: wait and retry
+                wait = float(r.headers.get("retry-after") or 15 * 2 ** attempt)
+                log.warning("CBBD 429; retrying in %.0fs", wait)
+                time.sleep(wait)
+                continue
             r.raise_for_status()
             left = r.headers.get("x-calllimit-remaining")
             return r.json(), (int(left) if left is not None else None)
         except (requests.ConnectionError, requests.exceptions.ChunkedEncodingError):
-            if attempt == 3:
+            if attempt == 5:
                 raise
             time.sleep(2 ** (attempt + 1))
     raise AssertionError("unreachable")
@@ -92,8 +98,12 @@ def compact_plays(plays: list[dict]) -> pd.DataFrame:
 
 
 def season_days(pg: pd.DataFrame, season: int) -> list[str]:
-    """The dates of a season's games in ESPN's box scores (``YYYY-MM-DD``), the days to fetch."""
-    return sorted(pg.loc[pg.season == season, "game_date"].astype(str).str[:10].unique())
+    """The days to fetch for a season: the dates of its games in ESPN's box scores (``YYYY-MM-DD``,
+    US dates) and the day after each, since CBBD's ``/plays/date`` days are UTC and a late game
+    falls on the next one."""
+    d = pd.to_datetime(pg.loc[pg.season == season, "game_date"].astype(str).str[:10].unique())
+    days = d.union(d + pd.Timedelta(days=1))
+    return sorted(days.strftime("%Y-%m-%d"))
 
 
 def fetch_days(days: list[str], cache_dir: Path, key: str, reserve: int = RESERVE,

@@ -139,6 +139,32 @@ def fit_apm_prior(events: Events, prior: pd.DataFrame, before: int, season: int,
     return out
 
 
+def predict_points(events: Events, values: pd.DataFrame, rows: np.ndarray) -> np.ndarray:
+    """Each of ``rows``' possessions: its offense's values minus its defense's (points over the
+    average, before the intercept)."""
+    v = _value_arrays(events, values)
+    return v["off"][events.sides["off"][rows]].sum(1) - v["def"][events.sides["def"][rows]].sum(1)
+
+
+def holdout_score(events: Events, prior: pd.DataFrame, before: int, season: int, test: np.ndarray,
+                  cfg: APMConfig | None = None) -> dict:
+    """Fit at ``before`` and predict the ``test`` possessions' points (clipped as the fit's target)
+    from the box prior alone and from the adjusted plus-minus around it: the squared-error reduction
+    per possession vs a constant (x 1e-4) and the correlation, for each."""
+    cfg = cfg or apm_config()
+    post = fit_apm_prior(events, prior, before, season, cfg)
+    rows = np.flatnonzero(test)
+    y = np.clip(events.frame.points.to_numpy()[rows].astype(float), -cfg.target_clip, cfg.target_clip)
+    yc = y - y.mean()
+    out = {}
+    for name, tab in (("box", prior), ("apm", post)):
+        pred = predict_points(events, tab, rows)
+        pred = pred - pred.mean()
+        out[f"{name}_gain"] = float(1e4 * ((yc ** 2).mean() - ((yc - pred) ** 2).mean()))
+        out[f"{name}_corr"] = float(np.corrcoef(pred, y)[0, 1])
+    return out
+
+
 # -- weekly values -----------------------------------------------------------------------------------
 
 def week_cutoffs(pg: pd.DataFrame, first_season: int) -> pd.DataFrame:

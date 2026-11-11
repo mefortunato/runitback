@@ -89,3 +89,29 @@ def test_fetch_days_caches_and_keeps_reserve(tmp_path, monkeypatch):
     res = C.fetch_days(days, tmp_path, "k", reserve=0, max_calls=2)
     assert calls[4:] == days[4:6]         # cached days are never fetched again
     assert len(C.load_days(tmp_path)) == 6 * len(_game())
+
+
+def test_season_days_add_the_next_utc_day():
+    pg = pd.DataFrame({"season": [2025, 2025, 2025, 2024], "game_date": ["2025-01-04", "2025-01-05", "2025-01-09",
+                                                                         "2024-01-01"]})
+    assert C.season_days(pg, 2025) == ["2025-01-04", "2025-01-05", "2025-01-06", "2025-01-09", "2025-01-10"]
+
+
+def test_get_retries_after_429(monkeypatch):
+    import requests
+
+    class R:
+        def __init__(self, code):
+            self.status_code, self.headers = code, {"retry-after": "0", "x-calllimit-remaining": "41"}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise requests.HTTPError(str(self.status_code))
+
+        def json(self):
+            return []
+
+    codes = iter([429, 429, 200])
+    monkeypatch.setattr(requests, "get", lambda *a, **k: R(next(codes)))
+    monkeypatch.setattr(C.time, "sleep", lambda s: None)
+    assert C._get("plays/date", "k", date="2025-01-01") == ([], 41)
