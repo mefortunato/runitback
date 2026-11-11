@@ -1,7 +1,8 @@
 """Command-line interface: runitback serve, runitback <nfl|nba> download | preprocess | train |
 evaluate | calibrate | simulate | serve, runitback mlb download | process | lineups | player-values |
-probables, runitback nhl download | events | lineups, and runitback cfb download | preprocess | train |
-foundation | players | player-values."""
+probables, runitback nhl download | events | lineups, runitback cfb download | preprocess | train |
+foundation | players | player-values, and runitback college download | players | lineups | cbbd |
+player-values."""
 from __future__ import annotations
 
 import csv
@@ -28,6 +29,8 @@ app.add_typer(nba, name="nba")
 app.add_typer(mlb, name="mlb")
 app.add_typer(nhl, name="nhl")
 app.add_typer(cfb, name="cfb")
+college = typer.Typer(add_completion=False, help="College basketball (cbb / wcbb): player values and rotations")
+app.add_typer(college, name="college")
 DATA = data_dir()
 RUNS = runs_dir()
 DEFAULT_CKPT = default_checkpoint()
@@ -825,6 +828,107 @@ def cfb_foundation(root: Path = typer.Option(Path("foundation/cfb"), help="fold 
         season = default_seasons(CFB, data)
     for s, what in prepare(root, data, season, train=train, threads=threads or None).items():
         typer.echo(f"fold{s}: {what}")
+
+
+# ---------------------------------------------------------------- college basketball
+
+GENDER_OPT = typer.Option("cbb", help="cbb (men's) or wcbb (women's)")
+
+
+def _college_dir(gender: str) -> Path:
+    import os
+    return Path(os.environ.get(f"RUNITBACK_{gender.upper()}_DATA", f"data/{gender}"))
+
+
+@college.command("download")
+def college_download(gender: str = GENDER_OPT, start: int = typer.Option(None, help="first season (default: the "
+                                                                                     "gender's first with minutes)"),
+                     end: int = 2027, force: bool = False):
+    """Download ESPN player box scores (sportsdataverse) to data/<gender>/raw."""
+    from .college.data import download_box, gender as get
+    _log()
+    g = get(gender)
+    for s in range(start or g.first_season, end + 1):
+        typer.echo(download_box(g, s, _college_dir(g.name) / "raw", force))
+
+
+@college.command("players")
+def college_players(gender: str = GENDER_OPT, start: int = typer.Option(None), end: int = 2027):
+    """player_games, team_games and players tables (data/<gender>/processed; runitback.college.data)."""
+    from .college.data import build_players, gender as get
+    _log()
+    g = get(gender)
+    d = _college_dir(g.name)
+    summary = build_players(g, list(range(start or g.first_season, end + 1)), d / "raw", d / "processed")
+    typer.echo(json.dumps(summary, indent=1))
+
+
+@college.command("lineups")
+def college_lineups(gender: str = GENDER_OPT,
+                    rule: str = typer.Option("dnp", help="dnp: the game's box-score roster minus players who "
+                                                         "didn't play; previous: the last 3 games' players")):
+    """Projected rotations for every game: data/<gender>/processed/projected_lineups.parquet
+    (runitback.college.lineups); prints the check vs who actually played."""
+    from .college.data import gender as get
+    from .college.lineups import build_lineups
+    _log()
+    typer.echo(build_lineups(_college_dir(get(gender).name) / "processed", rule).round(3).to_string(index=False))
+
+
+@college.command("cbbd")
+def college_cbbd(season: list[int] = typer.Option(..., help="season(s) to fetch (2024 on)"),
+                 reserve: int = typer.Option(25, help="stop when this many CBBD calls are left"),
+                 max_calls: int = typer.Option(0, help="at most this many calls (0: no limit)")):
+    """Men's CBBD plays with the ten on the floor, one /plays/date call per game day not yet cached
+    (data/cbb/cbbd; needs CBBD_API_KEY and `runitback college players`)."""
+    import os
+
+    import pandas as pd
+
+    from .college import cbbd_lineups as cl
+    _log()
+    key = os.environ.get(cl.KEY_ENV)
+    if not key:
+        raise typer.BadParameter(f"{cl.KEY_ENV} is not set")
+    d = _college_dir("cbb")
+    pg = pd.read_parquet(d / "processed" / "player_games.parquet", columns=["season", "game_date"])
+    days = [x for s in season for x in cl.season_days(pg, s) if x < cl.today()]
+    res = cl.fetch_days(days, d / "cbbd", key, reserve, max_calls or None)
+    typer.echo(json.dumps(res | {"missing": len(res["missing"])}))
+
+
+@college.command("player-values")
+def college_player_values(gender: str = GENDER_OPT,
+                          out: Path = typer.Option(None, help="output directory (default player_values/<gender>)"),
+                          first_season: int = typer.Option(0, help="first season with pv.parquet rows "
+                                                                   "(default: cbb 2012, wcbb 2017)"),
+                          apm: bool = typer.Option(True, help="men's: adjusted plus-minus from the cached CBBD "
+                                                              "days (data/cbb/cbbd) around the box values")):
+    """Weekly leak-free player values and each team-game's lineup values (pv.parquet, ppg.json,
+    values_latest.csv; runitback.college.player_values). Needs `players` and `lineups` first."""
+    import pandas as pd
+
+    from .college import cbbd_lineups as cl
+    from .college import player_values as pv
+    from .college.data import gender as get
+    _log()
+    g = get(gender).name
+    d = _college_dir(g)
+    proc = d / "processed"
+    pg = pd.read_parquet(proc / "player_games.parquet")
+    tg = pd.read_parquet(proc / "team_games.parquet")
+    proj = pd.read_parquet(proc / "projected_lineups.parquet")
+    players = pd.read_parquet(proc / "players.parquet")
+    poss = None
+    if g == "cbb" and apm and (d / "cbbd").exists():
+        plays = cl.load_days(d / "cbbd")
+        if len(plays):
+            poss, stats = cl.season_possessions(plays, pg)
+            poss.to_parquet(proc / "possessions.parquet", index=False)
+            typer.echo(json.dumps(stats))
+    gv = pv.build(pg, tg, proj, first_season or pv.FIRST_SEASON[g], poss, players, apm_from=cl.FIRST_SEASON)
+    pv.write_game_table(gv, out or Path(f"player_values/{g}"), players)
+    typer.echo(f"{len(gv.pv)} team-games, {len(gv.fits)} weekly fits -> {out or Path(f'player_values/{g}')}")
 
 
 if __name__ == "__main__":
