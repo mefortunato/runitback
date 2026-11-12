@@ -22,6 +22,8 @@ Writes, under ``<output_dir>/data/``:
   per pool game playable on some market, each answer without the
   pick-dependent ``pick`` / ``correct`` / ``units``, in shards listed by
   ``<sport>/challenge/index.json`` (see :func:`write_challenge`);
+* ``<sport>/players.json`` (with ``player_values``): this season's players ranked by value within
+  each position group (:mod:`runitback.wager.web.players`);
 * ``<sport>/performance.json`` and ``<sport>/rankings.json``;
 * ``<sport>/map.json``: the latest season's teams in 3-D before each
   ranking date (:meth:`Snapshot.team_map_view`; ``null`` for a model
@@ -53,6 +55,7 @@ from ..core.process import process
 from ..core.sport import get_sport
 from ..odds.providers import provider_for
 from .odds import load_previous, refresh_odds
+from .players import player_ranks
 from .snapshot import Snapshot
 from .views import BUILTIN_VIEWS
 
@@ -250,6 +253,8 @@ def export(
     challenge_from: str | None = None,
     sports: list[str] | None = None,
     require_refresh: bool = True,
+    player_values: dict[str, str] | None = None,
+    data_root: str = "data",
 ) -> None:
     """Write every sport's page data as static JSON.
 
@@ -274,6 +279,11 @@ def export(
             with :func:`merge`); default every sport in ``data_dir``.
         require_refresh: With ``refresh``, fail when every sport's download
             fails (off for a single sport's export: :func:`merge` checks).
+        player_values: Each sport's player-values directory
+            (``runitback <sport> player-values``), e.g. ``{nfl: player_values/nfl}``:
+            exports its players page. Its processed data is read from
+            ``<data_root>/<sport>/processed``.
+        data_root: Where the sports' downloaded and processed data live.
     """
     keys = {}
     for path in pathlib.Path(data_dir).iterdir():
@@ -287,8 +297,23 @@ def export(
     )
     out = pathlib.Path(output_dir) / "data"
     out.mkdir(parents=True, exist_ok=True)
+    ranks = {
+        sport: payload
+        for sport, directory in (player_values or {}).items()
+        if sport in snapshots
+        and (
+            payload := player_ranks(
+                sport, directory, pathlib.Path(data_root) / sport / "processed"
+            )
+        )
+    }
     (out / "sports.json").write_text(
-        json.dumps([snap.info() for snap in snapshots.values()])
+        json.dumps(
+            [
+                {**snap.info(), **({"has_players": True} if sport in ranks else {})}
+                for sport, snap in snapshots.items()
+            ]
+        )
     )
     for sport, snap in snapshots.items():
         # the static page's CSP blocks external images: badges fall back to
@@ -362,6 +387,8 @@ def export(
             write_challenge(out / sport, challenge, teams)
         _write(out / sport / "performance.json", snap.performance(), teams)
         _write(out / sport / "rankings.json", snap.rankings(), teams)
+        if sport in ranks:
+            _write(out / sport / "players.json", ranks[sport], {})
         _write(out / sport / "map.json", snap.team_map_view(), teams)
         print(
             f"exported {sport}: {len(by_date)} dates, {len(games)} games, "

@@ -1094,6 +1094,10 @@ RUNITBACK_NFL_FOUNDATION=foundation/nfl RUNITBACK_NFL_PLAYER_VALUES=player_value
   runitback-wager web build --sports '[nfl]' --output_dir webdata
 ```
 
+`runitback-wager web export --player_values '{nfl: player_values/nfl}'` also writes `nfl/players.json`
+for the **Players** tab (this season's players ranked by value within each position group; it reads
+`data/nfl/processed` too, `--data_root` moves it). Refresh predictions passes it.
+
 Run the build and export from the directory that holds `foundation/nfl` and `player_values/nfl`:
 the trained model stores both tables' paths relative to it.
 
