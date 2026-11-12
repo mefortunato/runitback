@@ -2,8 +2,8 @@
 see :class:`~runitback.wager.core.lineup.LineupSpec`).
 
 Every NBA player plays both ends, so each position group (G / F / C, from the ESPN position) has an
-offense and a defense column. Offense adds to the total, defense takes it away. The layout is not on
-``SPORT`` yet: N5 (the NBA wager experiments) registers it when it adds the ``pvc`` arms.
+offense and a defense column. Offense adds to the total, defense takes it away. Registered on the
+NBA ``SPORT`` (``Sport.lineup``) for the ``pv`` / ``pva`` / ``pvc`` lineup sets (experiments/nba).
 """
 
 from ..core.lineup import LineupSpec

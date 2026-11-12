@@ -10,7 +10,16 @@ change flags (experiments/nfl/lineups/changes/<season>.csv, either team):
 - turnover: the top quarter of games by previous-game starters missing from the projected chart
 - steady: none of the above
 
+With ``--pv`` (a sport's player-value table, e.g. the NBA's, which has no change flags), the subsets
+come from each game's projected-rotation change instead: per team, the summed change of its groups'
+values vs its last lineups (the ``pvc`` columns), both teams' absolute changes added up:
+
+- rotation_moved: the top quarter of games by that change
+- steady: the bottom half
+
     python scripts/lineup_report.py experiments/nfl/lineups --baseline pbp32
+    python scripts/lineup_report.py experiments/nba/wager --baseline pbp32_e4 --pv player_values/nba/pv.parquet \
+        --sport nba
 """
 from __future__ import annotations
 
@@ -35,15 +44,30 @@ def subsets(root: Path) -> dict[str, set[str]]:
             "turnover": set(g.index[top]), "steady": set(g.index[~moved])}
 
 
+def pv_subsets(path: Path, sport: str) -> dict[str, set]:
+    from runitback.wager.core.sport import lineup_spec
+
+    spec = lineup_spec(sport)
+    pv = pd.read_parquet(path)
+    change = pv[[f"_pv_{i}" for i in spec.changes]].sum(axis=1).abs()
+    g = change.groupby(pv.game_id).sum()
+    ids = pd.to_numeric(g.index, errors="coerce")
+    if not ids.isna().any():          # numeric ids: the results CSVs read them back as integers
+        g.index = ids.astype("int64")
+    return {"rotation_moved": set(g.index[g >= g.quantile(0.75)]), "steady": set(g.index[g <= g.median()])}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("root", type=Path)
     ap.add_argument("--baseline", default="pbp32")
     ap.add_argument("--out", type=Path)
+    ap.add_argument("--pv", type=Path, help="player-value table for the subsets (instead of <root>/changes)")
+    ap.add_argument("--sport", default="nfl")
     a = ap.parse_args()
     results = load(a.root, None)
     parts = [report(results, a.baseline).assign(subset="all")]
-    for name, ids in subsets(a.root).items():
+    for name, ids in (pv_subsets(a.pv, a.sport) if a.pv else subsets(a.root)).items():
         sub = {k: v[v.index.isin(ids)] for k, v in results.items()}
         parts.append(report(sub, a.baseline).assign(subset=name))
     table = pd.concat(parts, ignore_index=True)

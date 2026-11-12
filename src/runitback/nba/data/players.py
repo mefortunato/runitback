@@ -132,7 +132,8 @@ def _sub_ids(r) -> tuple[int | None, int | None]:
     a1, a2 = _id(r.athlete_id_1), _id(r.athlete_id_2)
     if a2 is not None:
         return a1, a2
-    text = str(getattr(r, "text", "") or "").strip().lower()
+    raw = getattr(r, "text", None)  # may be pd.NA (pyarrow-backed): never truth-test it
+    text = "" if raw is None or pd.isna(raw) else str(raw).strip().lower()
     if text.startswith("enters the game"):
         return None, a1
     return a1, None

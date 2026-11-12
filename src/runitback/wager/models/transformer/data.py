@@ -64,7 +64,7 @@ def pbp_features(games: pd.DataFrame, schema: GameSchema, path: str, dim: int) -
     with ``_pbp_missing`` 1 where the game has none (no play-by-play)."""
     table = _read_pbp(path)
     cols = pbp_columns(dim)[:-1]
-    key = pd.MultiIndex.from_arrays([games[schema.game_id], games[schema.team]])
+    key = pd.MultiIndex.from_arrays([game_keys(games[schema.game_id]), games[schema.team]])
     out = table[cols].reindex(key)
     out.index = games.index
     out[PBP_MISSING] = out[cols[0]].isna().astype(np.float32)
@@ -157,7 +157,7 @@ def lineup_features(games: pd.DataFrame, schema: GameSchema, path: str, which: s
     out = []
     ids = games[schema.game_id] if schema.game_id in games else pd.Series(None, index=games.index, dtype=object)
     for side, prefix in ((schema.team, ""), (schema.opp, "_opp")):
-        key = pd.MultiIndex.from_arrays([ids, games[side]])
+        key = pd.MultiIndex.from_arrays([game_keys(ids), games[side]])
         part = table.reindex(columns=cols).reindex(key)
         part[LINEUP_MISSING] = part[cols[0]].isna().astype(np.float32)
         part.columns = [f"{prefix}{c}" for c in part.columns]
@@ -169,9 +169,21 @@ def lineup_features(games: pd.DataFrame, schema: GameSchema, path: str, which: s
 _PBP_CACHE: dict[str, pd.DataFrame] = {}
 
 
+def game_keys(ids: pd.Series) -> pd.Series:
+    """Game ids as the per-team-game tables (embeddings, lineup values) key them: integer ids (an
+    ESPN id such as the NBA's, read back from a games CSV as a number) become their decimal
+    string, as the tables store them; string ids (the NFL's) are returned unchanged."""
+    if pd.api.types.is_integer_dtype(ids):
+        return ids.astype("int64").astype(str)
+    if pd.api.types.is_float_dtype(ids):
+        return ids.astype("Int64").astype(str).where(ids.notna(), None)
+    return ids
+
+
 def _read_pbp(path: str) -> pd.DataFrame:
     if path not in _PBP_CACHE:
         table = pd.read_parquet(path)
+        table["game_id"] = game_keys(table["game_id"])
         _PBP_CACHE[path] = table.set_index(["game_id", "team"])
     return _PBP_CACHE[path]
 
