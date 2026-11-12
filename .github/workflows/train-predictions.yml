@@ -40,6 +40,13 @@ on:
           training (0: train)
         type: number
         default: 0
+      max_new_seasons:
+        description: >-
+          Backtest at most this many seasons that no cache has (the latest ones; 0: all). A sport's
+          first build is several hours a season: run with 2 until every season is cached (the NBA
+          needs ~75 min a season, so a first run with all five does not fit in the job's limit)
+        type: number
+        default: 0
   schedule:
     - cron: "41 7 1 * *" # the 1st of each month
 
@@ -169,6 +176,7 @@ jobs:
           --cache release:predictions-backtest-cache
           --refresh_backtest ${{ inputs.refresh_backtest || false }}
           --reuse_model_days ${{ inputs.reuse_model_days || 0 }}
+          ${{ inputs.max_new_seasons > 0 && format('--max_new_seasons {0}', inputs.max_new_seasons) || '' }}
       - name: Publish the predictions-webdata release asset
         run: |
           tar -czf webdata.tar.gz -C webdata .
