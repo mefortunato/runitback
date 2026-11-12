@@ -1051,10 +1051,10 @@ service** at `/mnt/predictions` (`RUNITBACK_PREDICTIONS`), so it refreshes witho
 deployments keep needing a merge to `main`:
 
 - **Train predictions** (`.github/workflows/train-predictions.yml`, monthly and by hand) trains the
-  wager model, backtests it and publishes the `predictions-webdata` release asset (backtest seasons
+  NFL and NBA wager models (the NBA's is `prod_pvc_e4`: player values, no foundation folds), backtests it and publishes the `predictions-webdata` release asset (backtest seasons
   are reused through the `predictions-backtest-cache` release while the model is unchanged).
 - **Refresh predictions** (`.github/workflows/refresh-predictions.yml`, daily and before each NFL
-  kickoff window) downloads that release, re-downloads results and lines (The Odds API with the
+  kickoff window; NBA lines only on the daily run and manual runs, to spare the Odds API quota) downloads that release, re-downloads results and lines (The Odds API with the
   `ODDS_API_KEY` secret; without it the previous lines carry over), refreshes team state (no
   retraining), exports, and syncs the files to the bucket. The pages pick them up within a minute:
   the mount caches metadata for 60 s and `/data` responses carry `Cache-Control: no-cache`.

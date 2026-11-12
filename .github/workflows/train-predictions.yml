@@ -1,7 +1,7 @@
 # Train the wager model (spread / moneyline / total), run its walk-forward backtest (the
 # performance page, Beat the model, past power rankings) and publish the result as the
 # `predictions-webdata` release asset that Refresh predictions exports from. Ported from
-# sportsml's Train workflow, NFL only for now.
+# sportsml's Train workflow. NFL and NBA.
 #
 # The NFL model reads the play-by-play foundation's frozen game embeddings (experiments/nfl:
 # pbp32): one foundation model per test season ("fold", runitback.nfl.foundation), kept in the
@@ -13,6 +13,11 @@
 # every player, summed over each team's projected lineup per position group (`runitback nfl
 # player-values`, ~5 min), rebuilt here and in Refresh predictions (injury reports and depth
 # charts change during the week).
+#
+# The NBA model (experiments/nba: prod_pvc_e4) reads player values only, no foundation folds:
+# the `pbp32` arms did not pass the promotion bar. Its values (`runitback nba player-values`,
+# from N1-N3) are rebuilt in the build job from the public sources; its backtest and model are
+# cached like the NFL's.
 #
 # Runs monthly during the season and on demand, e.g. after changing the model. Backtest
 # seasons are reused from the previous release, or from the `predictions-backtest-cache`
@@ -160,7 +165,7 @@ jobs:
           fi
       - name: Download, train, backtest
         run: >
-          runitback-wager web build --sports '[nfl]' --output_dir webdata
+          runitback-wager web build --sports '[nfl,nba]' --output_dir webdata
           --cache release:predictions-backtest-cache
           --refresh_backtest ${{ inputs.refresh_backtest || false }}
           --reuse_model_days ${{ inputs.reuse_model_days || 0 }}
