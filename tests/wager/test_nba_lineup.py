@@ -56,3 +56,18 @@ def test_embeddings_and_lineup_values_join_integer_game_ids(tmp_path):
     assert lu["_pv_8"].tolist() == [0.5, -0.5, 1.5]
     assert lu["_opp_pv_8"].tolist()[:2] == [-0.5, 0.5] and lu["_opp_lu_missing"].tolist() == [0.0, 0.0, 1.0]
     assert lu["_lu_missing"].tolist() == [0.0, 0.0, 0.0]
+
+
+def test_player_value_terms_follow_the_environment(tmp_path):
+    import importlib, sys
+    import runitback.wager.nba as nba
+    try:
+        assert "lineup" not in nba.SPORT.transformer
+        import os
+        os.environ["RUNITBACK_NBA_PLAYER_VALUES"] = str(tmp_path) + "/"
+        mod = importlib.reload(nba)
+        t = mod.SPORT.transformer
+        assert t["lineup"] == f"{tmp_path}/pv.parquet" and t["lineup_set"] == "pvc" and t["ensemble"] == 4
+    finally:
+        os.environ.pop("RUNITBACK_NBA_PLAYER_VALUES", None)
+        importlib.reload(nba)
