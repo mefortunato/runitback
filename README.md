@@ -412,6 +412,8 @@ runitback nba download --start 2015 --end 2027      # raw parquet (play-by-play 
 runitback nba players --start 2015 --end 2027       # → data/nba/processed/{on_court,player_games,players}.parquet, prints the 5-on-court check
 runitback nba lineups [--live]                      # → data/nba/processed/projected_lineups.parquet (+ _upcoming with --live), prints the check vs actual
 runitback nba player-values --start 2015 --end 2027 # → data/nba/processed/possessions.parquet; player_values/nba/{pv.parquet,slots.json,values_latest.csv}
+runitback nba player-values --lineups data/nba/processed/projected_lineups.parquet \
+    --upcoming data/nba/processed/projected_lineups_upcoming.parquet   # + upcoming games' pv rows and the game pages' lineup editor (lineups.parquet); RUNITBACK_NBA_PLAYER_VALUES=player_values/nba turns the lineup terms on
 runitback nba preprocess --start 2015 --end 2027    # → data/nba/processed/{games,plays,ratings}.parquet, prints engine agreement
 runitback nba train --out runs/nba/eval --val-season 2026        # hold out the last 40% of 2025-26
 runitback nba evaluate --ckpt runs/nba/eval/model.pt

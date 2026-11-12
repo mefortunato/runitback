@@ -20,4 +20,9 @@ LINEUP = LineupSpec(
     summaries=(("offense", OFFENSE), ("defense", DEFENSE)),
     # a quarter of the wager model's 40-game history
     recent=10,
+    # the lineup editor: one ranked rotation (the model's slots are team-wide minutes ranks, not per
+    # position); each player adds his offense and defense into his G / F / C columns
+    editor_groups=("ROT",),
+    labels={"ROT": "Rotation"},
+    rotation_groups=("ROT",),
 )

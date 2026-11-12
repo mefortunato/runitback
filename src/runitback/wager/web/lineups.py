@@ -106,7 +106,8 @@ class LineupEditor:
         if h is None or a is None:
             return None
         return {
-            "groups": [{"key": g, "label": self.spec.labels.get(g, g), "column": self.spec.column_of(g)}
+            "groups": [{"key": g, "label": self.spec.labels.get(g, g),
+                        "column": "" if g in self.spec.rotation_groups else self.spec.column_of(g)}
                        for g in self.spec.editor_groups],
             "columns": list(self.spec.groups),
             "slots": self.slots,
@@ -119,6 +120,10 @@ class LineupEditor:
 def _player(r, out: bool) -> dict:
     pos = r.position if isinstance(r.position, str) else None
     name = r.name if isinstance(r.name, str) and r.name else f"Unnamed player ({pos or r.group})"
-    value = float(r.value_play)
-    return {"id": r.player_id, "name": name, "pos": pos,
-            "value": 0.0 if not math.isfinite(value) else round(value, 5), "out": out}
+    value = float(r.value_off) + float(r.value_def) if hasattr(r, "value_off") else float(r.value_play)
+    player = {"id": r.player_id, "name": name, "pos": pos,
+              "value": 0.0 if not math.isfinite(value) else round(value, 5), "out": out}
+    if hasattr(r, "value_off"):   # a rotation's player adds offense and defense into his position's columns
+        player["values"] = {f"{r.pos_group}_OFF": round(float(r.value_off), 5),
+                            f"{r.pos_group}_DEF": round(float(r.value_def), 5)}
+    return player

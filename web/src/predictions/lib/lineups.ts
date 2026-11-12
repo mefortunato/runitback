@@ -33,6 +33,14 @@ export function slotPoints(lineups: GameLineups, group: string, rank: number, pl
 	return player ? player.value * mult : 0;
 }
 
+/** Points per game over replacement of a player at slot `rank` of `group`, over every column he adds to
+ * (a rotation player's offense and defense together). */
+export function playerPoints(lineups: GameLineups, group: string, rank: number, player: LineupPlayer | undefined): number {
+	if (!player?.values) return slotPoints(lineups, group, rank, player);
+	const mult = lineups.slots[group]?.[rank] ?? 0;
+	return Object.values(player.values).reduce((a, v) => a + v, 0) * mult;
+}
+
 /** Each value column's points for one side's lineup. */
 export function columnPoints(lineups: GameLineups, side: Side, team: TeamLineup): number[] {
 	const sums = lineups.columns.map(() => 0);
@@ -40,7 +48,17 @@ export function columnPoints(lineups: GameLineups, side: Side, team: TeamLineup)
 		const idx = lineups.columns.indexOf(g.column);
 		const players = playerIndex(lineups, side, g.key);
 		(team[g.key]?.active ?? []).forEach((id, rank) => {
-			sums[idx] += slotPoints(lineups, g.key, rank, players.get(id));
+			const p = players.get(id);
+			if (p?.values) {
+				// a rotation: the slot's usage times his offense and defense, in his position's columns
+				const mult = lineups.slots[g.key]?.[rank] ?? 0;
+				for (const [col, v] of Object.entries(p.values)) {
+					const i = lineups.columns.indexOf(col);
+					if (i >= 0) sums[i] += v * mult;
+				}
+			} else if (idx >= 0) {
+				sums[idx] += slotPoints(lineups, g.key, rank, p);
+			}
 		});
 	}
 	return sums;

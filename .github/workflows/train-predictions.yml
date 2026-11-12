@@ -57,6 +57,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RUNITBACK_NFL_FOUNDATION: foundation/nfl
       RUNITBACK_NFL_PLAYER_VALUES: player_values/nfl
+      RUNITBACK_NBA_PLAYER_VALUES: player_values/nba
       # the Foundation experiment run whose fold artifacts seed the release (until they expire)
       FOUNDATION_SEED_RUN: "42286987708"
       MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
@@ -113,6 +114,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RUNITBACK_NFL_FOUNDATION: foundation/nfl
       RUNITBACK_NFL_PLAYER_VALUES: player_values/nfl
+      RUNITBACK_NBA_PLAYER_VALUES: player_values/nba
       MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
       MLFLOW_DISABLE_AGENT_HINT: "1"
     steps:
@@ -140,6 +142,14 @@ jobs:
           done
       - name: Player values
         run: runitback nfl player-values --out "$RUNITBACK_NFL_PLAYER_VALUES"
+      - name: NBA player values (rotations from rosters and the injury report)
+        run: |
+          runitback nba download --start 2015 --end 2027
+          runitback nba players --start 2015 --end 2027
+          runitback nba lineups --live
+          runitback nba player-values --start 2015 --end 2027 --out "$RUNITBACK_NBA_PLAYER_VALUES" \
+            --lineups data/nba/processed/projected_lineups.parquet \
+            --upcoming data/nba/processed/projected_lineups_upcoming.parquet
       - name: Fetch the previous build (its backtest seasons can be reused)
         run: |
           mkdir webdata
