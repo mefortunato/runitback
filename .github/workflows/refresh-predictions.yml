@@ -13,10 +13,15 @@
 #
 # The players page (player values ranked by position) is exported from the same player values.
 #
+# The NBA is exported from the same webdata: its player values (rotations from rosters and the
+# injury report) are rebuilt below, and the lineup editor and players page read them.
+#
 # Lines come from The Odds API (ODDS_API_KEY secret; no game within 8 days: no request). The
 # schedule fits its free tier's 150 requests a month: about 23 runs a week in season, more on
 # game days (times in UTC, before each Eastern kickoff window). Without the key the previous
-# export's lines carry over.
+# export's lines carry over. NBA lines (about 3 requests each) are fetched only by the daily
+# run and by manual runs, so the extra cost is about 30 requests a month; the other runs carry
+# the NBA's previous lines over.
 name: Refresh predictions
 
 on:
@@ -133,11 +138,22 @@ jobs:
       - name: Export fresh data and lines
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-        run: >
-          runitback-wager web export --data_dir webdata --output_dir out --sports '[nfl]'
-          --refresh true --require_refresh false --odds "{nfl: oddsapi}"
-          --odds_history previous --challenge_from previous
-          --player_values "{nfl: $RUNITBACK_NFL_PLAYER_VALUES, nba: $RUNITBACK_NBA_PLAYER_VALUES}"
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          odds="{nfl: oddsapi}"
+          # NBA lines: the daily run and manual runs only (The Odds API's monthly quota)
+          if [ -z "$SCHEDULE" ] || [ "$SCHEDULE" = "17 10 * * *" ]; then
+            odds="{nfl: oddsapi, nba: oddsapi}"
+          fi
+          runitback-wager web export --data_dir webdata --output_dir out --sports '[nfl,nba]' \
+            --refresh true --require_refresh false --odds "$odds" \
+            --odds_history previous --challenge_from previous \
+            --player_values "{nfl: $RUNITBACK_NFL_PLAYER_VALUES, nba: $RUNITBACK_NBA_PLAYER_VALUES}"
+          # a run that fetched no NBA lines keeps the published ones (the sync below deletes
+          # what is missing from out/data)
+          if [ ! -f out/data/nba/odds.json ] && [ -f previous/nba/odds.json ]; then
+            mkdir -p out/data/nba && cp previous/nba/odds.json out/data/nba/odds.json
+          fi
       - name: Publish to the bucket
         # files first, then removals: a page loading mid-sync sees old or new files, never none
         run: |
