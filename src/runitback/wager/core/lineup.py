@@ -32,6 +32,9 @@ class LineupSpec:
         labels: Each editor group's display name.
         editor_columns: Editor groups whose values add into another group's column
             (``{"K": "ST"}``); the rest map to the column of the same name.
+        rotation_groups: Editor groups that are one ranked rotation for the whole team (the NBA's):
+            each player adds a value into several columns (his position's offense and defense),
+            at the slot his rank gives, so the group maps to no single column.
     """
 
     groups: tuple[str, ...]
@@ -41,11 +44,12 @@ class LineupSpec:
     editor_groups: tuple[str, ...] = ()
     labels: dict[str, str] = field(default_factory=dict)
     editor_columns: dict[str, str] = field(default_factory=dict)
+    rotation_groups: tuple[str, ...] = ()
 
     def __post_init__(self):
         if len(self.total_sign) != len(self.groups):
             raise ValueError("total_sign needs one sign per group")
-        unknown = {self.column_of(g) for g in self.editor_groups} - set(self.groups)
+        unknown = {self.column_of(g) for g in self.editor_groups if g not in self.rotation_groups} - set(self.groups)
         if unknown:
             raise ValueError(f"editor groups map to unknown columns {sorted(unknown)}")
 

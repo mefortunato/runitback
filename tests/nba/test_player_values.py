@@ -270,3 +270,39 @@ def test_swap_refs_pick_regulars_by_both_ends():
     # 3 is the best per possession but not a regular; 2 (0.02) beats 1 (0.01) on both ends combined
     assert refs[("G", "best")] == 2 and refs[("G", "worst")] == 1
     assert refs[("C", "best")] == refs[("C", "worst")] == 4
+
+
+def test_upcoming_games_get_pv_rows_and_editor_lineups(league):
+    """N6: an unplayed game's rotation is summed with the latest fit before its Monday (no later data),
+    and the editor's table lists its ranked rotation and the players ruled out."""
+    poss, pg, players, _, _ = league
+    cfg = apm_config(lam=300, min_poss=200)
+    last = pd.Timestamp(pg.game_date.max()) + pd.Timedelta(days=3)
+    ids = {t: sorted(pg[pg.team == t].player_id.unique()) for t in ("T0", "T1")}
+    rows = []
+    for t in ("T0", "T1"):
+        for k, p in enumerate(ids[t]):
+            out = k == 8
+            rows.append(("UP1", 2023, last.strftime("%Y-%m-%d"), t, p, "G", "out" if out else "available",
+                         "Knee" if out else None, 20.0, 0.0 if out else 20.0, k < 5, -1 if out else k, 10, "live"))
+    up = pd.DataFrame(rows, columns=["game_id", "season", "game_date", "team", "player_id", "group", "status",
+                                     "out_reason", "exp_minutes", "proj_minutes", "proj_starter", "rank",
+                                     "recent_games", "source"])
+    gv = game_table(poss, pg, players, first_season=2023, jobs=1, cfg=cfg, upcoming=up)
+    new = gv.pv[gv.pv.game_id == "UP1"]
+    assert sorted(new.team) == ["T0", "T1"] and not gv.pv[gv.pv.game_id != "UP1"].game_id.isin(["UP1"]).any()
+    # the editor's table: the rotation ranked, the player ruled out at -1, both ends' values
+    lu = gv.lineups
+    assert set(lu.game_id) == {"UP1"} and set(lu.group) == {"ROT"}
+    t0 = lu[lu.team == "T0"].sort_values("rank")
+    assert t0["rank"].tolist() == [-1] + list(range(8))
+    # the _pv_ levels are exactly the editor's values x the slot usage, summed by position and side
+    mult = gv.slots[max(gv.slots)]
+    for team, d in lu.groupby("team"):
+        d = d[d["rank"] >= 0]
+        for j, col in enumerate(LINEUP.groups):
+            g, side = col.split("_")
+            v = d.value_off if side == "OFF" else d.value_def
+            want = sum(vv * mult[r] for vv, r, pg_ in zip(v, d["rank"], d.pos_group) if pg_ == g and r < len(mult))
+            got = float(new[new.team == team][f"_pv_{j}"].iloc[0])
+            assert abs(got - want) < 1e-4
