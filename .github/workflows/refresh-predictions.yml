@@ -59,6 +59,7 @@ jobs:
       MLFLOW_DISABLE_AGENT_HINT: "1"
       RUNITBACK_NFL_FOUNDATION: foundation/nfl
       RUNITBACK_NFL_PLAYER_VALUES: player_values/nfl
+      RUNITBACK_NBA_PLAYER_VALUES: player_values/nba
     steps:
       - name: Check configuration
         run: |
@@ -111,6 +112,14 @@ jobs:
           runitback nfl foundation --root "$RUNITBACK_NFL_FOUNDATION" --existing --threads $(nproc)
       - name: Player values (latest depth charts and injury reports)
         run: runitback nfl player-values --out "$RUNITBACK_NFL_PLAYER_VALUES"
+      - name: NBA player values (rotations from rosters and the injury report)
+        run: |
+          runitback nba download --start 2015 --end 2027
+          runitback nba players --start 2015 --end 2027
+          runitback nba lineups --live
+          runitback nba player-values --start 2015 --end 2027 --out "$RUNITBACK_NBA_PLAYER_VALUES" \
+            --lineups data/nba/processed/projected_lineups.parquet \
+            --upcoming data/nba/processed/projected_lineups_upcoming.parquet
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -128,7 +137,7 @@ jobs:
           runitback-wager web export --data_dir webdata --output_dir out --sports '[nfl]'
           --refresh true --require_refresh false --odds "{nfl: oddsapi}"
           --odds_history previous --challenge_from previous
-          --player_values "{nfl: $RUNITBACK_NFL_PLAYER_VALUES}"
+          --player_values "{nfl: $RUNITBACK_NFL_PLAYER_VALUES, nba: $RUNITBACK_NBA_PLAYER_VALUES}"
       - name: Publish to the bucket
         # files first, then removals: a page loading mid-sync sees old or new files, never none
         run: |
