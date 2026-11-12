@@ -17,7 +17,7 @@ dev = ["pytest", "httpx"]
 # game-level wager models (spread / moneyline / total), ported from sportsml
 wager = [
   "httpx", "jsonargparse[signatures]", "lightning", "mlflow", "networkx", "nflreadpy", "omegaconf",
-  "scikit-learn", "scipy", "torch_geometric", "torchmetrics", "tqdm", "umap-learn",
+  "scikit-learn", "scipy", "torch_geometric", "torchmetrics", "tqdm", "tzdata", "umap-learn",
 ]
 tune = ["optuna>=5.0.0"]
 
