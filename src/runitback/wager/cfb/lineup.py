@@ -3,8 +3,9 @@
 
 College play-by-play has no on-field personnel, so the only player value is the starting
 quarterback's (``runitback.cfb.player_values``): EPA per quarterback play over replacement, in
-points per game. The layout is not on ``SPORT`` yet: F3 (the CFB wager experiments) registers it when
-it adds the ``pbp32_qb`` arm.
+points per game. The layout is on ``SPORT`` (F3, ``experiments/cfb``): the ``pbp32_qb`` arm reads it
+through the ``pvc`` lineup set, i.e. only the starting-QB-change term (``_pv_2``) enters, as a
+sign-constrained additive term on margin and total.
 """
 
 from ..core.lineup import LineupSpec

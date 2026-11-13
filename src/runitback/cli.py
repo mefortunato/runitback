@@ -841,5 +841,19 @@ def cfb_foundation(root: Path = typer.Option(Path("foundation/cfb"), help="fold 
         typer.echo(f"fold{s}: {what}")
 
 
+@cfb.command("wager-embeddings")
+def cfb_wager_embeddings(root: Path = typer.Option(Path("foundation/cfb"), help="fold directory"),
+                         season: list[int] = typer.Option(..., help="fold (test season); repeat for several"),
+                         start: int = typer.Option(2004, help="first season of the schedule"), end: int = 2026):
+    """Key each fold's pbp32 embeddings as the CFB wager model keys its teams (school names, FCS pooled):
+    <root>/fold<S>/pbp_32_wager.parquet. Needs `runitback cfb download` (the schedule)."""
+    _log()
+    from .cfb.data.download import load
+    from .cfb.foundation import write_wager_keys
+    schedule = load("schedule", list(range(start, end + 1)), _cfb_data() / "raw")
+    for s, n in write_wager_keys(root, season, schedule).items():
+        typer.echo(f"fold{s}: {n} team-games")
+
+
 if __name__ == "__main__":
     app()

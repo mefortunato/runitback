@@ -360,3 +360,81 @@ the team-season mean. The OLS split above has no fixed effects.)
 3. **Better values:** a recruiting or prior-level prior for quarterbacks under 50 plays (today they
    sit at replacement), and skill-player values (receivers, running backs) from the mapped
    receiver / rusher ids.
+
+# College football: the wager model on the foundation and the quarterback values (F3)
+
+Work package F3 (`docs/multisport/PLAN.md`): does the CFB wager model keep its accuracy when it gets
+the F1 play-by-play foundation (`pbp32`) and the F2 starting-quarterback values (`pbp32_qb`), and does
+changing the quarterback move the prediction the right way? Baseline: the S4d box-score production
+model (`prod`, above).
+
+**Short answer**
+- _Pending the first run of `cfb-wager-experiment.yml`; this section is filled in from its
+  `cfb-wager-results` artifact (`single/`, `e4/`, `swap/`). Nothing below the setup is a result yet._
+- **What is built and tested.** The CFB `Sport` now carries the QB lineup layout, the experiment
+  configuration, the workflow, the embedding key remap and the swap script. Unit tests cover the
+  remap, the layout, the configuration, the swap helpers and the sign constraint (a better home
+  quarterback never lowers the home margin or the total, a better away one never raises the margin).
+
+## Arms (`wager.yaml`, 2021–2025 walk-forward)
+
+| arm | adds to `prod` |
+|---|---|
+| `prod` | nothing: sportsml's production CFB transformer, settings pinned as in `baseline.yaml` |
+| `pbp32` | the frozen F1 foundation's 32-dimension game embeddings in the history tokens |
+| `pbp32_qb` | + the starting quarterback's value change vs the team's last 7 starters (`_pv_2`), through the sign-constrained additive terms on margin and total (`lineup_set: pvc`, one group, `QB`) |
+| `prod_qb` | the QB terms without the foundation (in case `pbp32` doesn't pass) |
+
+Each has a 4-seed version (`_e4`). **Promotion decisions compare `_e4` with `_e4`** (a reseeded
+baseline moves Brier about ±0.002). Markets: moneyline, spread (cover) and total (over). The bar is
+the plan's: the paired per-game Brier difference against `prod` has a 95% CI that includes 0 or
+favors the arm, on each market; and the swap test below passes.
+
+- **Only the change term enters (`pvc`).** The level (`_pv_0`) and the change vs the previous
+  starter (`_pv_1`) are in `pv.parquet` but stay out of the model: the team's history already has
+  strength, and levels double-counted it in the NFL (`pva`). The NFL's `pvc` learned 0.58 margin
+  points per point of value.
+- **Keys.** The folds' embeddings are keyed by ESPN team id; `runitback cfb wager-embeddings` writes
+  `fold<S>/pbp_32_wager.parquet` keyed as the wager model keys teams (school names, FCS pooled),
+  through the schedule's ids and divisions. Games without an FBS team have no wager row.
+- **Leakage.** Fold S never sees season S (trained before S-1 week 10; PCA on games before S). Each
+  game's `pv.parquet` row uses the fit on plays before its Monday and the previous game's starter as
+  the projected starter. There is no public pre-game depth chart or injury history for college
+  football, so this stand-in is right in 81% of team-games (41% of season openers; F2 above). The
+  actual starter is never a feature.
+- **QB-moved subsets.** `e4/subsets.md` scores the arms on the games where the QB-change term moved
+  most (`scripts/lineup_report.py --pv`).
+
+### Swap test (QB only)
+
+College play-by-play has no on-field personnel and CollegeFootballData has no depth chart, snap or
+lineup endpoint (checked against its OpenAPI spec; rosters, usage and season stats are available
+but are not leak-free pre-game availability), so the only position is the quarterback. For every
+2025 game, `scripts/cfb_lineup_swap.py` re-predicts with `pbp32_qb_e4` (fit on 2021–2024) after the
+home team's projected starter is replaced by the **best** / **worst** regular (at least 400
+weighted plays in the window), a **replacement**-level player, or **out** (the team's most
+frequent other recent starter plays). It passes when margin and win probability move with the value
+in every game where the value changed by more than 0.05 points.
+
+## Reproducing the results
+
+Only the configuration (`wager.yaml`) and this write-up are kept in git. The workflow
+`.github/workflows/cfb-wager-experiment.yml` rebuilds everything from the public sources in the run
+(sportsdataverse play-by-play, player box scores and schedules; ESPN's odds API) and uploads the
+per-game predictions and reports as the `cfb-wager-results` artifact:
+
+| path | what |
+|---|---|
+| `single/ablation.md`, `single/report.md` | 1-seed arms vs `prod`, per market |
+| `e4/ablation.md`, `e4/report.md`, `e4/report_vs_pbp32.md` | 4-seed arms vs `prod_e4` and vs `pbp32_e4` |
+| `e4/subsets.md`, `e4/subsets_vs_pbp32.md` | the games where the QB-change term moved |
+| `swap/swap_2025.md`, `swap/swap_2025.csv` | the QB swap test |
+| `<config>/<season>.csv` | per-game walk-forward predictions |
+
+It uses Actions matrix jobs: one per fold, and one per (arm, season) (a 4-seed ensemble takes about
+100 minutes). Start it from the Actions tab ("Run workflow") or push a change to `wager.yaml` or the
+workflow on a `claude/**` branch. ESPN refuses a runner after a burst of odds requests, so each
+season's lines have their own job; if one is refused, "Re-run failed jobs". Locally, after
+`runitback cfb download | preprocess | players | player-values | foundation` and
+`runitback cfb wager-embeddings`, run `python scripts/wager_arm.py <config> <season> --sport cfb
+--experiment experiments/cfb/wager.yaml`.

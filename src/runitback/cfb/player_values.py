@@ -302,3 +302,45 @@ def write_game_table(gv: GameValues, out: Path, players: pd.DataFrame | None = N
     last.sort_values("pts_as_starter", ascending=False).to_csv(out / "values_latest.csv", index=False,
                                                                float_format="%.4f")
 
+
+
+# -- the swap test (F3: scripts/cfb_lineup_swap.py) ----------------------------------------------------
+
+SWAPS = ("best", "worst", "replacement", "out")
+
+
+def regulars(fit: pd.DataFrame, min_plays: float) -> dict[str, int]:
+    """The best and worst regular quarterback of a weekly fit (``player_id, plays, value_play``): the
+    highest and lowest value among those with at least ``min_plays`` weighted plays in the window."""
+    f = fit[fit.plays >= min_plays].sort_values(["value_play", "player_id"])
+    if f.empty:
+        return {}
+    return {"best": int(f.player_id.iloc[-1]), "worst": int(f.player_id.iloc[0])}
+
+
+def backup_of(past_starters, starter, n: int = 12):
+    """The team's backup: its most frequent *other* starter among the last ``n`` known starters (ties:
+    the more recent), or None when it has had no other starter (a replacement-level player then)."""
+    counts: dict = {}
+    for i, q in enumerate(list(past_starters)[-n:]):
+        if q != starter:
+            c, _ = counts.get(q, (0, 0))
+            counts[q] = (c + 1, i)
+    return max(counts, key=counts.get) if counts else None
+
+
+def swap_delta(kind: str, starter, vp: dict, refs: dict, backup, mult: float) -> float | None:
+    """The change in a team-game's starting-QB value (points per game) when its projected ``starter``
+    is replaced by the swap ``kind`` (``best`` / ``worst`` regular, a ``replacement``-level player, or
+    ``out``: the ``backup`` plays). All three ``_pv_*`` columns move by this amount, because the
+    previous game's starter and the recent starters it is compared with stay as they were. None when
+    the swap doesn't apply (no reference regular)."""
+    if kind == "replacement":
+        new = 0.0
+    elif kind == "out":
+        new = vp.get(backup, 0.0) if backup is not None else 0.0
+    elif kind in refs:
+        new = vp.get(refs[kind], 0.0)
+    else:
+        return None
+    return float(new - vp.get(starter, 0.0)) * mult

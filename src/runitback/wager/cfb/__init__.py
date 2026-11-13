@@ -2,12 +2,15 @@ from ..core.efficiency import cfb_efficiency
 from ..core.sport import Sport
 from .data.download import download
 from .data.features import SCHEMA
+from .lineup import LINEUP
 
 SPORT = Sport(
     name="cfb",
     schema=SCHEMA,
     download=download,
     efficiency=cfb_efficiency,
+    # the quarterback-value lineup sets (pv / pva / pvc; runitback cfb player-values, experiments/cfb)
+    lineup=LINEUP,
     gnn={"hidden_dim": 128, "out_dim": 64, "num_layers": 3},
     # ~2 seasons of games, and each game's pre-game Elo of both teams: CFB
     # schedules differ far more in strength than the NFL's. On 2021-2025
