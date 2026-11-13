@@ -368,13 +368,91 @@ the F1 play-by-play foundation (`pbp32`) and the F2 starting-quarterback values 
 changing the quarterback move the prediction the right way? Baseline: the S4d box-score production
 model (`prod`, above).
 
-**Short answer**
-- _Pending the first run of `cfb-wager-experiment.yml`; this section is filled in from its
-  `cfb-wager-results` artifact (`single/`, `e4/`, `swap/`). Nothing below the setup is a result yet._
-- **What is built and tested.** The CFB `Sport` now carries the QB lineup layout, the experiment
-  configuration, the workflow, the embedding key remap and the swap script. Unit tests cover the
-  remap, the layout, the configuration, the swap helpers and the sign constraint (a better home
-  quarterback never lowers the home margin or the total, a better away one never raises the margin).
+**Short answer** (run 43350147704 of `cfb-wager-experiment.yml`, 4,151 moneyline / 4,103 spread / 4,122
+total games, 2021–2025)
+- **`pbp32_qb` passes the bar on all three markets, and so does `pbp32`.** Against `prod` with 4
+  seeds each (`_e4` vs `_e4`), every paired Brier difference is within ±0.0003 and its 95% CI
+  includes 0.
+- **Neither is better than `prod`, though.** The foundation and the QB terms are at best a wash
+  here. Every model still trails the market's moneyline Brier by about 0.008.
+- **Swap test passes.** Changing the home team's projected starter moves margin, win probability and
+  total the right way in **all 932 games of 2025, for all four changes**, by about 0.57 margin
+  points per point of QB value.
+- **Where the QB changed, no measurable gain either.** On the 1,114 games where the QB-change term
+  moved, `pbp32_qb_e4` vs `prod_e4` is +0.0012 ± 0.0028 on moneyline. The NFL's QB-change gain
+  (−0.0108 ± 0.0106) is not reproduced here, but this CI is too wide to rule it in or out.
+- **The last two seasons lean slightly worse.** 2024–2025 `pbp32` single-seed moneyline Δ Brier is
+  +0.0032 / +0.0035 (4 seeds: −0.0003 / +0.0023); no season is significant alone.
+
+## Wager performance
+
+Paired Brier difference against `prod` (negative is better), ± the 95% CI half-width. `prod`'s own
+Brier is in the first row. Seed noise from a reseeded baseline is about ±0.002, so promotion
+decisions use the 4-seed versions.
+
+**4 seeds each, against `prod_e4`** (`e4/report.md`):
+
+| arm | moneyline | spread (cover) | total (over) | passes | margin RMSE |
+|---|---|---|---|---|---|
+| prod_e4 | 0.1660 | 0.2660 | 0.2531 | — | 16.26 |
+| pbp32_e4 | −0.0001 ± 0.0012 | +0.0001 ± 0.0017 | +0.0000 ± 0.0014 | yes | 16.25 |
+| **pbp32_qb_e4** | **+0.0002 ± 0.0013** | **+0.0001 ± 0.0018** | **−0.0003 ± 0.0012** | **yes** | 16.26 |
+| prod_qb_e4 | +0.0002 ± 0.0008 | −0.0000 ± 0.0011 | +0.0002 ± 0.0006 | yes | 16.25 |
+
+`pbp32_qb_e4` against `pbp32_e4` (what the QB terms add to the foundation): +0.0003 ± 0.0009 /
++0.0000 ± 0.0013 / −0.0003 ± 0.0007 (`e4/report_vs_pbp32.md`).
+
+**One seed each, against `prod`** (`single/report.md`):
+
+| arm | moneyline | spread (cover) | total (over) | passes | margin RMSE |
+|---|---|---|---|---|---|
+| prod | 0.1669 | 0.2670 | 0.2538 | — | 16.33 |
+| pbp32 | +0.0003 ± 0.0018 | +0.0009 ± 0.0025 | +0.0008 ± 0.0020 | yes | 16.37 |
+| pbp32_qb | +0.0004 ± 0.0019 | +0.0008 ± 0.0026 | +0.0003 ± 0.0019 | yes | 16.38 |
+
+Moneyline Δ Brier by season, 4 seeds (`e4/ablation.md`):
+
+| season | pbp32_e4 | pbp32_qb_e4 | prod_qb_e4 |
+|---|---|---|---|
+| 2021 | −0.0002 | +0.0001 | +0.0001 |
+| 2022 | −0.0008 | −0.0003 | +0.0001 |
+| 2023 | −0.0011 | +0.0001 | +0.0010 |
+| 2024 | −0.0003 | −0.0003 | −0.0004 |
+| 2025 | +0.0023 | +0.0018 | +0.0001 |
+
+For context, the Vegas moneyline Brier on the same 4,479 games is 0.1616; `prod_e4` is +0.0084 ± 0.0027
+behind it.
+
+- **The embeddings add nothing measurable.** `pbp32_e4` is level with `prod_e4` on every market and
+  the margin RMSE is the same (16.25 vs 16.26). The NFL's `pbp32` was also within noise of `prod`
+  (−0.0012 / −0.0025 / −0.0007), slightly ahead; here it is not. 2025 is the one season that goes
+  clearly the wrong way (+0.0023); a single season's CI includes 0, so this is a thing to watch, not a finding.
+- **The QB terms add nothing measurable either**, with or without the foundation. A likely reason is
+  the projection: the previous game's starter is right in 81% of team-games, and where it is wrong
+  the history has usually already absorbed the change (F2 measured only 0.33 ± 0.20 margin points
+  per point of `_pv_2`). The NFL's depth charts and injury reports are not available for college.
+- **QB-moved subsets** (`e4/subsets.md`; the file labels them `rotation_moved` and `steady`, the
+  NBA's wording): the arms are within noise of `prod_e4` on both. On the 1,114 moneyline games where
+  the QB-change term moved, `pbp32_qb_e4` is +0.0012 ± 0.0028; on spread −0.0014 ± 0.0042 and total
+  −0.0009 ± 0.0022.
+
+## Swap test (2025, `pbp32_qb_e4` fit on 2021–2024)
+
+932 games, one change to the home team's projected starting quarterback
+(`swap/swap_2025.md`). Δ value is in points per game over replacement.
+
+| change | quarterback | Δ value | Δ home margin | Δ home win | Δ total | right way |
+|---|---|---|---|---|---|---|
+| best regular | Dillon Gabriel | +4.60 | +2.62 ± 0.09 | +0.047 ± 0.002 | +0.48 ± 0.02 | 100.0% |
+| worst regular | Austin Smith | −3.19 | −1.82 ± 0.09 | −0.033 ± 0.002 | −0.33 ± 0.02 | 100.0% |
+| replacement level | | −6.96 | −3.96 ± 0.09 | −0.072 ± 0.002 | −0.73 ± 0.02 | 100.0% |
+| out (the backup plays) | | −2.18 | −1.24 ± 0.16 | −0.024 ± 0.003 | −0.23 ± 0.03 | 100.0% |
+
+**Every change moves the prediction the right way in every game.** The slope is 0.57 margin points
+per point of value (the NFL's `pvc` learned 0.58), and 0.10 total points per point. That is by
+construction (the additive term is sign-constrained), so the test checks the plumbing: the right
+column, sign and scale. It is smaller than F2's whole-game relationship (1.4 margin points per
+point of surprise).
 
 ## Arms (`wager.yaml`, 2021–2025 walk-forward)
 
@@ -403,7 +481,7 @@ favors the arm, on each market; and the swap test below passes.
   football, so this stand-in is right in 81% of team-games (41% of season openers; F2 above). The
   actual starter is never a feature.
 - **QB-moved subsets.** `e4/subsets.md` scores the arms on the games where the QB-change term moved
-  most (`scripts/lineup_report.py --pv`).
+  (`scripts/lineup_report.py --pv`).
 
 ### Swap test (QB only)
 
