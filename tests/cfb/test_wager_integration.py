@@ -160,3 +160,10 @@ def test_qb_change_moves_margin_and_total_the_right_way():
         assert (mh >= m0 - 1e-6).all() and (th >= t0 - 1e-6).all()      # better home QB: margin and total up
         assert (ma <= m0 + 1e-6).all() and (ta >= t0 - 1e-6).all()      # better away QB: margin down, total up
         assert (mh > m0).any() or (m0 == mh).all()
+
+
+def test_upcoming_games_counts_games_without_an_actual_starter():
+    st = pd.DataFrame({"game_id": ["1", "1", "2", "2", "3"],
+                       "starter": pd.array([5, 6, None, None, 7], dtype="Int64")})
+    gv = pv.GameValues(pv=pd.DataFrame(), starters=st, usage={}, fits={}, latest=pd.DataFrame())
+    assert pv.upcoming_games(gv) == 1

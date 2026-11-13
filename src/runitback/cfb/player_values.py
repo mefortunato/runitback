@@ -277,6 +277,12 @@ def game_table(plays: pd.DataFrame, tg: pd.DataFrame, games: pd.DataFrame, jobs:
     return GameValues(pv, st, usage, fits, fits[weeks[-1]])
 
 
+def upcoming_games(gv: GameValues) -> int:
+    """Games with a projected starter and no actual one yet (not played)."""
+    st = gv.starters
+    return int(st.starter.isna().groupby(st.game_id).all().sum())
+
+
 def players_table(box: pd.DataFrame) -> pd.DataFrame:
     """``player_id, name, team_id`` (the player's latest team) from the player box scores."""
     b = box.dropna(subset=["athlete_id"]).assign(player_id=lambda d: pd.to_numeric(d.athlete_id, errors="coerce"))

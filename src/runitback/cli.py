@@ -359,8 +359,8 @@ def nba_player_values(out: Path = typer.Option(Path("player_values/nba"), help="
     if gv.lineups is not None:
         gv.lineups = pv.to_wager_teams(gv.lineups, raw, seasons)
     pv.write_game_table(gv, out, players)
-    n_up = 0 if gv.lineups is None else gv.lineups.game_id.nunique()
-    typer.echo(f"{len(gv.pv)} team-games ({n_up} upcoming games), {len(gv.fits)} weekly fits -> {out}")
+    typer.echo(f"{len(gv.pv)} team-games ({pv.upcoming_games(gv)} upcoming games), "
+               f"{len(gv.fits)} weekly fits -> {out}")
 
 
 @nba.command("preprocess")
@@ -618,8 +618,8 @@ def nhl_player_values(out: Path = typer.Option(Path("player_values/nhl"), help="
         act = pv.game_table(seg, shots, games, players, first_season, lineups=pv.from_projected(proj, "actual"),
                             fitted=gv)
         pv.to_wager_teams(act.pv).to_parquet(out / "pv_actual.parquet", index=False)
-    n_up = 0 if gv.lineups is None else gv.lineups.game_id.nunique()
-    typer.echo(f"{len(gv.pv)} team-games ({n_up} upcoming games), {len(gv.fits)} weekly fits -> {out}")
+    typer.echo(f"{len(gv.pv)} team-games ({pv.upcoming_games(gv)} upcoming games), "
+               f"{len(gv.fits)} weekly fits -> {out}")
 
 
 def _write_result(res, out: Path | None, scores: bool) -> None:
@@ -715,8 +715,8 @@ def mlb_player_values(out: Path = typer.Option(Path("player_values/mlb"), help="
     keys = team_keys(statsapi.default_client().get("/v1/teams", sportId=1)["teams"])
     gv.pv = pv.to_wager_keys(gv.pv, keys)
     pv.write_game_table(gv, out, tb.players)
-    n_up = 0 if gv.lineups is None else gv.lineups.game_id.nunique()
-    typer.echo(f"{len(gv.pv)} team-games ({n_up} upcoming games), {len(gv.fits)} weekly fits -> {out}")
+    typer.echo(f"{len(gv.pv)} team-games ({pv.upcoming_games(gv)} upcoming games), "
+               f"{len(gv.fits)} weekly fits -> {out}")
 
 
 @mlb.command("probables")
@@ -790,8 +790,8 @@ def cfb_player_values(out: Path = typer.Option(Path("player_values/cfb"), help="
     games = pv.schedule_team_games(schedule, game_days(schedule), first_season)
     gv = pv.game_table(plays, tg[tg.season.isin(seasons)], games, jobs or os.cpu_count() or 1, rule=rule)
     pv.write_game_table(gv, out, pd.read_parquet(proc / "players.parquet"))
-    n_up = 0 if gv.lineups is None else gv.lineups.game_id.nunique()
-    typer.echo(f"{len(gv.pv)} team-games ({n_up} upcoming games), {len(gv.fits)} weekly fits -> {out}")
+    typer.echo(f"{len(gv.pv)} team-games ({pv.upcoming_games(gv)} upcoming games), "
+               f"{len(gv.fits)} weekly fits -> {out}")
 
 
 @cfb.command("preprocess")
