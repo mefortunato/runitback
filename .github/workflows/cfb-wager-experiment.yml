@@ -16,7 +16,8 @@
 # ESPN refuses a runner after a burst of odds requests, so each season's lines are fetched by its own
 # job; if one is refused, "Re-run failed jobs".
 #
-# Runs when this file or experiments/cfb/wager.yaml changes on a claude/ branch, or by hand.
+# Runs when this file or experiments/cfb/wager.yaml changes on a claude/ branch, or by hand. The report
+# job's step summary has every table; experiments/cfb/README.md (F3) is written up from them.
 name: CFB wager experiment
 
 on:
