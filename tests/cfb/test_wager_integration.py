@@ -167,3 +167,24 @@ def test_upcoming_games_counts_games_without_an_actual_starter():
                        "starter": pd.array([5, 6, None, None, 7], dtype="Int64")})
     gv = pv.GameValues(pv=pd.DataFrame(), starters=st, usage={}, fits={}, latest=pd.DataFrame())
     assert pv.upcoming_games(gv) == 1
+
+
+def test_pbp32_qb_is_the_production_model_only_when_both_variables_are_set(tmp_path, monkeypatch):
+    import importlib
+
+    import runitback.wager.cfb as cfb
+    try:
+        for name in ("RUNITBACK_CFB_FOUNDATION", "RUNITBACK_CFB_PLAYER_VALUES"):
+            monkeypatch.delenv(name, raising=False)
+        t = importlib.reload(cfb).SPORT.transformer
+        assert "pbp" not in t and "lineup" not in t and "ensemble" not in t
+        monkeypatch.setenv("RUNITBACK_CFB_FOUNDATION", f"{tmp_path}/folds/")        # one alone: still off
+        assert "pbp" not in importlib.reload(cfb).SPORT.transformer
+        monkeypatch.setenv("RUNITBACK_CFB_PLAYER_VALUES", f"{tmp_path}/pv/")
+        t = importlib.reload(cfb).SPORT.transformer
+        assert t["pbp"] == f"{tmp_path}/folds/fold{{season}}/pbp_32_wager.parquet" and t["pbp_dim"] == 32
+        assert t["lineup"] == f"{tmp_path}/pv/pv.parquet" and t["lineup_set"] == "pvc" and t["ensemble"] == 4
+        assert t["history"] == 28 and t["market_tokens"] and t["efficiency"]        # prod's settings stay
+    finally:
+        monkeypatch.undo()
+        importlib.reload(cfb)

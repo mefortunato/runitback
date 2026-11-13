@@ -436,6 +436,23 @@ behind it.
   the QB-change term moved, `pbp32_qb_e4` is +0.0012 ± 0.0028; on spread −0.0014 ± 0.0042 and total
   −0.0009 ± 0.0022.
 
+## Decision: `pbp32_qb` is the CFB model when switched on
+
+`pbp32_qb` (4 seeds) is registered as the CFB production model behind two opt-in variables, as the
+NBA's N5 did. It passes the bar (non-inferior on all three markets) and the swap test, so it is
+eligible, though it is not measurably better than `prod`; the gain is that a quarterback change now
+moves the prediction the right way, and the foundation and QB terms are in place for better
+projections later (a posted depth chart, CollegeFootballData rosters and the portal).
+
+| variable | value |
+|---|---|
+| `RUNITBACK_CFB_FOUNDATION` | the fold directory `runitback cfb foundation` keeps, after `runitback cfb wager-embeddings` has keyed it (`fold<S>/pbp_32_wager.parquet`) |
+| `RUNITBACK_CFB_PLAYER_VALUES` | the directory `runitback cfb player-values` writes (`pv.parquet`) |
+
+Both must be set: with one or none, the CFB model is `prod`, unchanged. Nothing in the Train / Refresh
+workflows or the deploy sets them yet; building the folds, the key remap and `pv.parquet` there, and
+setting the variables, is work package A2 (#55).
+
 ## Swap test (2025, `pbp32_qb_e4` fit on 2021–2024)
 
 932 games, one change to the home team's projected starting quarterback
