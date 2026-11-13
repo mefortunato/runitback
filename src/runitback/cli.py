@@ -359,8 +359,8 @@ def nba_player_values(out: Path = typer.Option(Path("player_values/nba"), help="
     if gv.lineups is not None:
         gv.lineups = pv.to_wager_teams(gv.lineups, raw, seasons)
     pv.write_game_table(gv, out, players)
-    n_up = 0 if gv.lineups is None else gv.lineups.game_id.nunique()
-    typer.echo(f"{len(gv.pv)} team-games ({n_up} upcoming games), {len(gv.fits)} weekly fits -> {out}")
+    typer.echo(f"{len(gv.pv)} team-games ({pv.upcoming_games(gv)} upcoming games), "
+               f"{len(gv.fits)} weekly fits -> {out}")
 
 
 @nba.command("preprocess")
@@ -618,8 +618,8 @@ def nhl_player_values(out: Path = typer.Option(Path("player_values/nhl"), help="
         act = pv.game_table(seg, shots, games, players, first_season, lineups=pv.from_projected(proj, "actual"),
                             fitted=gv)
         pv.to_wager_teams(act.pv).to_parquet(out / "pv_actual.parquet", index=False)
-    n_up = 0 if gv.lineups is None else gv.lineups.game_id.nunique()
-    typer.echo(f"{len(gv.pv)} team-games ({n_up} upcoming games), {len(gv.fits)} weekly fits -> {out}")
+    typer.echo(f"{len(gv.pv)} team-games ({pv.upcoming_games(gv)} upcoming games), "
+               f"{len(gv.fits)} weekly fits -> {out}")
 
 
 def _write_result(res, out: Path | None, scores: bool) -> None:
@@ -715,8 +715,8 @@ def mlb_player_values(out: Path = typer.Option(Path("player_values/mlb"), help="
     keys = team_keys(statsapi.default_client().get("/v1/teams", sportId=1)["teams"])
     gv.pv = pv.to_wager_keys(gv.pv, keys)
     pv.write_game_table(gv, out, tb.players)
-    n_up = 0 if gv.lineups is None else gv.lineups.game_id.nunique()
-    typer.echo(f"{len(gv.pv)} team-games ({n_up} upcoming games), {len(gv.fits)} weekly fits -> {out}")
+    typer.echo(f"{len(gv.pv)} team-games ({pv.upcoming_games(gv)} upcoming games), "
+               f"{len(gv.fits)} weekly fits -> {out}")
 
 
 @mlb.command("probables")
@@ -790,8 +790,8 @@ def cfb_player_values(out: Path = typer.Option(Path("player_values/cfb"), help="
     games = pv.schedule_team_games(schedule, game_days(schedule), first_season)
     gv = pv.game_table(plays, tg[tg.season.isin(seasons)], games, jobs or os.cpu_count() or 1, rule=rule)
     pv.write_game_table(gv, out, pd.read_parquet(proc / "players.parquet"))
-    n_up = 0 if gv.lineups is None else gv.lineups.game_id.nunique()
-    typer.echo(f"{len(gv.pv)} team-games ({n_up} upcoming games), {len(gv.fits)} weekly fits -> {out}")
+    typer.echo(f"{len(gv.pv)} team-games ({pv.upcoming_games(gv)} upcoming games), "
+               f"{len(gv.fits)} weekly fits -> {out}")
 
 
 @cfb.command("preprocess")
@@ -839,6 +839,20 @@ def cfb_foundation(root: Path = typer.Option(Path("foundation/cfb"), help="fold 
         season = default_seasons(CFB, data)
     for s, what in prepare(root, data, season, train=train, threads=threads or None).items():
         typer.echo(f"fold{s}: {what}")
+
+
+@cfb.command("wager-embeddings")
+def cfb_wager_embeddings(root: Path = typer.Option(Path("foundation/cfb"), help="fold directory"),
+                         season: list[int] = typer.Option(..., help="fold (test season); repeat for several"),
+                         start: int = typer.Option(2004, help="first season of the schedule"), end: int = 2026):
+    """Key each fold's pbp32 embeddings as the CFB wager model keys its teams (school names, FCS pooled):
+    <root>/fold<S>/pbp_32_wager.parquet. Needs `runitback cfb download` (the schedule)."""
+    _log()
+    from .cfb.data.download import load
+    from .cfb.foundation import write_wager_keys
+    schedule = load("schedule", list(range(start, end + 1)), _cfb_data() / "raw")
+    for s, n in write_wager_keys(root, season, schedule).items():
+        typer.echo(f"fold{s}: {n} team-games")
 
 
 if __name__ == "__main__":
