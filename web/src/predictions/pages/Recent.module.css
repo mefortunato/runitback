@@ -103,3 +103,28 @@
 	grid-template-columns: repeat(auto-fill, minmax(min(100%, 480px), 1fr));
 	gap: 16px;
 }
+
+.toolbar {
+	display: flex;
+	align-items: center;
+	gap: 8px 12px;
+	flex-wrap: wrap;
+	margin-bottom: 16px;
+}
+.toolbar .sort {
+	margin-bottom: 0;
+}
+.chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 10px;
+	border-radius: 999px;
+	font-size: 0.85rem;
+}
+.chip .x {
+	color: var(--muted);
+}
+.found {
+	margin: -8px 0 12px;
+}

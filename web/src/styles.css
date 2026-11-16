@@ -205,6 +205,13 @@ a { color: var(--accent); }
 .site-header nav { display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .site-header nav::-webkit-scrollbar { display: none; }
 .site-header nav a { flex: none; }
+/* the search sits between the sport tabs and the theme toggle; on a phone it takes its own row */
+.header-search { flex: 1 1 160px; min-width: 140px; max-width: 260px; }
+@media (max-width: 900px) {
+  .header-actions { flex-wrap: wrap; flex: 1 1 100%; }
+  .header-actions nav { flex: 1 1 0; }
+  .header-search { order: 1; flex: 1 0 100%; max-width: none; }
+}
 .theme-toggle { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0;
   color: var(--text-2); }
 .theme-toggle:hover { color: var(--text); }

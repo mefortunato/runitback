@@ -5,6 +5,7 @@ import NflApp from "./nfl/NflApp";
 import { Link, usePath } from "./router";
 import { ThemeToggle } from "./theme";
 import SportPage from "./predictions/SportPage";
+import GlobalSearch from "./predictions/components/GlobalSearch";
 import { api } from "./predictions/lib/api";
 import { useData } from "./predictions/useData";
 import { navSports, sportById } from "./sports";
@@ -53,6 +54,7 @@ export default function App() {
         <Link to="/" className="brand">Run It Back</Link>
         <div className="header-actions">
           <nav aria-label="Sports">{tab("/", "Home")}{nav.map((s) => tab(`/${s.id}`, s.label))}</nav>
+          <div className="header-search"><GlobalSearch current={current?.id} /></div>
           <ThemeToggle />
         </div>
       </header>

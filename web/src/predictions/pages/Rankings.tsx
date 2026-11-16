@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { dateText, seasonText, signed } from "../lib/format";
 import { filterOptions, matchesFilter, MAX_PINS, playoffRanks, rankAt, reconcilePins, togglePin, type Pins, type TeamFilter } from "../lib/rankings";
 import type { PlayoffStage, Rankings as RankingsData, SportInfo } from "../lib/types";
 import RankingsChart from "../components/RankingsChart";
 import TeamBadge from "../components/TeamBadge";
+import { useTeamPick } from "../headerSearch";
 import { useData } from "../useData";
 import { cx } from "../cx";
 import s from "./Rankings.module.css";
@@ -40,13 +41,26 @@ function RankingsView({ info, rankings }: { info: SportInfo; rankings: RankingsD
   // Every season or filter change starts from that view's top teams; teams highlighted by hand
   // last until the next change.
   const viewKey = `${season?.season}|${active.conference ?? ""}|${active.division ?? ""}|${active.playoffs ? 1 : 0}`;
+  // a team picked in the header search while the filter hid it, to highlight once it shows again
+  const queued = useRef<string | null>(null);
   useEffect(() => {
     if (!season) return;
     const top = rankAt(season, season.dates.length - 1).filter((r) => isVisible(r.team.team));
-    setPins(reconcilePins({}, top));
+    let next = reconcilePins({}, top);
+    if (queued.current && !(queued.current in next)) next = togglePin(next, queued.current);
+    queued.current = null;
+    setPins(next);
     setIndex(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewKey]);
+  // a team picked in the header search: highlighted, after showing every team again if the
+  // filter hides it
+  useTeamPick(info.sport, "Highlight", ({ team }) => {
+    if (!isVisible(team)) {
+      queued.current = team;
+      setFilter({});
+    } else setPins((p) => (team in p ? p : togglePin(p, team)));
+  });
 
   if (!season) return <div><h1>Power rankings</h1><div className="card">No rankings yet.</div></div>;
   const shown = index ?? season.dates.length - 1;
@@ -110,7 +124,7 @@ function RankingsView({ info, rankings }: { info: SportInfo; rankings: RankingsD
             </button>
           ))}
           <span className="muted small">
-            Gray lines are the other {filterLabel ? `${filterLabel} ` : ""}teams. Click a line or a row to highlight it (up to {MAX_PINS}).
+            Gray lines are the other {filterLabel ? `${filterLabel} ` : ""}teams. Search above, or click a line or a row, to highlight a team (up to {MAX_PINS}).
           </span>
         </div>
         <RankingsChart season={season} visible={visible} dateLabel={info.date_label} pins={pins} index={index} onIndex={setIndex} onToggle={toggle} />

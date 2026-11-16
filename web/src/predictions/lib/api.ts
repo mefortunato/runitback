@@ -21,9 +21,15 @@ import type {
 	TeamMap,
 	RecentFile,
 	SportInfo,
-	Team,
-	Upcoming
+	Team
 } from './types';
+
+/** A team's next game date. */
+export interface NextGame {
+	team: Team;
+	season: number | null;
+	date: number;
+}
 
 export interface ChallengeEntry {
 	game: ChallengeGame;
@@ -134,11 +140,28 @@ function recentGames(name: string): Promise<Record<string, GameDetail>> {
 export const api = {
 	sports: () => load<SportInfo[]>('sports.json'),
 	sport: (name: string) => sport(name),
-	teams: async (name: string) => {
-		const { default: week } = await load<{ default: Upcoming }>(`${name}/upcoming.json`);
+	/** The teams with games still to come, each with the date of its next. */
+	nextGames: async (name: string) => {
+		const file = await load<UpcomingFile>(`${name}/upcoming.json`);
+		const first = currentUpcoming(file);
+		const next = new Map<string, NextGame>();
+		for (const date of first.dates)
+			for (const g of currentUpcoming(file, first.season, date).games)
+				for (const team of [g.home, g.away])
+					if (!next.has(team.team)) next.set(team.team, { team, season: first.season, date });
+		return next;
+	},
+	/** Every team of a sport's latest season, and the next game date of those with games coming up
+	 * (for the header search, from files its pages load anyway). */
+	searchTeams: async (name: string) => {
+		const [rankings, next] = await Promise.all([
+			load<Rankings>(`${name}/rankings.json`).catch(() => null),
+			api.nextGames(name).catch(() => new Map<string, NextGame>())
+		]);
 		const teams = new Map<string, Team>();
-		for (const g of week.games) for (const t of [g.home, g.away]) teams.set(t.team, t);
-		return [...teams.values()];
+		for (const t of rankings?.seasons[0]?.teams ?? []) teams.set(t.team.team, t.team);
+		for (const { team } of next.values()) if (!teams.has(team.team)) teams.set(team.team, team);
+		return { teams: [...teams.values()], next };
 	},
 	upcoming: async (name: string, season?: number | null, date?: number | null) =>
 		currentUpcoming(await load<UpcomingFile>(`${name}/upcoming.json`), season, date),
