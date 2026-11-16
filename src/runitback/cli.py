@@ -935,9 +935,18 @@ def college_player_values(gender: str = GENDER_OPT,
     players = pd.read_parquet(proc / "players.parquet")
     poss = None
     if g == "cbb" and apm and (d / "cbbd").exists():
-        plays = cl.load_days(d / "cbbd")
-        if len(plays):
-            poss, stats = cl.season_possessions(plays, pg)
+        # one season at a time: a season's cached days are about 1.5 GB of plays in memory, all of
+        # them several times that (a game never spans two seasons, so the result is the same)
+        parts, stats = [], {}
+        for s in sorted(pg.season.unique()):
+            plays = cl.load_days(d / "cbbd", cl.season_days(pg, int(s)))
+            if len(plays):
+                p, st = cl.season_possessions(plays, pg)
+                parts.append(p)
+                stats[int(s)] = st
+            del plays
+        if parts:
+            poss = pd.concat(parts, ignore_index=True)
             poss.to_parquet(proc / "possessions.parquet", index=False)
             typer.echo(json.dumps(stats))
     gv = pv.build(pg, tg, proj, first_season or pv.FIRST_SEASON[g], poss, players, apm_from=cl.FIRST_SEASON)

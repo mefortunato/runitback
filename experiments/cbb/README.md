@@ -32,11 +32,22 @@ toward those box values. `experiments/wcbb/` points here.
   right, with a minutes error of 5.1–5.3 per player. Removing the players who didn't play is a leak:
   ESPN gives no reason for college DNPs (see Setup). Without the removal (the last three games'
   players) these numbers are 74–75%, 81–83% and 6.8–7.0.
-- **Blocked: men's adjusted plus-minus has not been run on real seasons.** The code, tests and the
-  CBBD fetch exist and run end to end on one cached day (2026-11-08). Backfilling 2024–2026 needs
-  about 450 CBBD calls (one `/plays/date` per game day). The key has **233 calls left this month**.
-  Until a larger limit or a persistent cache is agreed (see Next steps), the men's values are the
-  box-score values in every season. That matches C1's plan for 2022–2023, and 2024–2026 are pending.
+- **Men's adjusted plus-minus (2023-24 on) improves the lineup value's fit to the margin in every
+  season, mostly in the level.** Backfilled from CBBD (479 game days, about 470 calls; 2.89M
+  possessions in 18,200 games) and fit weekly on earlier possessions only, at the untuned defaults
+  (penalty 5,000, own coefficient from 250 minutes):
+
+  | games | n | corr with margin, box / + adjusted plus-minus | margin per change point, box / + adjusted plus-minus |
+  |---|---|---|---|
+  | 2024 | 6,241 | 0.603 / 0.615 | 0.10 / 0.08 (± 0.11) |
+  | 2025 | 6,290 | 0.635 / 0.668 | 0.07 / 0.02 (± 0.09) |
+  | 2026 | 6,300 | 0.642 / 0.675 | 0.15 / 0.07 (± 0.09) |
+  | 2026 from January | 3,554 | 0.461 / 0.511 | 0.28 / 0.20 (± 0.19) |
+  | 2027 (so far) | 860 | 0.601 / 0.617 | 0.31 / 0.29 (± 0.13) |
+
+  It sharpens the level, not the change columns: the within-season change coefficient does not rise.
+  The penalty and replacement minutes have not been tuned on held-out seasons yet (Next steps).
+  Seasons before 2023-24 and women's use the box-score values.
 
 ## Reproducing
 
@@ -252,17 +263,11 @@ replacement; players of the last two seasons with 600+ minutes in the window):
 
 ## Next steps
 
-1. **Unblock men's adjusted plus-minus (needs a decision).** Either:
-   - a CBBD key with a larger monthly limit as the `CBBD_API_KEY` secret, about 450 calls per
-     2024–2026 backfill;
-   - an Actions cache of `data/cbb/cbbd` (raw plays, refetched only for new days), as an exception to
-     "rebuild from source";
-   - or ESPN substitutions for men's lineups. They are free, but only exist from February 2025, so
-     adjusted plus-minus would cover the 2026 test season only.
-
-   Then run `runitback college cbbd` and `player-values`. Tune the ridge penalty and replacement
-   minutes on the next season's possessions, as N2 did. Report the 2024–2026 effect separately, as
-   C1 asked.
+1. **Tune men's adjusted plus-minus.** Tune the ridge penalty and replacement minutes on the next
+   season's possessions, as N2 did; the table above uses the defaults. Re-run the report when the
+   2026-27 season has more games. The CBBD cache (`data/cbb/cbbd`, about 220 MB) is rebuilt in each
+   run: a full backfill is about 470 calls of a key shared with the CFB pipeline, so a workflow run
+   that sets `cbbd: true` should be a deliberate choice.
 2. **C4:** register `LINEUP` on both college `Sport`s, join `pv.parquet` on `(game_id, team_id)`,
    and run `prod` / `pbp32` / `pbp32_pvc` with 4 seeds plus the swap test.
 3. **Better values for changes.** Tune the box-value shrinkage on how well within-season changes
