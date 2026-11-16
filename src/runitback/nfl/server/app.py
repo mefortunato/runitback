@@ -23,6 +23,7 @@ from ..vocab import PHASES, TEAMS
 
 router = APIRouter()
 _sim: Simulator | None = None
+_sim_lock = threading.Lock()
 _model_scheduler = MODEL_SCHEDULER
 SESSIONS: dict[str, "Session"] = {}
 MAX_SESSIONS = 500
@@ -35,10 +36,12 @@ MAX_SEASON_JOBS = 8
 def get_sim() -> Simulator:
     global _sim
     if _sim is None:
-        ckpt = checkpoint_path()
-        if not ckpt.exists():
-            raise HTTPException(503, f"model checkpoint not found: {ckpt} (download one with: runitback nfl fetch-model)")
-        _sim = Simulator.load(ckpt)
+        with _sim_lock:  # the startup warm-up and a request must not load the checkpoint twice
+            if _sim is None:
+                ckpt = checkpoint_path()
+                if not ckpt.exists():
+                    raise HTTPException(503, f"model checkpoint not found: {ckpt} (download one with: runitback nfl fetch-model)")
+                _sim = Simulator.load(ckpt)
     return _sim
 
 

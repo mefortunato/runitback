@@ -64,3 +64,29 @@ def test_sports_listing_matches_the_exports_and_the_web_app(tmp_path, monkeypatc
     entries = re.findall(r'\{ id: "(\w+)", label: "(\w+)", generator: (true|false) \}', web)
     assert [(i, g == "true") for i, _, g in entries] == [(s["id"], s["generator"]) for s in listed]
     assert [label for _, label, _ in entries] == [s["name"] for s in listed]
+
+
+def test_importing_the_server_does_not_import_torch_or_pandas():
+    """Cold starts: the port opens before the sport APIs' heavy imports (they load on first use)."""
+    import subprocess
+    import sys
+
+    code = ("import sys, runitback.server; "
+            "print(sorted(m for m in ('torch', 'pandas', 'pyarrow') if m in sys.modules))")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "[]"
+
+
+def test_startup_warm_up_loads_the_generators_that_are_present(tmp_path, monkeypatch):
+    from runitback.nba.server import app as nba_server
+    from runitback.nfl.server import app as nfl_server
+
+    loaded = []
+    monkeypatch.setattr(nfl_server, "get_sim", lambda: loaded.append("nfl"))
+    monkeypatch.setattr(nba_server, "get_sim", lambda: loaded.append("nba"))
+    c = _app(tmp_path, monkeypatch)
+    import runitback.server as server
+    monkeypatch.setattr(server, "_generator_loaded", lambda sport: sport == "nfl")
+    server.warm_up()
+    assert loaded == ["nfl"] and server._api is not None
+    assert c.get("/api/nfl/nope").status_code == 404 and c.get("/api/sports").status_code == 200

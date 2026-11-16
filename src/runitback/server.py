@@ -7,23 +7,78 @@ JSON (`runitback-wager web export`; from $RUNITBACK_PREDICTIONS when set, so the
 refreshed without rebuilding the web app, else from the web build) and the single-page web app for
 every other path.
 Run with `runitback serve` or `uvicorn runitback.server:app`.
+
+Fast cold starts (Cloud Run scales to zero): this module imports only FastAPI, so the server listens,
+and serves the web app and /data, within about a second. The sport APIs pull in torch and pandas
+(several seconds), so they are imported on the first /api/<sport> request (:func:`get_api`), and at
+startup a background thread (:func:`warm_up`) imports them and loads the generator checkpoints so
+that request usually finds everything ready.
 """
 from __future__ import annotations
 
+import logging
 import os
+import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 
+import anyio
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .nba.server.app import router as nba_router
-from .nfl.server.app import router as nfl_router
+log = logging.getLogger(__name__)
 
-app = FastAPI(title="Run It Back", version="0.2.0")
-app.include_router(nfl_router, prefix="/api/nfl", tags=["nfl"])
-app.include_router(nba_router, prefix="/api/nba", tags=["nba"])
-app.include_router(nfl_router, prefix="/api", include_in_schema=False)  # legacy NFL paths
+_api: FastAPI | None = None
+_api_lock = threading.Lock()
+
+
+def get_api() -> FastAPI:
+    """The sport APIs, mounted under /api: built (importing torch and pandas) on first use."""
+    global _api
+    if _api is None:
+        with _api_lock:
+            if _api is None:
+                from .nba.server.app import router as nba_router
+                from .nfl.server.app import router as nfl_router
+
+                api = FastAPI(title="Run It Back API", version="0.2.0")
+                api.include_router(nfl_router, prefix="/nfl", tags=["nfl"])
+                api.include_router(nba_router, prefix="/nba", tags=["nba"])
+                api.include_router(nfl_router, include_in_schema=False)  # legacy NFL paths (/api/...)
+                _api = api
+    return _api
+
+
+def warm_up() -> None:
+    """Import the sport APIs and load every generator checkpoint that is present."""
+    try:
+        get_api()
+        from .nba.server.app import get_sim as nba_sim
+        from .nfl.server.app import get_sim as nfl_sim
+
+        for sport, get_sim in (("nfl", nfl_sim), ("nba", nba_sim)):
+            if _generator_loaded(sport):
+                get_sim()
+                log.info("warm-up: %s generator loaded", sport)
+    except Exception:  # a failed warm-up only means the first request loads (and reports) it
+        log.exception("warm-up failed")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # In the background, so the port opens (and Cloud Run's startup probe passes) at once
+    if os.environ.get("RUNITBACK_WARMUP", "1") != "0":
+        threading.Thread(target=warm_up, name="warm-up", daemon=True).start()
+    yield
+
+
+async def _lazy_api(scope, receive, send):
+    api = _api or await anyio.to_thread.run_sync(get_api)
+    await api(scope, receive, send)
+
+
+app = FastAPI(title="Run It Back", version="0.2.0", lifespan=lifespan)
 
 
 # Every sport the web app has pages for, in nav order (as runitback.wager.web.views.BUILTIN_VIEWS
@@ -60,6 +115,8 @@ def sports():
         for sport, name, generator in SPORTS
     ]}
 
+
+app.mount("/api", _lazy_api)  # after /api/sports, which stays cheap: it needs no model
 
 PREDICTIONS = os.environ.get("RUNITBACK_PREDICTIONS")
 if PREDICTIONS and Path(PREDICTIONS).is_dir():

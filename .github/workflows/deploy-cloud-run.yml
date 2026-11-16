@@ -98,5 +98,6 @@ jobs:
             --project "$GOOGLE_CLOUD_PROJECT" \
             --region "$CLOUD_RUN_REGION" \
             --max 1 \
+            --cpu-boost \
             "${predictions[@]}" \
             --quiet
