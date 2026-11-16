@@ -1057,7 +1057,11 @@ deployments keep needing a merge to `main`:
   `predictions-webdata` release asset (backtest seasons are reused through the
   `predictions-backtest-cache` release while the model is unchanged). CFB lines are ESPN's, one
   request per game, so per-season jobs fetch them into the `cfb-espn-cache` release; a first run
-  needs `max_new_seasons` 2 until every CFB season is backtested.
+  needs `max_new_seasons` 2 until every CFB season is backtested. A failed college job leaves CFB
+  out of that run's build (its published data stays) instead of stopping the NFL and NBA. The
+  release steps are `scripts/ci/release.sh` (`fetch_folds <sport>`, `fetch_asset`), which fail on a
+  `gh` error rather than treating it as "not published yet", and download into `dl/<sport>/` so two
+  sports' same-named files never meet.
 - **Refresh predictions** (`.github/workflows/refresh-predictions.yml`, daily and before each NFL
   kickoff window; NBA lines only on the daily run and manual runs, to spare the Odds API quota; CFB
   lines are ESPN's, no key or quota, on every run) downloads that release, re-downloads results and lines (The Odds API with the

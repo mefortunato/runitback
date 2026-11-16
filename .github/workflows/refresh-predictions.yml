@@ -134,29 +134,26 @@ jobs:
             --lineups data/nba/processed/projected_lineups.parquet \
             --upcoming data/nba/processed/projected_lineups_upcoming.parquet
       - name: CFB folds (embed the games played since), quarterback values, cached lines
+        # only once Train has published CFB: until then there is nothing to export, and the work
+        # (about ten minutes) would be wasted
+        if: ${{ hashFiles('webdata/cfb/meta.json') != '' }}
         run: |
+          source scripts/ci/release.sh
           end=$(python -c "import datetime as d; t=d.date.today(); print(t.year if t.month >= 9 else t.year - 1)")
           runitback cfb download --start 2004 --end "$end"
           runitback cfb preprocess --start 2004 --end "$end"
           runitback cfb players --start 2012 --end "$end"
-          # its own download directory: the NFL's folds above are named fold<season>.tar.gz too
-          mkdir -p "$RUNITBACK_CFB_FOUNDATION" cfb-folds-dl
-          # the two latest folds: the model's (the current season's, or last season's until the
-          # next Train predictions run after a new season starts)
-          for a in $(gh release view foundation-cfb --json assets -q '.assets[].name' 2>/dev/null | sort | tail -2); do
-            gh release download foundation-cfb --pattern "$a" --dir cfb-folds-dl
-            mkdir -p "$RUNITBACK_CFB_FOUNDATION/${a%.tar.gz}"
-            tar -xzf "cfb-folds-dl/$a" -C "$RUNITBACK_CFB_FOUNDATION/${a%.tar.gz}"
-          done
+          # the model's folds by season, not "the latest two": Train replaces a fold's asset while it
+          # uploads. Last season's must exist; this season's may not until Train has trained it.
+          fetch_folds cfb "$RUNITBACK_CFB_FOUNDATION" $((end - 1)) -- "$end"
           runitback cfb foundation --root "$RUNITBACK_CFB_FOUNDATION" --existing --threads $(nproc)
           seasons=""
           for d in "$RUNITBACK_CFB_FOUNDATION"/fold*; do seasons="$seasons --season ${d##*fold}"; done
           runitback cfb wager-embeddings --root "$RUNITBACK_CFB_FOUNDATION" $seasons --end "$end"
           runitback cfb player-values --start 2012 --end "$end" --jobs $(nproc) --out "$RUNITBACK_CFB_PLAYER_VALUES"
           mkdir -p data/cfb/espn_cache
-          if gh release download cfb-espn-cache --pattern espn_cache.tar.gz; then
-            tar -xzf espn_cache.tar.gz -C data/cfb/espn_cache
-          fi
+          fetch_asset cfb-espn-cache cfb-espn-cache.tar.gz dl/cfb
+          tar -xzf dl/cfb/cfb-espn-cache.tar.gz -C data/cfb/espn_cache
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
