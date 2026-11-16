@@ -1,7 +1,7 @@
 # Train the wager model (spread / moneyline / total), run its walk-forward backtest (the
 # performance page, Beat the model, past power rankings) and publish the result as the
 # `predictions-webdata` release asset that Refresh predictions exports from. Ported from
-# sportsml's Train workflow. NFL and NBA.
+# sportsml's Train workflow. NFL, NBA and CFB.
 #
 # The NFL model reads the play-by-play foundation's frozen game embeddings (experiments/nfl:
 # pbp32): one foundation model per test season ("fold", runitback.nfl.foundation), kept in the
@@ -18,6 +18,16 @@
 # the `pbp32` arms did not pass the promotion bar. Its values (`runitback nba player-values`,
 # from N1-N3) are rebuilt in the build job from the public sources; its backtest and model are
 # cached like the NFL's.
+#
+# The CFB model (experiments/cfb: pbp32_qb, 4 seeds) reads both: college play-by-play folds
+# (`runitback cfb foundation`, team-level, 54-97 minutes each on a 4-core runner, one matrix job per
+# season, kept in the `foundation-cfb` release and keyed as the wager model keys teams by
+# `runitback cfb wager-embeddings`) and starting-quarterback values (`runitback cfb player-values`).
+# Its betting lines come from ESPN's odds API, one request per game (about 12,000 for every season
+# since 2013), and ESPN refuses a runner after a burst of them: the `cfb-lines` matrix job fetches each
+# season's in its own job, and the `cfb-espn-cache` release keeps the finished games' lines (and the
+# finished seasons' schedules and box scores) for this workflow and Refresh predictions, which then
+# only request the newest games.
 #
 # Runs monthly during the season and on demand, e.g. after changing the model. Backtest
 # seasons are reused from the previous release, or from the `predictions-backtest-cache`
@@ -44,7 +54,8 @@ on:
         description: >-
           Backtest at most this many seasons that no cache has (the latest ones; 0: all). A sport's
           first build is several hours a season: run with 2 until every season is cached (the NBA
-          needs ~75 min a season, so a first run with all five does not fit in the job's limit)
+          needs ~75 min a season, so a first run with all five does not fit in the job's limit; it
+          applies to each sport's seasons alike)
         type: number
         default: 0
   schedule:
@@ -117,8 +128,159 @@ jobs:
             tar -czf "folds/$(basename "$d").tar.gz" -C "$d" model.pt pca_32.npz pbp_32.parquet
           done
           gh release upload foundation-nfl folds/fold*.tar.gz --clobber
+  # the college seasons this run works on (the NFL's `end` rule: a season is current from September)
+  cfb-plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      end: ${{ steps.plan.outputs.end }}
+      folds: ${{ steps.plan.outputs.folds }}
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - id: plan
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import datetime, json
+          t = datetime.date.today()
+          end = t.year if t.month >= 9 else t.year - 1
+          print(f"end={end}")
+          # the backtest's last 5 seasons and the current one (runitback.core.foundation.default_seasons)
+          print("folds=" + json.dumps(list(range(end - 5, end + 1))))
+          # betting lines start in 2013; earlier seasons need no odds requests
+          shards = [{"first": 2004, "last": 2012}] + [{"first": s, "last": s} for s in range(2013, end + 1)]
+          print("shards=" + json.dumps(shards))
+          PY
+  # ESPN lines, a season per job (it refuses a runner after a burst of requests): each job starts from
+  # the `cfb-espn-cache` release, so only games the cache lacks are requested
+  cfb-lines:
+    needs: cfb-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.cfb-plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - name: Fetch the cached lines
+        run: |
+          mkdir -p data/cfb/espn_cache
+          if gh release download cfb-espn-cache --pattern espn_cache.tar.gz; then
+            tar -xzf espn_cache.tar.gz -C data/cfb/espn_cache
+          fi
+      - name: Download seasons ${{ matrix.shard.first }}-${{ matrix.shard.last }}
+        run: >
+          runitback-wager cfb download --first_season ${{ matrix.shard.first }}
+          --last_season ${{ matrix.shard.last }} --cache_dir data/cfb/espn_cache
+          --output_file shard.csv
+      - name: Keep this shard's files
+        run: |
+          mkdir shard
+          for s in $(seq ${{ matrix.shard.first }} ${{ matrix.shard.last }}); do
+            cp data/cfb/espn_cache/*_$s.* shard/ 2>/dev/null || true
+          done
+          ls -la shard
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cfb-lines-${{ matrix.shard.first }}
+          path: shard
+          retention-days: 1
+          if-no-files-found: error
+  # college play-by-play, quarterback plays and values: the folds' and the build's inputs
+  cfb-data:
+    needs: cfb-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      END: ${{ needs.cfb-plan.outputs.end }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - name: Play-by-play, schedules, box scores; engine replay; quarterback plays
+        run: |
+          runitback cfb download --start 2004 --end "$END"
+          runitback cfb preprocess --start 2004 --end "$END"
+          runitback cfb players --start 2012 --end "$END"
+      - name: Quarterback values
+        run: runitback cfb player-values --start 2012 --end "$END" --jobs $(nproc) --out player_values/cfb
+      - uses: actions/upload-artifact@v4
+        with: { name: cfb-processed, path: data/cfb/processed, retention-days: 1 }
+      - uses: actions/upload-artifact@v4
+        with: { name: cfb-schedule, path: "data/cfb/raw/schedule_*.parquet", retention-days: 1 }
+      - uses: actions/upload-artifact@v4
+        with: { name: cfb-playervalues, path: player_values/cfb, retention-days: 1 }
+  # one fold per job (a new season's fold trains for 1-1.5 hours), published before the build so a
+  # build that fails or times out keeps them
+  cfb-folds:
+    needs: [cfb-plan, cfb-data]
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      END: ${{ needs.cfb-plan.outputs.end }}
+      FOLDS: foundation/cfb
+      MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
+      MLFLOW_DISABLE_AGENT_HINT: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        season: ${{ fromJSON(needs.cfb-plan.outputs.folds) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: cfb-processed, path: data/cfb/processed }
+      - uses: actions/download-artifact@v4
+        with: { name: cfb-schedule, path: data/cfb/raw }
+      - name: Fetch the fold
+        run: |
+          mkdir -p "$FOLDS/fold${{ matrix.season }}"
+          if gh release download foundation-cfb --pattern "fold${{ matrix.season }}.tar.gz" --dir folds; then
+            tar -xzf "folds/fold${{ matrix.season }}.tar.gz" -C "$FOLDS/fold${{ matrix.season }}"
+          fi
+      - name: Train the fold if it has no model, embed the games played since, key it for the wager model
+        run: |
+          runitback cfb foundation --root "$FOLDS" --season ${{ matrix.season }} --data data/cfb/processed --threads $(nproc)
+          runitback cfb wager-embeddings --root "$FOLDS" --season ${{ matrix.season }} --end "$END"
+          ls -la "$FOLDS/fold${{ matrix.season }}"
+      - name: Publish the fold
+        run: |
+          mkdir -p folds
+          gh release view foundation-cfb >/dev/null 2>&1 || gh release create foundation-cfb \
+            --title "CFB play-by-play foundation folds" --latest=false \
+            --notes "One college play-by-play model per test season, its PCA and game embeddings (runitback.cfb.foundation). Written by Train predictions." \
+            || gh release view foundation-cfb >/dev/null
+          tar -czf "folds/fold${{ matrix.season }}.tar.gz" -C "$FOLDS/fold${{ matrix.season }}" \
+            model.pt pca_32.npz pbp_32.parquet pbp_32_wager.parquet
+          gh release upload foundation-cfb "folds/fold${{ matrix.season }}.tar.gz" --clobber
   build:
-    needs: folds
+    needs: [folds, cfb-folds, cfb-lines, cfb-data]
     runs-on: ubuntu-latest
     timeout-minutes: 340
     env:
@@ -127,6 +289,9 @@ jobs:
       RUNITBACK_NFL_FOUNDATION: foundation/nfl
       RUNITBACK_NFL_PLAYER_VALUES: player_values/nfl
       RUNITBACK_NBA_PLAYER_VALUES: player_values/nba
+      # the CFB model is pbp32_qb when both are set (runitback.wager.cfb)
+      RUNITBACK_CFB_FOUNDATION: foundation/cfb
+      RUNITBACK_CFB_PLAYER_VALUES: player_values/cfb
       MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
       MLFLOW_DISABLE_AGENT_HINT: "1"
     steps:
@@ -162,6 +327,31 @@ jobs:
           runitback nba player-values --start 2015 --end 2027 --out "$RUNITBACK_NBA_PLAYER_VALUES" \
             --lineups data/nba/processed/projected_lineups.parquet \
             --upcoming data/nba/processed/projected_lineups_upcoming.parquet
+      - name: CFB foundation folds and quarterback values
+        # the folds are keyed for the wager model (pbp_32_wager.parquet); the values were built from
+        # the same play-by-play as the folds
+        run: |
+          mkdir -p "$RUNITBACK_CFB_FOUNDATION" folds
+          for a in $(gh release view foundation-cfb --json assets -q '.assets[].name'); do
+            gh release download foundation-cfb --pattern "$a" --dir folds
+            mkdir -p "$RUNITBACK_CFB_FOUNDATION/${a%.tar.gz}"
+            tar -xzf "folds/$a" -C "$RUNITBACK_CFB_FOUNDATION/${a%.tar.gz}"
+          done
+          ls "$RUNITBACK_CFB_FOUNDATION"
+      - uses: actions/download-artifact@v4
+        with: { name: cfb-playervalues, path: player_values/cfb }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "cfb-lines-*", path: data/cfb/espn_cache, merge-multiple: true }
+      - name: Publish the CFB lines cache
+        # before the build, so lines fetched here are kept even if the build fails; Refresh
+        # predictions starts from it. Only finished seasons' files and finished games' lines are in it.
+        run: |
+          mkdir -p data/cfb/espn_cache
+          tar -czf espn_cache.tar.gz -C data/cfb/espn_cache .
+          gh release view cfb-espn-cache >/dev/null 2>&1 || gh release create cfb-espn-cache \
+            --title "CFB lines cache (ESPN odds, schedules, box scores)" --latest=false \
+            --notes "Finished games' lines and finished seasons' files, so a download only requests new games. Written by Train predictions; Refresh predictions reads it."
+          gh release upload cfb-espn-cache espn_cache.tar.gz --clobber
       - name: Fetch the previous build (its backtest seasons can be reused)
         run: |
           mkdir webdata
@@ -172,7 +362,7 @@ jobs:
           fi
       - name: Download, train, backtest
         run: >
-          runitback-wager web build --sports '[nfl,nba]' --output_dir webdata
+          runitback-wager web build --sports '[nfl,nba,cfb]' --output_dir webdata
           --cache release:predictions-backtest-cache
           --refresh_backtest ${{ inputs.refresh_backtest || false }}
           --reuse_model_days ${{ inputs.reuse_model_days || 0 }}

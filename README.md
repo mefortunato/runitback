@@ -1051,10 +1051,16 @@ service** at `/mnt/predictions` (`RUNITBACK_PREDICTIONS`), so it refreshes witho
 deployments keep needing a merge to `main`:
 
 - **Train predictions** (`.github/workflows/train-predictions.yml`, monthly and by hand) trains the
-  NFL and NBA wager models (the NBA's is `prod_pvc_e4`: player values, no foundation folds), backtests it and publishes the `predictions-webdata` release asset (backtest seasons
-  are reused through the `predictions-backtest-cache` release while the model is unchanged).
+  NFL, NBA and CFB wager models (the NBA's is `prod_pvc_e4`: player values, no foundation folds; the
+  CFB's is `pbp32_qb`: college play-by-play folds, one matrix job per season, kept in the
+  `foundation-cfb` release, plus starting-quarterback values), backtests them and publishes the
+  `predictions-webdata` release asset (backtest seasons are reused through the
+  `predictions-backtest-cache` release while the model is unchanged). CFB lines are ESPN's, one
+  request per game, so per-season jobs fetch them into the `cfb-espn-cache` release; a first run
+  needs `max_new_seasons` 2 until every CFB season is backtested.
 - **Refresh predictions** (`.github/workflows/refresh-predictions.yml`, daily and before each NFL
-  kickoff window; NBA lines only on the daily run and manual runs, to spare the Odds API quota) downloads that release, re-downloads results and lines (The Odds API with the
+  kickoff window; NBA lines only on the daily run and manual runs, to spare the Odds API quota; CFB
+  lines are ESPN's, no key or quota, on every run) downloads that release, re-downloads results and lines (The Odds API with the
   `ODDS_API_KEY` secret; without it the previous lines carry over), refreshes team state (no
   retraining), exports, and syncs the files to the bucket. The pages pick them up within a minute:
   the mount caches metadata for 60 s and `/data` responses carry `Cache-Control: no-cache`.
