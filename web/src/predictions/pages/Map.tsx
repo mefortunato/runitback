@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { dateText, seasonText } from "../lib/format";
 import { filterOptions, matchesFilter, MAX_PINS, togglePin, type Pins, type TeamFilter } from "../lib/rankings";
@@ -6,6 +6,7 @@ import { formatChange, formatMetric, positionAt, ranksAt } from "../lib/teammap"
 import type { SportInfo, TeamMap as TeamMapData } from "../lib/types";
 import TeamBadge from "../components/TeamBadge";
 import TeamMap from "../components/TeamMap";
+import { useTeamPick } from "../headerSearch";
 import { useData } from "../useData";
 import { cx } from "../cx";
 import s from "./Map.module.css";
@@ -34,13 +35,26 @@ function MapView({ info, map }: { info: SportInfo; map: TeamMapData | null }) {
     division.startsWith(`${conference} `) ? division.slice(conference.length + 1) : division;
   // every filter change starts from that view's top teams at the latest date
   const filterKey = `${filter.conference ?? ""}|${filter.division ?? ""}`;
+  // a team picked in the header search while the filter hid it, to highlight once it shows again
+  const queued = useRef<string | null>(null);
   useEffect(() => {
     if (!map) return;
     const top = [...ranksAt(map.teams, last).keys()].filter(isVisible).slice(0, MAX_PINS);
-    setPins(Object.fromEntries(top.map((team, i) => [team, i + 1])));
+    let next: Pins = Object.fromEntries(top.map((team, i) => [team, i + 1]));
+    if (queued.current && !(queued.current in next)) next = togglePin(next, queued.current);
+    queued.current = null;
+    setPins(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterKey, map]);
   const toggle = useCallback((team: string) => setPins((p) => togglePin(p, team)), []);
+  // a team picked in the header search: highlighted, after showing every team again if the
+  // filter hides it
+  useTeamPick(info.sport, "Highlight", ({ team }) => {
+    if (!isVisible(team)) {
+      queued.current = team;
+      setFilter({});
+    } else setPins((p) => (team in p ? p : togglePin(p, team)));
+  });
   const lower = info.date_label.toLowerCase();
 
   if (!map) {
@@ -116,7 +130,7 @@ function MapView({ info, map }: { info: SportInfo; map: TeamMapData | null }) {
               <span className={s.x} aria-hidden="true">×</span>
             </button>
           ))}
-          <span className="muted small">Highlighted teams trace their path. Click a dot to highlight it (up to {MAX_PINS}).</span>
+          <span className="muted small">Highlighted teams trace their path. Search above for a team or click a dot to highlight it (up to {MAX_PINS}).</span>
         </div>
         {metric && <TeamMap map={map} metric={metric} pins={pins} visible={visible} dateLabel={info.date_label} frame={frame} onFrame={onFrame} onToggle={toggle} />}
       </div>

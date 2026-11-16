@@ -5,8 +5,10 @@ import { dateText, pct, seasonText } from "../lib/format";
 import { links } from "../lib/links";
 import { unitsLabel } from "../lib/markets";
 import { RECENT_SORT_LABELS, sortPlayed, summarize, type MarketRecord, type RecentSort, type RecentSummary } from "../lib/recent";
-import type { SportInfo } from "../lib/types";
+import type { SportInfo, Team } from "../lib/types";
 import PlayedGameCard from "../components/PlayedGameCard";
+import TeamBadge from "../components/TeamBadge";
+import { useTeamPick } from "../headerSearch";
 import { useData } from "../useData";
 import { cx } from "../cx";
 import s from "./Recent.module.css";
@@ -20,6 +22,10 @@ const SORTS: RecentSort[] = ["kickoff", "miss", "edge"];
 export default function Recent({ info, season, date }: { info: SportInfo; season?: number | null; date?: number | null }) {
   const { data: recent, error } = useData(() => api.recent(info.sport, season, date), [info.sport, season, date]);
   const [sort, setSort] = useState<RecentSort>("kickoff");
+  // a team picked in the header search; kept across dates (the reader is following one team back
+  // through the window)
+  const [team, setTeam] = useState<Team | null>(null);
+  useTeamPick(info.sport, "Show games", setTeam);
   if (error) return <p className="error">{error}</p>;
   if (!recent) return <p className="muted">Loading…</p>;
 
@@ -48,7 +54,11 @@ export default function Recent({ info, season, date }: { info: SportInfo; season
   const backtested = recent.all.some((g) => g.prediction_source === "backtest");
   const options = SORTS.filter((o) => o !== "edge" || recent.games.some((g) => g.prediction.edge != null));
   const active = options.includes(sort) ? sort : "kickoff";
-  const games = sortPlayed(recent.games, active);
+  const plays = (g: { home: Team; away: Team }) => !team || g.home.team === team.team || g.away.team === team.team;
+  const games = sortPlayed(recent.games, active).filter(plays);
+  // the window's other dates the picked team played on, newest first
+  const elsewhere = team ? recent.dates.filter((d) => !(d.season === recent.season && d.date === recent.date)
+    && recent.all.some((g) => g.season === d.season && g.date === d.date && plays(g))) : [];
 
   return (
     <div className={s.root}>
@@ -112,15 +122,37 @@ export default function Recent({ info, season, date }: { info: SportInfo; season
           </p>
           {recent.games.length > 0 && (
             <>
-              {options.length > 1 && (
-                <div className={s.sort} role="group" aria-label="Order games">
-                  <span className="muted small">Sort by</span>
-                  {options.map((o) => (
-                    <button key={o} className={cx("pill", active === o && "accent")} aria-pressed={active === o} onClick={() => setSort(o)}>
-                      {RECENT_SORT_LABELS[o]}
+              {(team || options.length > 1) && (
+                <div className={s.toolbar}>
+                  {team && (
+                    <button className={s.chip} onClick={() => setTeam(null)} aria-label="Show every team's games">
+                      <TeamBadge team={team} label="none" size={18} />
+                      {team.name}
+                      <span className={s.x} aria-hidden="true">×</span>
                     </button>
-                  ))}
+                  )}
+                  {options.length > 1 && (
+                    <div className={s.sort} role="group" aria-label="Order games">
+                      <span className="muted small">Sort by</span>
+                      {options.map((o) => (
+                        <button key={o} className={cx("pill", active === o && "accent")} aria-pressed={active === o} onClick={() => setSort(o)}>
+                          {RECENT_SORT_LABELS[o]}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
+              )}
+              {team && (
+                <p className={cx("muted small", s.found)} aria-live="polite">
+                  {games.length ? `${games.length} of ${recent.games.length} games` : `No games for ${team.name} this ${info.date_label.toLowerCase()}`}
+                  {elsewhere.length > 0 && <>
+                    {" · also played "}
+                    {elsewhere.map((d, i) => (
+                      <span key={`${d.season}-${d.date}`}>{i ? ", " : ""}<Link to={links.recent(info.sport, d.season, d.date)}>{dateText(info.date_label, d.date, d.name)}</Link></span>
+                    ))}
+                  </>}
+                </p>
               )}
               <div className={s.games}>
                 {games.map((g) => <PlayedGameCard key={g.game_id} game={g} sport={info.sport} hasSpread={info.has_spread} />)}

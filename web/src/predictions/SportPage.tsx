@@ -1,7 +1,7 @@
 import { lazy, Suspense, type ReactNode } from "react";
 import { Link, navigate } from "../router";
 import { api } from "./lib/api";
-import { links } from "./lib/links";
+import { links, sportPages } from "./lib/links";
 import type { SportInfo } from "./lib/types";
 import { useData } from "./useData";
 import { cx } from "./cx";
@@ -51,16 +51,7 @@ export default function SportPage({ sport, label, rest, generator }: {
   const page = generator && (route.page === "generator" || (!info && route.page !== "missing")) ? "generator"
     : route.page === "generator" ? "missing" : route.page;
 
-  const tabs = info ? [
-    { label: "Upcoming", to: links.upcoming(sport), active: page === "upcoming" },
-    { label: "Recent", to: links.recent(sport), active: page === "recent" },
-    { label: "Rankings", to: links.rankings(sport), active: page === "rankings" },
-    ...(info.has_players ? [{ label: "Players", to: links.players(sport), active: page === "players" }] : []),
-    ...(info.has_team_map ? [{ label: "Team map", to: links.teamMap(sport), active: page === "map" }] : []),
-    ...(info.challenge_games ? [{ label: "Performance", to: links.performance(sport), active: page === "performance" }] : []),
-    ...(info.challenge_games && (info.has_spread || info.markets?.length)
-      ? [{ label: "Beat the model", to: links.challenge(sport), active: page === "challenge" }] : []),
-  ] : [];
+  const tabs = info ? sportPages(info).map((p) => ({ label: p.label, to: p.to, active: page === p.key })) : [];
   const gen = generator && { label: "Play-by-play generator", to: links.generator(sport), active: page === "generator" };
   const current = [...tabs, ...(gen ? [gen] : [])].find((t) => t.active);
 
