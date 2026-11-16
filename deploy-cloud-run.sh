@@ -40,5 +40,6 @@ gcloud run deploy "$SERVICE" \
   --project "$PROJECT" \
   --region "$REGION" \
   --max 1 \
+  --cpu-boost \
   "${AUTH_FLAGS[@]}" \
   "${PREDICTIONS_FLAGS[@]}"
