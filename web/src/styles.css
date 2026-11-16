@@ -235,7 +235,18 @@ a { color: var(--accent); }
 .sport-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 28px; }
 .sport-card { display: flex; flex-direction: column; gap: 4px; padding: 16px 18px; color: var(--text); text-decoration: none;
   transition: border-color .15s, transform .15s; margin: 0; }
-.sport-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.lede + .lede { margin-top: -6px; }
+.pillars { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: stretch; gap: 10px; margin-bottom: 28px; }
+.pillar { display: flex; flex-direction: column; gap: 6px; padding: 16px 18px; margin: 0; }
+.pillar .eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0; }
+.pillar h2 { font-size: 22px; margin: 0; }
+.pillar p { margin: 0; color: var(--text-2); }
+.pillar-links { display: flex; gap: 6px; flex-wrap: wrap; margin-top: auto; padding-top: 8px; }
+.pillar-links .button { padding: 5px 12px; font-size: 13px; }
+.pillar-arrow { align-self: center; color: var(--muted); font-size: 20px; }
+.home-section-title { font-size: 20px; margin: 0 0 12px; }
+.wager-how { margin: 32px 0 28px; }
+.section-lede { max-width: 72ch; margin: -4px 0 14px; }
 .sport-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .sport-card h2 { font-size: 22px; margin: 0; }
 .sport-card p { margin: 4px 0; color: var(--text-2); }
@@ -303,7 +314,8 @@ a { color: var(--accent); }
 .how-grid p { margin: 0; color: var(--text-2); }
 .data-credit { margin-top: 22px; font-size: 12px; }
 @media (max-width: 800px) {
-  .sport-cards, .how-grid, .replay-steps { grid-template-columns: 1fr; }
+  .sport-cards, .how-grid, .replay-steps, .pillars { grid-template-columns: 1fr; }
+  .pillar-arrow { justify-self: center; transform: rotate(90deg); }
   .replay-steps { gap: 4px; }
   .replay-readout { transform: translate(-50%, -40%); }
   .replay-readout.on { transform: translate(-50%, -50%); }
