@@ -449,9 +449,14 @@ projections later (a posted depth chart, CollegeFootballData rosters and the por
 | `RUNITBACK_CFB_FOUNDATION` | the fold directory `runitback cfb foundation` keeps, after `runitback cfb wager-embeddings` has keyed it (`fold<S>/pbp_32_wager.parquet`) |
 | `RUNITBACK_CFB_PLAYER_VALUES` | the directory `runitback cfb player-values` writes (`pv.parquet`) |
 
-Both must be set: with one or none, the CFB model is `prod`, unchanged. Nothing in the Train / Refresh
-workflows or the deploy sets them yet; building the folds, the key remap and `pv.parquet` there, and
-setting the variables, is work package A2 (#55).
+Both must be set: with one or none, the CFB model is `prod`, unchanged. Train predictions and Refresh
+predictions set them (A2, #55): `train-predictions.yml` trains each season's fold in its own matrix job
+(`foundation-cfb` release), keys it with `runitback cfb wager-embeddings`, builds `pv.parquet`, and
+builds `cfb` with the other sports; `refresh-predictions.yml` embeds the games played since in the two
+latest folds and rebuilds `pv.parquet`. The lines stay ESPN's, as validated here: CollegeFootballData's
+lines have a moneyline for about half the 2025 games and none before 2022, so they would change the
+model's inputs. ESPN refuses a runner after a burst of per-game requests, so Train fetches each
+season's in its own job into the `cfb-espn-cache` release and Refresh starts from it.
 
 ## Swap test (2025, `pbp32_qb_e4` fit on 2021–2024)
 
