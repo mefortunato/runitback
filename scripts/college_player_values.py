@@ -2,6 +2,7 @@
 
     python scripts/college_player_values.py tune --gender cbb       # box-value settings, next-season fit
     python scripts/college_player_values.py report --gender cbb     # rotation check, values vs margin, top players
+    python scripts/college_player_values.py tune-apm                # men's adjusted plus-minus: penalty, replacement minutes
 
 Reads data/<gender>/processed (`runitback college players` / `lineups`) and player_values/<gender>
 (`runitback college player-values`). Prints markdown; writes nothing to the repository.
@@ -152,6 +153,47 @@ def apm_effect(args):
     print(_table(pd.DataFrame(rows)))
 
 
+def tune_apm(args):
+    """Men's adjusted plus-minus settings on held-out possessions. For each season, fit once at a
+    cutoff (the Monday on or before ``--cutoff``, e.g. 01-05) on the possessions before it, around the
+    box prior as of that Monday, and score the season's possessions after it (squared-error reduction
+    per possession x 1e-4 vs a constant, and correlation) for the box prior alone and for the
+    adjusted plus-minus. Choose on ``--select`` seasons; ``--confirm`` seasons are for checking
+    the choice (and the current season is left out)."""
+    from runitback.college import player_values as PV
+
+    proc = _dir("cbb") / "processed"
+    pg, tg = (pd.read_parquet(proc / f"{n}.parquet") for n in ("player_games", "team_games"))
+    poss, players = pd.read_parquet(proc / "possessions.parquet"), pd.read_parquet(proc / "players.parquet")
+    box = B.BoxModel.build(pg, tg)
+    events = PV.events_from(poss, dict(zip(players.player_id, players.group)))
+    t = events.frame.t.to_numpy()
+    season = events.frame.season.to_numpy()
+    rows = []
+    for s in args.select + args.confirm:
+        day = int((pd.Timestamp(f"{s}-{args.cutoff}") - pd.Timestamp("1970-01-01")).days)
+        before = int(B.week_start(pd.Series([day])).iloc[0])
+        prior = box.values(before, s)
+        test = (season == s) & (t >= before)
+        for lam, mm in itertools.product(args.penalty, args.min_minutes):
+            r = PV.holdout_score(events, prior, before, s, test, PV.apm_config(lam=lam, min_minutes=mm))
+            rows.append({"season": s, "role": "select" if s in args.select else "confirm", "penalty": lam,
+                         "own coef min": mm, "test poss": int(test.sum()), **{k: round(v, 3) for k, v in r.items()}})
+            print(rows[-1], flush=True)
+    df = pd.DataFrame(rows)
+    g = df.groupby(["role", "penalty", "own coef min"])[["box_gain", "apm_gain", "apm_corr"]].mean().round(3)
+    print(_table(g.reset_index()))
+    sel = g.loc["select"]
+    best = sel.apm_gain.idxmax()
+    print(f"\nbest on {args.select}: penalty {best[0]}, own coefficient from {best[1]} min "
+          f"(apm_gain {sel.apm_gain.max():.3f}; box prior alone {sel.box_gain.mean():.3f})")
+    if args.confirm:
+        c = g.loc["confirm"]
+        cur = (PV.APM_LAMBDA, PV.MIN_MINUTES)
+        print(f"confirm {args.confirm}: chosen {c.loc[best].apm_gain:.3f}, current defaults {cur} "
+              f"{c.loc[cur].apm_gain if cur in c.index else float('nan'):.3f}, box prior {c.box_gain.mean():.3f}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -169,11 +211,17 @@ def main():
     r.add_argument("--first", type=int, default=2022)
     r.add_argument("--min-minutes", type=float, default=600)
     r.add_argument("--top", type=int, default=10)
+    a = sub.add_parser("tune-apm")
+    a.add_argument("--select", type=int, nargs="+", default=[2024, 2025])
+    a.add_argument("--confirm", type=int, nargs="+", default=[2026])
+    a.add_argument("--cutoff", default="01-05", help="MM-DD of each season's fit")
+    a.add_argument("--penalty", type=float, nargs="+", default=[1000, 2500, 5000, 10000, 20000])
+    a.add_argument("--min-minutes", type=float, nargs="+", default=[100, 250, 500])
     e = sub.add_parser("apm-effect")
     e.add_argument("--values", default="player_values/cbb")
     e.add_argument("--box", default="player_values/cbb_box")
     args = ap.parse_args()
-    {"tune": tune, "report": report, "apm-effect": apm_effect}[args.cmd](args)
+    {"tune": tune, "tune-apm": tune_apm, "report": report, "apm-effect": apm_effect}[args.cmd](args)
 
 
 if __name__ == "__main__":

@@ -34,20 +34,38 @@ toward those box values. `experiments/wcbb/` points here.
   players) these numbers are 74–75%, 81–83% and 6.8–7.0.
 - **Men's adjusted plus-minus (2023-24 on) improves the lineup value's fit to the margin in every
   season, mostly in the level.** Backfilled from CBBD (479 game days, about 470 calls; 2.89M
-  possessions in 18,200 games) and fit weekly on earlier possessions only, at the untuned defaults
-  (penalty 5,000, own coefficient from 250 minutes):
+  possessions in 18,200 games) and fit weekly on earlier possessions only, with the tuned settings
+  below (penalty 5,000, own coefficient from 100 minutes):
 
   | games | n | corr with margin, box / + adjusted plus-minus | margin per change point, box / + adjusted plus-minus |
   |---|---|---|---|
-  | 2024 | 6,241 | 0.603 / 0.615 | 0.10 / 0.08 (± 0.11) |
-  | 2025 | 6,290 | 0.635 / 0.668 | 0.07 / 0.02 (± 0.09) |
-  | 2026 | 6,300 | 0.642 / 0.675 | 0.15 / 0.07 (± 0.09) |
-  | 2026 from January | 3,554 | 0.461 / 0.511 | 0.28 / 0.20 (± 0.19) |
-  | 2027 (so far) | 860 | 0.601 / 0.617 | 0.31 / 0.29 (± 0.13) |
+  | 2024 | 6,241 | 0.603 / 0.621 | 0.10 / 0.06 (± 0.11) |
+  | 2025 | 6,290 | 0.635 / 0.671 | 0.07 / -0.01 (± 0.09) |
+  | 2026 | 6,300 | 0.642 / 0.679 | 0.15 / 0.06 (± 0.09) |
+  | 2026 from January | 3,554 | 0.461 / 0.511 | 0.28 / 0.14 (± 0.19) |
+  | 2027 (so far) | 860 | 0.601 / 0.619 | 0.31 / 0.29 (± 0.13) |
 
   It sharpens the level, not the change columns: the within-season change coefficient does not rise.
-  The penalty and replacement minutes have not been tuned on held-out seasons yet (Next steps).
-  Seasons before 2023-24 and women's use the box-score values.
+  2027 was not used for tuning, so its row is a clean out-of-sample check.
+- **Tuning the adjusted plus-minus** (`python scripts/college_player_values.py tune-apm`). Each
+  season is fit once on the possessions before 5 January, around the box prior as of that Monday,
+  and scored on its possessions after (squared-error reduction per possession x 1e-4 vs a constant;
+  the box prior alone is 20.9 on the selection seasons and 21.8 on 2026). Settings are chosen on 2024
+  and 2025; 2026 confirms them; 2027 is untouched.
+
+  | penalty | own coefficient from | 2024+2025 (select) | 2026 (confirm) |
+  |---|---|---|---|
+  | 1,000 | 100 / 250 / 500 min | 19.1 / 20.9 / 22.5 | 18.6 / 18.3 / 22.6 |
+  | 2,500 | 100 / 250 / 500 min | 26.3 / 26.6 / 25.0 | 27.2 / 25.8 / 27.4 |
+  | **5,000** | **100** / 250 / 500 min | **26.8** / 26.8 / 25.0 | **28.5** / 26.8 / 27.6 |
+  | 10,000 | 100 / 250 / 500 min | 25.1 / 25.2 / 24.0 | 26.9 / 25.5 / 26.0 |
+  | 20,000 | 100 / 250 / 500 min | 23.0 / 23.3 / 22.9 | 24.8 / 23.6 / 24.1 |
+
+  A penalty of 5,000 is best on both the selection seasons and 2026, so it stays. The own-coefficient
+  threshold is flat on the selection seasons (100 and 250 minutes tie, 26.80 vs 26.78) and 2026 favors
+  100 (28.5 vs 26.8), so the threshold goes from 250 to 100 minutes. Beyond the lightest penalty (1,000)
+  every setting beats the box prior alone. The per-possession correlation barely moves (0.044–0.046 for
+  the box prior, 0.046–0.051 with adjusted plus-minus) because a single possession is mostly noise.
 
 ## Reproducing
 
@@ -120,7 +138,7 @@ fetch stops when 25 calls are left (`--reserve`) so the wager pipeline's CBBD li
     possession start and season controls. The target is each possession's points **minus what its
     ten players' box values predict**, so every player is shrunk toward his box value, not toward 0.
   - **Values.** A player's value is his box value plus his own coefficient over his group's
-    replacement level. Players under 250 minutes on the floor keep their box value.
+    replacement level. Players under 100 minutes on the floor keep their box value.
 - **Groups: G / F / C** from the ESPN position (ATH and missing go to F), as for the NBA.
   `runitback.wager.cbb.lineup.LINEUP` is the NBA's layout with `recent=8` (a quarter of the college
   wager model's 32-game history). It is not registered on the `Sport` yet; C4 does that.
@@ -263,9 +281,8 @@ replacement; players of the last two seasons with 600+ minutes in the window):
 
 ## Next steps
 
-1. **Tune men's adjusted plus-minus.** Tune the ridge penalty and replacement minutes on the next
-   season's possessions, as N2 did; the table above uses the defaults. Re-run the report when the
-   2026-27 season has more games. The CBBD cache (`data/cbb/cbbd`, about 220 MB) is rebuilt in each
+1. **Re-tune and re-report as 2026-27 fills in.** The settings are tuned on 2024–2026; re-run
+   `tune-apm` with 2027 added. The window and decay are untuned. The CBBD cache (`data/cbb/cbbd`, about 220 MB) is rebuilt in each
    run: a full backfill is about 470 calls of a key shared with the CFB pipeline, so a workflow run
    that sets `cbbd: true` should be a deliberate choice.
 2. **C4:** register `LINEUP` on both college `Sport`s, join `pv.parquet` on `(game_id, team_id)`,
