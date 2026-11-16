@@ -139,13 +139,14 @@ jobs:
           runitback cfb download --start 2004 --end "$end"
           runitback cfb preprocess --start 2004 --end "$end"
           runitback cfb players --start 2012 --end "$end"
-          mkdir -p "$RUNITBACK_CFB_FOUNDATION" folds
+          # its own download directory: the NFL's folds above are named fold<season>.tar.gz too
+          mkdir -p "$RUNITBACK_CFB_FOUNDATION" cfb-folds-dl
           # the two latest folds: the model's (the current season's, or last season's until the
           # next Train predictions run after a new season starts)
           for a in $(gh release view foundation-cfb --json assets -q '.assets[].name' 2>/dev/null | sort | tail -2); do
-            gh release download foundation-cfb --pattern "$a" --dir folds
+            gh release download foundation-cfb --pattern "$a" --dir cfb-folds-dl
             mkdir -p "$RUNITBACK_CFB_FOUNDATION/${a%.tar.gz}"
-            tar -xzf "folds/$a" -C "$RUNITBACK_CFB_FOUNDATION/${a%.tar.gz}"
+            tar -xzf "cfb-folds-dl/$a" -C "$RUNITBACK_CFB_FOUNDATION/${a%.tar.gz}"
           done
           runitback cfb foundation --root "$RUNITBACK_CFB_FOUNDATION" --existing --threads $(nproc)
           seasons=""
