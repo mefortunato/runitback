@@ -7,11 +7,14 @@ export interface SportDef {
   label: string;
   /** Has a play-by-play generator page (a simulator and an API under /api/<sport>). */
   generator: boolean;
+  /** Its production wager model reads the play-by-play generator's game embeddings (the
+   * foundation folds), not just box scores and player values. Shown in the home page's footnote. */
+  wagerUsesGenerator?: boolean;
 }
 
 export const SPORTS: SportDef[] = [
-  { id: "nfl", label: "NFL", generator: true },
-  { id: "cfb", label: "CFB", generator: false },
+  { id: "nfl", label: "NFL", generator: true, wagerUsesGenerator: true },
+  { id: "cfb", label: "CFB", generator: false, wagerUsesGenerator: true },
   { id: "nba", label: "NBA", generator: true },
   { id: "cbb", label: "CBB", generator: false },
   { id: "wnba", label: "WNBA", generator: false },
