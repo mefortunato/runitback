@@ -44,6 +44,8 @@ export default function Home() {
         </div>
       </section>
 
+      <ReplayAnimation />
+
       <section className="pillars" aria-label="What Run It Back does">
         <article className="card pillar">
           <p className="eyebrow">1 · The generator</p>
@@ -63,8 +65,6 @@ export default function Home() {
           </p>
         </article>
       </section>
-
-      <ReplayAnimation />
 
       <section className="how" id="how">
         <h2>How the generator works</h2>
