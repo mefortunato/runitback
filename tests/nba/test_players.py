@@ -185,3 +185,14 @@ def test_real_seasons_have_five_on_court_for_99_percent_of_events(tmp_path):
     for s in seasons:
         assert summary[s]["five_share"] >= 0.99, summary[s]
     assert summary["all"]["minutes_within_1"] >= 0.9
+
+
+def test_sub_ids_with_missing_text_and_ids_under_pandas_na():
+    # pyarrow-backed parquet reads give pd.NA for missing cells; truth-testing one raised
+    from runitback.nba.data.players import _sub_ids
+    from types import SimpleNamespace as NS
+    row = NS(athlete_id_1=5, athlete_id_2=pd.NA, text=pd.NA)
+    assert _sub_ids(row) == (5, None)
+    row = NS(athlete_id_1=7, athlete_id_2=pd.NA, text=" enters the game for Y")
+    assert _sub_ids(row) == (None, 7)
+    assert _sub_ids(NS(athlete_id_1=1, athlete_id_2=2, text=pd.NA)) == (1, 2)

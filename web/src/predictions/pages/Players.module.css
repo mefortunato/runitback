@@ -1,0 +1,21 @@
+.intro { max-width: 68ch; }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+.filters button { cursor: pointer; }
+.title { margin: 0 0 4px; font-size: 1.1rem; }
+.note { margin: 0 0 10px; font-size: 0.85rem; }
+.table { width: 100%; border-collapse: collapse; }
+.table th { text-align: left; font-size: 0.8rem; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.table td { padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.rank { width: 1%; text-align: right; font-variant-numeric: tabular-nums; }
+.num { width: 1%; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.player { white-space: nowrap; }
+.name { font-weight: 600; }
+.barhead { width: 45%; }
+.barcell { display: flex; align-items: center; gap: 8px; }
+.track { position: relative; flex: 1; height: 14px; min-width: 60px; }
+.bar { position: absolute; top: 2px; bottom: 2px; background: var(--series-1); border-radius: 2px; }
+.bar.neg { background: var(--series-2); }
+.zero { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ref); }
+.value { width: 4.5ch; text-align: right; font-variant-numeric: tabular-nums; font-size: 0.9rem; }
+.more { margin-top: 10px; cursor: pointer; }
+@media (max-width: 560px) { .table th:nth-child(n+4), .table td:nth-child(n+4) { display: none; } }

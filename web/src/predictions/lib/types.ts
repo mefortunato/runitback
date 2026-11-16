@@ -38,6 +38,8 @@ export interface SportInfo {
 	has_spread: boolean;
 	/** Whether the model has team embeddings to map (absent: older exports). */
 	has_team_map?: boolean;
+	/** Whether the export has the players page (player values ranked by position). */
+	has_players?: boolean;
 	challenge_games: number;
 	/** Markets the challenge offers (older exports: spread only). */
 	markets?: Market[];
@@ -194,6 +196,9 @@ export interface LineupPlayer {
 	pos: string | null;
 	/** Value over a replacement-level player, per play on the field (per kick for K / P). */
 	value: number;
+	/** A rotation's player (NBA): his value in each value column it adds to, per possession-slot
+	 * unit (offense and defense of his position); replaces `value` and the group's `column`. */
+	values?: Record<string, number>;
 	/** Ruled out (injury report or off the active roster) in the projection. */
 	out: boolean;
 }
@@ -201,7 +206,8 @@ export interface LineupPlayer {
 export interface LineupGroup {
 	key: string;
 	label: string;
-	/** The value column it adds to (kicker and punter: ST). */
+	/** The value column it adds to (kicker and punter: ST); empty for a rotation, whose players
+	 * carry their own `values`. */
 	column: string;
 }
 
@@ -465,4 +471,35 @@ export interface Recent {
 	dates: RecentDate[];
 	games: PlayedGame[];
 	all: PlayedGame[];
+}
+
+/** `<sport>/players.json`: this season's players ranked by value within each position group. */
+export interface PlayerRanks {
+	season: number;
+	/** The last week played. */
+	through: number;
+	/** What `value` is. */
+	unit: string;
+	/** What `rate` is. */
+	detail: string;
+	positions: PlayerGroup[];
+}
+
+export interface PlayerGroup {
+	key: string;
+	label: string;
+	side: 'off' | 'def' | 'special';
+	/** Best first. */
+	players: RankedPlayer[];
+}
+
+export interface RankedPlayer {
+	id: string;
+	name: string;
+	team: string;
+	games: number;
+	snaps: number;
+	value: number;
+	rate: number;
+	rank: number;
 }

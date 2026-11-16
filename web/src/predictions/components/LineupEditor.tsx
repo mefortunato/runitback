@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { marginLabel, pct, signed } from "../lib/format";
 import {
-  columnPoints, initialLineup, playerIndex, ruleOut, sameLineup, setStarter, slotPoints,
+  columnPoints, initialLineup, playerIndex, playerPoints, ruleOut, sameLineup, setStarter,
   type LineupState,
 } from "../lib/lineups";
 import type { GameHeader, GameLineups, Prediction, Side } from "../lib/types";
@@ -13,6 +13,11 @@ import s from "./LineupEditor.module.css";
 // value in points per game over a replacement-level player at his slot, and controls to change
 // starters or rule players out. The page re-prices the game for the edited lineups
 // (lib/lineups.ts: the same arithmetic as the model's lineup terms).
+/** Points summed over the value columns whose weight on the total passes `pick`: offense scores
+ * (positive), defense prevents (negative), special teams moves neither. */
+const sumWhere = (points: number[], totals: number[], pick: (w: number) => boolean) =>
+  points.reduce((a, p, i) => (pick(totals[i] ?? 0) ? a + p : a), 0);
+
 export default function LineupEditor({ game, lineups, state, onChange, base, edited }: {
   game: GameHeader; lineups: GameLineups; state: LineupState; onChange: (next: LineupState) => void;
   /** The published prediction and the edited lineups' (the same when nothing changed). */
@@ -27,7 +32,7 @@ export default function LineupEditor({ game, lineups, state, onChange, base, edi
   const reset = () => onChange({ home: initialLineup(lineups, "home"), away: initialLineup(lineups, "away") });
   const groupTotal = (group: string) => {
     const players = playerIndex(lineups, side, group);
-    return lineup[group].active.reduce((sum, id, rank) => sum + slotPoints(lineups, group, rank, players.get(id)), 0);
+    return lineup[group].active.reduce((sum, id, rank) => sum + playerPoints(lineups, group, rank, players.get(id)), 0);
   };
   const perPoint = lineups.weights.margin[0] ?? 0;
   return (
@@ -88,7 +93,7 @@ export default function LineupEditor({ game, lineups, state, onChange, base, edi
               </div>
               {starters.map((id, rank) => {
                 const p = players.get(id)!;
-                const raw = slotPoints(lineups, g.key, rank, p);
+                const raw = playerPoints(lineups, g.key, rank, p);
                 const pts = Math.abs(raw) < 0.05 ? 0 : raw;   // no "−0.0"
                 return (
                   <div key={rank} className={s.row}>
@@ -118,8 +123,10 @@ export default function LineupEditor({ game, lineups, state, onChange, base, edi
         })}
       </div>
       <p className="muted small">
-        {team.team} lineup value: offense {signed(points.slice(0, 5).reduce((a, b) => a + b, 0))}, defense{" "}
-        {signed(points.slice(5, 8).reduce((a, b) => a + b, 0))}, kicking {signed(points[8] ?? 0)} points per game.
+        {team.team} lineup value: offense {signed(sumWhere(points, lineups.weights.total, (w) => w > 0))}, defense{" "}
+        {signed(sumWhere(points, lineups.weights.total, (w) => w < 0))}
+        {lineups.weights.total.some((w) => w === 0) && <>, kicking {signed(sumWhere(points, lineups.weights.total, (w) => w === 0))}</>}{" "}
+        points per game.
       </p>
     </div>
   );

@@ -11,10 +11,23 @@
 # latest depth charts and injury reports (`runitback nfl player-values`): the model's lineup terms
 # and the game pages' lineup editor read them.
 #
+# The players page (player values ranked by position) is exported from the same player values.
+#
+# The NBA is exported from the same webdata: its player values (rotations from rosters and the
+# injury report) are rebuilt below, and the lineup editor and players page read them.
+#
+# College football is exported from the same webdata: the folds' newly played games are embedded and
+# keyed for the wager model, and the quarterback values rebuilt (depth is not needed: the projected
+# starter is each team's last one). Its lines are ESPN's (no key, no quota), one request per game, so
+# the finished games' lines, schedules and box scores come from the `cfb-espn-cache` release that
+# Train predictions keeps and a run only requests the newest games (about a hundred).
+#
 # Lines come from The Odds API (ODDS_API_KEY secret; no game within 8 days: no request). The
 # schedule fits its free tier's 150 requests a month: about 23 runs a week in season, more on
 # game days (times in UTC, before each Eastern kickoff window). Without the key the previous
-# export's lines carry over.
+# export's lines carry over. NBA lines (about 3 requests each) are fetched only by the daily
+# run and by manual runs, so the extra cost is about 30 requests a month; the other runs carry
+# the NBA's previous lines over.
 name: Refresh predictions
 
 on:
@@ -57,6 +70,9 @@ jobs:
       MLFLOW_DISABLE_AGENT_HINT: "1"
       RUNITBACK_NFL_FOUNDATION: foundation/nfl
       RUNITBACK_NFL_PLAYER_VALUES: player_values/nfl
+      RUNITBACK_NBA_PLAYER_VALUES: player_values/nba
+      RUNITBACK_CFB_FOUNDATION: foundation/cfb
+      RUNITBACK_CFB_PLAYER_VALUES: player_values/cfb
     steps:
       - name: Check configuration
         run: |
@@ -109,6 +125,37 @@ jobs:
           runitback nfl foundation --root "$RUNITBACK_NFL_FOUNDATION" --existing --threads $(nproc)
       - name: Player values (latest depth charts and injury reports)
         run: runitback nfl player-values --out "$RUNITBACK_NFL_PLAYER_VALUES"
+      - name: NBA player values (rotations from rosters and the injury report)
+        run: |
+          runitback nba download --start 2015 --end 2027
+          runitback nba players --start 2015 --end 2027
+          runitback nba lineups --live
+          runitback nba player-values --start 2015 --end 2027 --out "$RUNITBACK_NBA_PLAYER_VALUES" \
+            --lineups data/nba/processed/projected_lineups.parquet \
+            --upcoming data/nba/processed/projected_lineups_upcoming.parquet
+      - name: CFB folds (embed the games played since), quarterback values, cached lines
+        run: |
+          end=$(python -c "import datetime as d; t=d.date.today(); print(t.year if t.month >= 9 else t.year - 1)")
+          runitback cfb download --start 2004 --end "$end"
+          runitback cfb preprocess --start 2004 --end "$end"
+          runitback cfb players --start 2012 --end "$end"
+          mkdir -p "$RUNITBACK_CFB_FOUNDATION" folds
+          # the two latest folds: the model's (the current season's, or last season's until the
+          # next Train predictions run after a new season starts)
+          for a in $(gh release view foundation-cfb --json assets -q '.assets[].name' 2>/dev/null | sort | tail -2); do
+            gh release download foundation-cfb --pattern "$a" --dir folds
+            mkdir -p "$RUNITBACK_CFB_FOUNDATION/${a%.tar.gz}"
+            tar -xzf "folds/$a" -C "$RUNITBACK_CFB_FOUNDATION/${a%.tar.gz}"
+          done
+          runitback cfb foundation --root "$RUNITBACK_CFB_FOUNDATION" --existing --threads $(nproc)
+          seasons=""
+          for d in "$RUNITBACK_CFB_FOUNDATION"/fold*; do seasons="$seasons --season ${d##*fold}"; done
+          runitback cfb wager-embeddings --root "$RUNITBACK_CFB_FOUNDATION" $seasons --end "$end"
+          runitback cfb player-values --start 2012 --end "$end" --jobs $(nproc) --out "$RUNITBACK_CFB_PLAYER_VALUES"
+          mkdir -p data/cfb/espn_cache
+          if gh release download cfb-espn-cache --pattern espn_cache.tar.gz; then
+            tar -xzf espn_cache.tar.gz -C data/cfb/espn_cache
+          fi
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -122,10 +169,22 @@ jobs:
       - name: Export fresh data and lines
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-        run: >
-          runitback-wager web export --data_dir webdata --output_dir out --sports '[nfl]'
-          --refresh true --require_refresh false --odds "{nfl: oddsapi}"
-          --odds_history previous --challenge_from previous
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          odds="{nfl: oddsapi, cfb: espn}"
+          # NBA lines: the daily run and manual runs only (The Odds API's monthly quota)
+          if [ -z "$SCHEDULE" ] || [ "$SCHEDULE" = "17 10 * * *" ]; then
+            odds="{nfl: oddsapi, nba: oddsapi, cfb: espn}"
+          fi
+          runitback-wager web export --data_dir webdata --output_dir out --sports '[nfl,nba,cfb]' \
+            --refresh true --require_refresh false --odds "$odds" \
+            --odds_history previous --challenge_from previous \
+            --player_values "{nfl: $RUNITBACK_NFL_PLAYER_VALUES, nba: $RUNITBACK_NBA_PLAYER_VALUES}"
+          # a run that fetched no NBA lines keeps the published ones (the sync below deletes
+          # what is missing from out/data)
+          if [ ! -f out/data/nba/odds.json ] && [ -f previous/nba/odds.json ]; then
+            mkdir -p out/data/nba && cp previous/nba/odds.json out/data/nba/odds.json
+          fi
       - name: Publish to the bucket
         # files first, then removals: a page loading mid-sync sees old or new files, never none
         run: |

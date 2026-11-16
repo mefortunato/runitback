@@ -1,4 +1,4 @@
-# NBA: player values (N2) and foundation folds (N4)
+# NBA: player values (N2), foundation folds (N4) and the wager model on them (N5)
 
 Work package N2 (`docs/multisport/PLAN.md`): layer B of the NFL player model for the NBA. Each player
 gets an offense and a defense value from a possession-level adjusted plus-minus. Each team-game gets
@@ -157,7 +157,7 @@ weaker; N3's projection should show whether that is so.
 
 1. **N3:** the projected rotation (previous games minus DNP-injury reasons, live ESPN injuries).
    Pass it as `game_table(lineups=...)`. The previous-game change columns then become informative.
-2. **N5:** register `LINEUP` on the NBA `Sport` and run `prod` / `pbp32` / `pbp32_pvc` with 4
+2. **N5 (done, see below):** register `LINEUP` on the NBA `Sport` and run `prod` / `pbp32` / `pbp32_pvc` with 4
    seeds, plus the swap test (one starter per position group to best regular / worst regular /
    replacement / out).
 3. **Better values:** a box-score prior for rookies and low-minute players (today they sit at
@@ -230,3 +230,125 @@ job. Artifacts: `nba-data`, `nba-fold<S>`, `nba-foundation-results` (the report)
 Locally: `runitback nba download --start 2002 --end 2027 --no-players`, `runitback nba preprocess
 --start 2002 --end 2027`, then `runitback nba foundation --root foundation/nba` (or `--season S` for
 one fold), and `python scripts/nba_foundation_report.py foundation/nba`.
+
+## The wager model on the foundation and the player values (N5)
+
+Does the NBA wager model get better with the foundation's game embeddings (`pbp32`, N4) and the
+player values of each game's projected rotation (`pvc`, N2 on N3's projection), and does changing a
+starter move its prediction the right way at every position?
+
+**Short answer: pending the first run of `NBA wager experiment`** (`.github/workflows/
+nba-wager-experiment.yml`). The tables below are filled from its `nba-wager-results` artifact.
+
+### Setup
+
+- **Walk-forward, 2022–2026** (5 folds, about 1,300 games each). For each test season S the wager
+  model, the foundation fold and its PCA see only games before S; the player values are refit weekly
+  on possessions before each game's Monday.
+- **Arms** (`experiments/nba/wager.yaml`):
+  - `prod`: the S4a box-score production model, the baseline.
+  - `pbp32`: + fold S's frozen 32-dim per-possession game embeddings in the history tokens.
+  - `pbp32_pvc`: + each position group's (G / F / C, offense and defense) change in the projected
+    rotation's value vs the team's last 10 rotations, through sign-constrained additive terms on the
+    margin and the total (the NFL's production `pvc`). The values are hidden from the head's MLP.
+  - `prod_pvc`: the player values without the foundation, in case `pbp32` does not pass.
+  - `_e4`: the same with 4 seeds averaged. Promotion compares `_e4` with `_e4`.
+- **Projected rotation** (N3, `runitback nba lineups`): the game's box-score roster minus players
+  with an injury did-not-play reason, ranked by recency-weighted minutes. **The documented leak:**
+  there is no history of NBA injury reports, so a player ruled out after the line was set counts as
+  known at tip-off (see N3's notes in `runitback.nba.data.lineups`). `runitback nba player-values
+  --lineups data/nba/processed/projected_lineups.parquet` sums it into `pv.parquet`.
+- **Join fix.** The NBA games table's ESPN ids come back from `games.csv` as integers, while the
+  embedding and value tables key games by the id string, so every row would have been "missing".
+  `runitback.wager.models.transformer.data.game_keys` puts both on the string; the NFL's string ids
+  are untouched (`tests/wager/test_nba_lineup.py`).
+- **Swap test** (`scripts/nba_lineup_swap.py`): `pbp32_pvc_e4` fit on the seasons before 2026, then
+  every 2026 game re-predicted with one change to the home team's projected rotation: the top-ranked
+  G, F or C replaced by the group's best / worst regular (offense + defense value per possession in
+  the fit before the season, at least 2,000 minutes on court in the window), by a replacement-level
+  player, or ruled out (everyone below him moves up a slot). A position passes when the margin and
+  the win probability move with the value in every game where it moved by more than 0.05 points.
+
+### Wager performance
+
+Paired Brier difference (negative is better) ± 95% CI half-width. Pending.
+
+### Swap test
+
+Pending.
+
+### Reproducing
+
+Run `NBA wager experiment` from the Actions tab, or push a change to `experiments/nba/wager.yaml` or
+the workflow on a `claude/**` branch. It rebuilds the games with lines and the foundation folds
+(`nba-experiment-inputs.yml`), and in its `values` job downloads the 2015–2027 play-by-play and
+player box scores and runs `runitback nba players`, `lineups` and `player-values --lineups`. One
+cell locally: `python scripts/wager_arm.py pbp32_pvc_e4 2025 --sport nba --experiment
+experiments/nba/wager.yaml` (with `runs/foundation/fold2025/` and `player_values/nba/pv.parquet` in
+place).
+
+## Wager model on the foundation and the player values (N5)
+
+Work package N5: the NBA wager transformer (`runitback.wager`, the S4a port) with N4's frozen `pbp32`
+game embeddings and N2/N3's player values, walk-forward over 2022–2026 (6,604 games, five folds).
+Arms are in `experiments/nba/wager.yaml`; run 42939326841 of `nba-wager-experiment.yml` rebuilt every
+input and produced the artifact `nba-wager-results`. Reports: `wager/single/` (1 seed),
+`wager/e4/` (4 seeds, the promotion comparison) and `wager/swap/swap_2026.md`.
+
+**Short answer**
+- **Promote `prod_pvc_e4`: the box-score production model plus the player-value lineup terms.** Against
+  `prod_e4` it passes the bar on all three markets: moneyline **−0.0031 ± 0.0010**, spread
+  **−0.0032 ± 0.0012**, total −0.0002 ± 0.0006 (paired Brier, 95% CI; negative is better).
+- **`pbp32_pvc_e4`, the plan's arm, does not pass.** Moneyline (−0.0027 ± 0.0011) and spread
+  (−0.0033 ± 0.0013) improve, but the total is **+0.0040 ± 0.0023**, worse than production. `pbp32`
+  alone is neutral on moneyline and spread and also worse on the total (+0.0047 ± 0.0024). The
+  foundation embeddings add nothing here; the player values carry the whole gain.
+- **The gain is in games where the rotation moved.** `prod_pvc_e4` moneyline: −0.0064 ± 0.0026 on the
+  2,220 games whose projected rotation differs from the team's recent ones, −0.0004 ± 0.0009 on the
+  steady games. Spread: −0.0068 ± 0.0029 and −0.0001 ± 0.0011.
+- **The swap test passes.** Changing one home starter to the best regular / worst regular /
+  replacement / out moves the predicted margin and win probability the right way in 100% of 2026
+  games at G, F and C (run on `pbp32_pvc_e4`; a regular-to-replacement swing is 1 to 3 points of margin).
+- **Still behind Vegas.** `prod_pvc_e4` trails the closing moneyline by +0.0050 ± 0.0018 Brier
+  (production: +0.0081 ± 0.0021).
+
+| config (4 seeds) | n | Brier (moneyline) | Δ moneyline | Δ spread | Δ total | margin RMSE |
+|---|---|---|---|---|---|---|
+| prod_e4 (baseline) | 6,588 | 0.2131 | | | | 13.96 |
+| pbp32_e4 | 6,588 | 0.2136 | +0.0004 ± 0.0007 | −0.0002 ± 0.0007 | **+0.0047 ± 0.0024 (fails)** | 13.98 |
+| pbp32_pvc_e4 | 6,588 | 0.2104 | −0.0027 ± 0.0011 | −0.0033 ± 0.0013 | **+0.0040 ± 0.0023 (fails)** | 13.80 |
+| **prod_pvc_e4** | 6,588 | **0.2101** | **−0.0031 ± 0.0010** | **−0.0032 ± 0.0012** | −0.0002 ± 0.0006 | 13.79 |
+| Vegas | 6,604 | 0.2050 | | | | 13.57 |
+
+Δ Brier by season, moneyline (`prod_pvc_e4`): 2022 −0.0040, 2023 −0.0028, 2024 −0.0022,
+2025 −0.0031, 2026 −0.0032. Every season is better than production; `pbp32_pvc_e4` is better in each
+too, by slightly less. One seed (`single/`) agrees: `pbp32_pvc` −0.0025 ± 0.0014 moneyline,
++0.0103 ± 0.0032 on the total.
+
+### Swap test (2026, `pbp32_pvc_e4`, 1,322 games)
+
+One change to the home team's projected rotation per position group; "right way" is the sign of the
+change in margin and win probability (`wager/swap/swap_2026.md`).
+
+| group | best regular (Δ margin) | worst regular | replacement | out |
+|---|---|---|---|---|
+| G | +2.26 (Gilgeous-Alexander) | −2.04 | −2.01 | −0.73 |
+| F | +1.98 (Antetokounmpo) | −1.60 | −2.10 | −0.95 |
+| C | +2.03 (Jokic) | −1.36 | −1.09 | −0.18 |
+
+Each is ± 0.04–0.05 (95% CI) and right-way in 100% of games. The predicted total moves a little (−0.4
+to +0.3 points); it rises for a few worst-regular and out swaps (F worst +0.07, C out +0.08), because
+the total reads offense and defense separately and the worst regular is not worst at both.
+
+### Why the foundation does not help, and what is left
+
+- `pbp32` carried team strength and little beyond Elo (N4). The wager model already gets team
+  strength from the box-score and market tokens, so the embeddings add noise, most visibly on the
+  total, where the single-seed `pbp32` arm loses 0.0066 ± 0.0027.
+- The sign-constrained terms read only the six "change vs the last 10 rotations" columns, so the
+  levels enter through the history tokens. That is the NFL's `pvc` design.
+- Next: (1) N6, the lineup editor and daily `pv.parquet` rebuilds; (2) a total-only fix for
+  the foundation arm, if the embeddings are worth keeping; (3) the rookie and low-minute box-score prior
+  from N2's list.
+
+Seed noise means a rerun reproduces these tables within about ±0.002 Brier.

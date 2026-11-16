@@ -412,6 +412,8 @@ runitback nba download --start 2015 --end 2027      # raw parquet (play-by-play 
 runitback nba players --start 2015 --end 2027       # → data/nba/processed/{on_court,player_games,players}.parquet, prints the 5-on-court check
 runitback nba lineups [--live]                      # → data/nba/processed/projected_lineups.parquet (+ _upcoming with --live), prints the check vs actual
 runitback nba player-values --start 2015 --end 2027 # → data/nba/processed/possessions.parquet; player_values/nba/{pv.parquet,slots.json,values_latest.csv}
+runitback nba player-values --lineups data/nba/processed/projected_lineups.parquet \
+    --upcoming data/nba/processed/projected_lineups_upcoming.parquet   # + upcoming games' pv rows and the game pages' lineup editor (lineups.parquet); RUNITBACK_NBA_PLAYER_VALUES=player_values/nba turns the lineup terms on
 runitback nba preprocess --start 2015 --end 2027    # → data/nba/processed/{games,plays,ratings}.parquet, prints engine agreement
 runitback nba train --out runs/nba/eval --val-season 2026        # hold out the last 40% of 2025-26
 runitback nba evaluate --ckpt runs/nba/eval/model.pt
@@ -1049,10 +1051,16 @@ service** at `/mnt/predictions` (`RUNITBACK_PREDICTIONS`), so it refreshes witho
 deployments keep needing a merge to `main`:
 
 - **Train predictions** (`.github/workflows/train-predictions.yml`, monthly and by hand) trains the
-  wager model, backtests it and publishes the `predictions-webdata` release asset (backtest seasons
-  are reused through the `predictions-backtest-cache` release while the model is unchanged).
+  NFL, NBA and CFB wager models (the NBA's is `prod_pvc_e4`: player values, no foundation folds; the
+  CFB's is `pbp32_qb`: college play-by-play folds, one matrix job per season, kept in the
+  `foundation-cfb` release, plus starting-quarterback values), backtests them and publishes the
+  `predictions-webdata` release asset (backtest seasons are reused through the
+  `predictions-backtest-cache` release while the model is unchanged). CFB lines are ESPN's, one
+  request per game, so per-season jobs fetch them into the `cfb-espn-cache` release; a first run
+  needs `max_new_seasons` 2 until every CFB season is backtested.
 - **Refresh predictions** (`.github/workflows/refresh-predictions.yml`, daily and before each NFL
-  kickoff window) downloads that release, re-downloads results and lines (The Odds API with the
+  kickoff window; NBA lines only on the daily run and manual runs, to spare the Odds API quota; CFB
+  lines are ESPN's, no key or quota, on every run) downloads that release, re-downloads results and lines (The Odds API with the
   `ODDS_API_KEY` secret; without it the previous lines carry over), refreshes team state (no
   retraining), exports, and syncs the files to the bucket. The pages pick them up within a minute:
   the mount caches metadata for 60 s and `/data` responses carry `Cache-Control: no-cache`.
@@ -1093,6 +1101,10 @@ runitback nfl player-values                 # player_values/nfl
 RUNITBACK_NFL_FOUNDATION=foundation/nfl RUNITBACK_NFL_PLAYER_VALUES=player_values/nfl \
   runitback-wager web build --sports '[nfl]' --output_dir webdata
 ```
+
+`runitback-wager web export --player_values '{nfl: player_values/nfl}'` also writes `nfl/players.json`
+for the **Players** tab (this season's players ranked by value within each position group; it reads
+`data/nfl/processed` too, `--data_root` moves it). Refresh predictions passes it.
 
 Run the build and export from the directory that holds `foundation/nfl` and `player_values/nfl`:
 the trained model stores both tables' paths relative to it.

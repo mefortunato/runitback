@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
+
 from ..core import foundation as core
 from ..nfl.foundation import NFLGenerator
 
@@ -61,3 +63,36 @@ def prepare(root: Path, data_dir: Path, seasons: list[int], train: bool = True, 
     """Make each fold in ``seasons`` ready: train its model if it has none (``train``), embed every
     played game once, then add the games played since. Returns {season: what was done}."""
     return core.prepare(generator, root, data_dir, seasons, train=train, threads=threads, dim=DIM)
+
+
+def wager_keys(emb: pd.DataFrame, schedule: pd.DataFrame) -> pd.DataFrame:
+    """A fold's embeddings (``game_id, team`` = ESPN team id, ``season``, ``_pbp_*``) keyed as the CFB
+    wager model keys its team-games: ``team`` is the school name, or ``FCS`` for an FCS side (the
+    pooled team), through the schedule's ``home_id`` / ``away_id`` and divisions. Games without an
+    FBS team have no wager row and are dropped, as are team ids the schedule doesn't know."""
+    from ..wager.cfb.data.download import FCS
+
+    s = schedule.assign(game_id=schedule.game_id.astype(str))
+    s = s[(s.home_division == "fbs") | (s.away_division == "fbs")]
+    names = pd.concat([
+        pd.DataFrame({"game_id": s.game_id, "team_id": pd.to_numeric(s[f"{side}_id"], errors="coerce"),
+                      "wager_team": s[f"{side}_team"].where(s[f"{side}_division"] == "fbs", FCS)})
+        for side in ("home", "away")]).dropna(subset=["team_id"]).astype({"team_id": "int64"})
+    names = names.drop_duplicates(["game_id", "team_id"])
+    out = emb.assign(game_id=emb.game_id.astype(str), team_id=pd.to_numeric(emb.team, errors="coerce"))
+    out = out.dropna(subset=["team_id"]).astype({"team_id": "int64"})
+    out = out.merge(names, on=["game_id", "team_id"], how="inner")
+    out["team"] = out.pop("wager_team")
+    return out.drop(columns="team_id").reset_index(drop=True)
+
+
+def write_wager_keys(root: Path, seasons: list[int], schedule: pd.DataFrame) -> dict[int, int]:
+    """Write ``<root>/fold<S>/pbp_32_wager.parquet`` (:func:`wager_keys`) for each fold; returns the
+    team-games kept per season."""
+    kept = {}
+    for s in seasons:
+        d = fold_dir(Path(root), s)
+        out = wager_keys(pd.read_parquet(d / FILES[2]), schedule)
+        out.to_parquet(d / "pbp_32_wager.parquet", index=False)
+        kept[s] = len(out)
+    return kept
