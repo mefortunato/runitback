@@ -5,9 +5,11 @@ import { dateText, seasonText } from "../lib/format";
 import { links } from "../lib/links";
 import { sportById } from "../../sports";
 import { gameOdds } from "../lib/odds";
-import type { SportInfo } from "../lib/types";
+import type { SportInfo, Team } from "../lib/types";
 import { SORT_LABELS, sortGames, sortOptions, type GameSort } from "../lib/upcoming";
 import GameCard from "../components/GameCard";
+import TeamBadge from "../components/TeamBadge";
+import { useTeamPick } from "../headerSearch";
 import { remember, remembered, useData } from "../useData";
 import { cx } from "../cx";
 import s from "./Upcoming.module.css";
@@ -20,13 +22,18 @@ export default function Upcoming({ info, season, date }: { info: SportInfo; seas
     [info.sport, season, date],
   );
   const [sort, setSort] = useState<GameSort>(() => remembered(SORT_KEY, "kickoff" as GameSort));
+  // a team picked in the header search; kept across dates (the reader is following one team
+  // through the schedule)
+  const [team, setTeam] = useState<Team | null>(null);
+  useTeamPick(info.sport, "Show games", setTeam);
   if (error) return <p className="error">{error}</p>;
   if (!data) return <p className="muted">Loading…</p>;
   const { upcoming, odds } = data;
   const options = sortOptions(upcoming.games);
   // a remembered market this week's games have no lines for falls back to kickoff
   const active = options.includes(sort) ? sort : "kickoff";
-  const games = sortGames(upcoming.games, active);
+  const games = sortGames(upcoming.games, active)
+    .filter((g) => !team || g.home.team === team.team || g.away.team === team.team);
   const choose = (next: GameSort) => { setSort(next); remember(SORT_KEY, next); };
   return (
     <div>
@@ -68,16 +75,33 @@ export default function Upcoming({ info, season, date }: { info: SportInfo; seas
         </div>
       ) : (
         <>
-          {options.length > 1 && (
-            <div className={s.sort} role="group" aria-label="Order games">
-              <span className="muted small">Sort by</span>
-              {options.map((o) => (
-                <button key={o} className={cx("pill", active === o && "accent")} aria-pressed={active === o} onClick={() => choose(o)}>
-                  {SORT_LABELS[o]}
+          {(team || options.length > 1) && (
+            <div className={s.toolbar}>
+              {team && (
+                <button className={s.chip} onClick={() => setTeam(null)} aria-label="Show every team's games">
+                  <TeamBadge team={team} label="none" size={18} />
+                  {team.name}
+                  <span className={s.x} aria-hidden="true">×</span>
                 </button>
-              ))}
-              {active !== "kickoff" && <span className="muted small">biggest disagreement with the market first</span>}
+              )}
+              {options.length > 1 && (
+                <div className={s.sort} role="group" aria-label="Order games">
+                  <span className="muted small">Sort by</span>
+                  {options.map((o) => (
+                    <button key={o} className={cx("pill", active === o && "accent")} aria-pressed={active === o} onClick={() => choose(o)}>
+                      {SORT_LABELS[o]}
+                    </button>
+                  ))}
+                  {active !== "kickoff" && <span className="muted small">biggest disagreement with the market first</span>}
+                </div>
+              )}
             </div>
+          )}
+          {team && (
+            <p className={cx("muted small", s.found)} aria-live="polite">
+              {games.length ? `${games.length} of ${upcoming.games.length} games`
+                : `No games for ${team.name} this ${info.date_label.toLowerCase()}${upcoming.dates.length > 1 ? ". Try another one above." : "."}`}
+            </p>
           )}
           <div className={s.games}>
             {games.map((g) => (

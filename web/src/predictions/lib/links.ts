@@ -16,3 +16,29 @@ export const links = {
   performance: (sport: string) => `/${sport}/performance`,
   generator: (sport: string) => `/${sport}/generator`,
 };
+
+export type PageKey = "upcoming" | "recent" | "rankings" | "players" | "map" | "performance" | "challenge";
+
+export interface SportPageLink {
+  key: PageKey;
+  label: string;
+  to: string;
+}
+
+/** A sport's predictions pages, in menu order (only those its export has data for). Shared by the
+ * sport's page tabs and the header search. */
+export function sportPages(info: {
+  sport: string; has_players?: boolean; has_team_map?: boolean; challenge_games: number; has_spread: boolean; markets?: unknown[];
+}): SportPageLink[] {
+  const s = info.sport;
+  return [
+    { key: "upcoming" as const, label: "Upcoming", to: links.upcoming(s) },
+    { key: "recent" as const, label: "Recent", to: links.recent(s) },
+    { key: "rankings" as const, label: "Rankings", to: links.rankings(s) },
+    ...(info.has_players ? [{ key: "players" as const, label: "Players", to: links.players(s) }] : []),
+    ...(info.has_team_map ? [{ key: "map" as const, label: "Team map", to: links.teamMap(s) }] : []),
+    ...(info.challenge_games ? [{ key: "performance" as const, label: "Performance", to: links.performance(s) }] : []),
+    ...(info.challenge_games && (info.has_spread || info.markets?.length)
+      ? [{ key: "challenge" as const, label: "Beat the model", to: links.challenge(s) }] : []),
+  ];
+}

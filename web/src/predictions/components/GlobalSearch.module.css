@@ -1,0 +1,111 @@
+.search {
+	position: relative;
+	width: 100%;
+}
+.icon {
+	position: absolute;
+	left: 10px;
+	top: 50%;
+	width: 14px;
+	height: 14px;
+	transform: translateY(-50%);
+	color: var(--muted);
+	pointer-events: none;
+}
+.input {
+	box-sizing: border-box;
+	width: 100%;
+	font: inherit;
+	font-size: 14px;
+	padding: 6px 28px 6px 30px;
+	border-radius: 8px;
+	border: 1px solid var(--border);
+	background: var(--surface);
+	color: var(--text);
+}
+.input:focus {
+	outline: 2px solid var(--accent);
+	outline-offset: -1px;
+}
+.hint {
+	position: absolute;
+	right: 8px;
+	top: 50%;
+	transform: translateY(-50%);
+	padding: 0 5px;
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	font: inherit;
+	font-size: 12px;
+	line-height: 1.4;
+	color: var(--muted);
+	pointer-events: none;
+}
+.input:focus ~ .hint {
+	display: none;
+}
+.list {
+	position: absolute;
+	z-index: 20;
+	top: calc(100% + 4px);
+	right: 0;
+	box-sizing: border-box;
+	width: max(100%, 360px);
+	max-width: calc(100vw - 32px);
+	margin: 0;
+	padding: 4px;
+	list-style: none;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+	max-height: min(420px, 70vh);
+	overflow-y: auto;
+}
+.list[hidden] {
+	display: none;
+}
+.list li {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 8px;
+	border-radius: 6px;
+}
+.option {
+	cursor: pointer;
+}
+.active {
+	background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.list li.group {
+	padding: 6px 8px 2px;
+	font-size: 12px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--muted);
+}
+.list li.note {
+	padding: 6px 8px;
+}
+.name {
+	flex: 1;
+	min-width: 0;
+	font-weight: 600;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.sport {
+	flex: none;
+	padding: 0 6px;
+	border-radius: 4px;
+	background: color-mix(in srgb, var(--muted) 16%, transparent);
+	font-size: 12px;
+	font-weight: 700;
+	color: var(--muted);
+}
+.verb {
+	flex: none;
+}

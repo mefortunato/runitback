@@ -1,127 +1,174 @@
-import { useEffect, useState } from "react";
-import { call } from "./http";
 import { Link } from "./router";
 import ReplayAnimation from "./components/ReplayAnimation";
-import BacktestRecord from "./BacktestRecord";
-
-interface Sport { id: string; name: string; model_available: boolean }
-
-const SPORTS = [
-  {
-    id: "nfl", name: "NFL", to: "/nfl", unit: "play",
-    blurb: "Spread, moneyline and over/under predictions for every game, checked against Vegas. And every snap, kickoff, punt, kick and timeout: call plays yourself, watch win probability move, forecast a matchup, or simulate a full season with schedule, tiebreakers and playoffs.",
-    outcome: ["play type", "result", "yards", "clock"],
-    facts: ["nflverse play-by-play, 1999 to today", "Engine replays 99.55% of real plays exactly", "Predictions, rankings and a walk-forward backtest", "Game, forecast and season simulators"],
-  },
-  {
-    id: "nba", name: "NBA", to: "/nba", unit: "event",
-    blurb: "Every shot, free throw, turnover, foul, timeout and jump ball. Step event by event or a possession at a time, call 2s and 3s, follow the shot chart and box score, or forecast a matchup.",
-    outcome: ["event type", "result", "clock"],
-    facts: ["ESPN play-by-play via hoopR, 2002 to today", "Engine replays 99.5% of real events exactly", "Game and forecast simulators"],
-  },
-];
+import { api } from "./predictions/lib/api";
+import { pct, seasonsText } from "./predictions/lib/format";
+import { links } from "./predictions/lib/links";
+import { breakEven } from "./predictions/lib/markets";
+import type { SportInfo } from "./predictions/lib/types";
+import { useData } from "./predictions/useData";
+import { SPORTS, navSports } from "./sports";
 
 const STEPS = [
-  { h: "The game so far", p: "Score, clock, possession, down and distance or free throws left, timeouts, and every previous play." },
+  { h: "The game so far", p: "Score, clock, possession, timeouts, and every play that has happened." },
   { h: "Transformer", p: "A causal transformer reads that history and predicts a distribution over what happens next." },
-  { h: "Sample an outcome", p: "Draw the next play field by field: its type, then its result, then yards (football) and clock, each conditioned on the fields before it." },
-  { h: "Rules engine", p: "Deterministic rules apply the outcome: scoring, possession, periods, overtime. The game stays legal." },
+  { h: "Sample an outcome", p: "Draw the next play field by field (its type, its result, then the clock), each conditioned on the fields before it." },
+  { h: "Rules engine", p: "A rules engine for the sport applies the outcome: scoring, possession, periods, overtime. The game stays legal." },
+];
+
+const WAGER_STEPS = [
+  { h: "Read every past game", p: "The generator re-reads each real game play by play, with the real outcomes fed in." },
+  { h: "Game fingerprint", p: "Its internal state, averaged over each team's plays and compressed to 32 numbers, describes how that team played." },
+  { h: "Wager model", p: "A second transformer reads each team's recent games and the value of the players expected to play." },
+  { h: "Price the game", p: "It predicts the margin and total, which become spread, moneyline and over/under picks next to Vegas." },
 ];
 
 export default function Home() {
-  const [status, setStatus] = useState<Record<string, boolean>>({});
-  useEffect(() => {
-    call<{ sports: Sport[] }>("/api/sports")
-      .then((r) => setStatus(Object.fromEntries(r.sports.map((s) => [s.id, s.model_available]))))
-      .catch(() => { /* status badges are optional */ });
-  }, []);
+  // sports.json (the predictions export): which sports have predictions, and their backtests
+  const { data: infos } = useData(() => api.sports().catch(() => [] as SportInfo[]), []);
+  const sports = navSports(infos?.map((i) => i.sport));
+  const usesGenerator = SPORTS.filter((s) => s.wagerUsesGenerator);
   return (
     <div className="home">
       <section className="hero">
-        <p className="eyebrow">Sports, simulated one play at a time</p>
-        <h1>Replay any matchup a thousand different ways.</h1>
+        <p className="eyebrow">Sports, simulated one play at a time, and predicted before kickoff</p>
+        <h1>Replay any matchup a thousand different ways. Then price it.</h1>
         <p className="lede">
-          Run It Back is a generative model of sports games. It has read decades of real play-by-play,
-          and it writes new games the same way they happen: one play after another, each one depending
-          on everything before it. Play a game and make the calls yourself, or simulate a matchup a
-          thousand times to see how often each team wins and by how much.
+          Run It Back is a generative model of sports games. It has read decades of real play-by-play
+          and writes new games the way they happen: one play after another, each depending on everything
+          before it. On top of it sits a <strong>wager model</strong> that predicts the spread, moneyline
+          and over/under of upcoming games and scores itself against the betting market.
         </p>
         <div className="hero-links">
-          {SPORTS.map((s) => <Link key={s.id} to={s.to} className="button primary">Open {s.name}</Link>)}
+          <a href="#sports" className="button primary">Pick a sport</a>
+          <a href="#how" className="button">How it works</a>
         </div>
       </section>
 
       <ReplayAnimation />
 
-      <BacktestRecord />
+      <section className="pillars" aria-label="What Run It Back does">
+        <article className="card pillar">
+          <p className="eyebrow">1 · The generator</p>
+          <h2>Replay games</h2>
+          <p>
+            Re-run a matchup, call the plays yourself, watch live win probability, forecast a game over a
+            thousand simulations, or play out a whole season.
+          </p>
+        </article>
+        <div className="pillar-arrow" aria-hidden="true">→</div>
+        <article className="card pillar">
+          <p className="eyebrow">2 · The wager model, built on the generator</p>
+          <h2>Predict wagers</h2>
+          <p>
+            Uses what the generator learned about each team's recent games, plus who is expected to play,
+            to predict every upcoming game's margin and total, priced against Vegas.
+          </p>
+        </article>
+      </section>
 
-      <section className="sport-cards" aria-label="Sports">
-        {SPORTS.map((s) => (
-          <Link key={s.id} to={s.to} className="card sport-card">
-            <div className="sport-card-head">
-              <h2>{s.name}</h2>
-              {s.id in status && (
-                <span className={`badge ${status[s.id] ? "ok" : ""}`}>{status[s.id] ? "Model loaded" : "No model yet"}</span>
-              )}
-            </div>
-            <p>{s.blurb}</p>
-            <p className="outcome" aria-label={`Each ${s.unit} is sampled as`}>
-              {s.outcome.map((o, i) => <span key={o}>{i > 0 && <span className="arrow" aria-hidden="true">→</span>}<code>{o}</code></span>)}
-            </p>
-            <ul>{s.facts.map((f) => <li key={f}>{f}</li>)}</ul>
-            <span className="go">Open {s.name} →</span>
-          </Link>
-        ))}
+      <section className="how" id="how">
+        <h2>How the generator works</h2>
+        <ol className="loop" aria-label="One step of the simulation loop">
+          {STEPS.map((s, i) => <li key={s.h}><span className="num">{i + 1}</span><h3>{s.h}</h3><p>{s.p}</p></li>)}
+        </ol>
+        <p className="loop-note muted">
+          …and repeat until the final whistle. The network only predicts <em>what happened</em> on a play,
+          and illegal outcomes are masked out, so simulated games never break the rules. Batched, a CPU
+          plays a thousand games in seconds.
+        </p>
+      </section>
+
+      <section className="how wager-how">
+        <h2>From replays to wager predictions</h2>
+        <ol className="loop" aria-label="How the wager model uses the generator">
+          {WAGER_STEPS.map((s, i) => (
+            <li key={s.h}>
+              <span className="num">{i + 1}</span>
+              <h3>{s.h}{i === 0 && <a href="#generator-note" className="footnote-ref" aria-label="Which sports use the generator">*</a>}</h3>
+              <p>{s.p}</p>
+            </li>
+          ))}
+        </ol>
+        <p className="loop-note muted">
+          No peeking: each season is predicted by models trained only on earlier seasons, and player values are refit weekly on earlier games. That walk-forward backtest is
+          the record below.
+        </p>
+      </section>
+
+      <section className="sports-summary" id="sports" aria-labelledby="sports-title">
+        <h2 id="sports-title">Sports and performance</h2>
+        <p className="muted section-lede">
+          Each sport's walk-forward backtest against the Vegas lines. Beating the spread or the
+          total takes winning more than {pct(breakEven(), 1)} of bets at standard −110 prices.
+        </p>
+        <div className="table-scroll">
+          <table className="perf-table">
+            <thead>
+              <tr>
+                <th scope="col">Sport</th>
+                <th scope="col">Tested on</th>
+                <th scope="col">Picks the winner<span className="muted"> (Vegas)</span></th>
+                <th scope="col">Against the spread</th>
+                <th scope="col">Over/under</th>
+                <th scope="col">Games</th>
+                <th scope="col"><span className="sr-only">Pages</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {sports.map((s) => {
+                const info = infos?.find((i) => i.sport === s.id);
+                return <SportRow key={s.id} id={s.id} label={s.label} generator={s.generator} info={info} usesGenerator={!!s.wagerUsesGenerator} />;
+              })}
+            </tbody>
+          </table>
+        </div>
+        <p className="muted footnote" id="generator-note">
+          <span aria-hidden="true">* </span>
+          The generator's game fingerprints feed the production wager model only
+          for {usesGenerator.map((s) => s.label).join(" and ")}. In the other sports the wager model reads
+          box-score history, plus player values where the sport has them; where a sport's fingerprints were tested they did not
+          improve the predictions enough to keep.
+        </p>
       </section>
 
       <section className="how">
-        <h2>How it works</h2>
-        <ol className="loop" aria-label="One step of the simulation loop">
-          {STEPS.map((s, i) => (
-            <li key={s.h}><span className="num">{i + 1}</span><h3>{s.h}</h3><p>{s.p}</p></li>
-          ))}
-        </ol>
-        <p className="loop-note muted">…and repeat until the final whistle or buzzer. Batched, a CPU plays a thousand games in seconds.</p>
-        <div className="how-grid">
-          <div>
-            <h3>The model never breaks the rules</h3>
-            <p>
-              The network only predicts <em>what happened</em> on a play. A hand-written rules engine for
-              each sport owns the game state and applies that outcome, and illegal outcomes are masked
-              out before sampling. Replaying real games through the engines reproduces the next real
-              state on more than 99% of plays.
-            </p>
-          </div>
-          <div>
-            <h3>Team strength</h3>
-            <p>
-              Each play sees both teams' pre-game ratings: offensive and defensive efficiency as
-              recency-weighted averages, plus an Elo rating, all computed only from games played
-              before it. Forecasts use each team's latest ratings for the season you pick.
-            </p>
-          </div>
-          <div>
-            <h3>Win probability</h3>
-            <p>
-              During a game, the live chart re-simulates the rest of it a few hundred times from the
-              current state. A forecast plays the whole game a thousand times and shows the spread of
-              final margins.
-            </p>
-          </div>
-          <div>
-            <h3>What it doesn't know</h3>
-            <p>
-              Teams, not players: no rosters, injuries or rest. A missing star is the biggest thing it
-              cannot see, and ratings take several games to catch up. It is a fun, honest simulator,
-              not a betting model.
-            </p>
-          </div>
-        </div>
-        <p className="muted data-credit">
-          Data from <a href="https://www.sportsdataverse.org/">SportsDataverse</a> (nflverse and hoopR).
-          Source on <a href="https://github.com/mefortunato/runitback">GitHub</a>.
+        <p className="muted closing">
+          Projected lineups are a guess until kickoff, and late scratches, weather and motivation are
+          outside the data. The record is an honest backtest, not a promise: for entertainment, not
+          betting advice. Data from <a href="https://www.sportsdataverse.org/">SportsDataverse</a> and
+          other public sources. Source on <a href="https://github.com/mefortunato/runitback">GitHub</a>.
         </p>
       </section>
     </div>
+  );
+}
+
+function SportRow({ id, label, generator, info, usesGenerator }: {
+  id: string; label: string; generator: boolean; info?: SportInfo; usesGenerator: boolean;
+}) {
+  const bt = info?.backtest?.overall?.model ? info.backtest : null;
+  const dash = <span className="muted">–</span>;
+  const rate = (v?: number | null) => (v == null ? dash : pct(v, 1));
+  return (
+    <tr>
+      <th scope="row">
+        <Link to={info ? links.upcoming(id) : links.generator(id)}>{label}</Link>
+        {usesGenerator && <a href="#generator-note" className="footnote-ref" aria-label="Uses the generator">*</a>}
+      </th>
+      <td>{bt?.seasons?.length ? seasonsText(bt.seasons, info?.split_season) : dash}</td>
+      <td>
+        {bt ? <>{pct(bt.overall.model.accuracy)}{bt.overall.market && <span className="muted"> ({pct(bt.overall.market.accuracy)})</span>}</> : dash}
+      </td>
+      <td>{rate(bt?.ats?.win_pct)}</td>
+      <td>{rate(bt?.totals?.record?.win_pct)}</td>
+      <td>{bt ? bt.overall.model.n.toLocaleString("en-US") : dash}</td>
+      <td>
+        <span className="row-links">
+          {info && <Link to={links.upcoming(id)}>Predictions</Link>}
+          {info && info.challenge_games > 0 && <Link to={links.performance(id)}>Performance</Link>}
+          {generator && <Link to={links.generator(id)}>Generator</Link>}
+        </span>
+      </td>
+    </tr>
   );
 }
