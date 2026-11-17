@@ -11,9 +11,9 @@ import torch
 
 from ..data.ratings import RatingsTable, scale_ratings
 from ..engine.rules import GameState, Outcome, apply_outcome
-from ..model.features import FEATURES, TeamSeasonVocab, elapsed_mask, encode_state, result_mask, type_mask
+from ..model.features import TeamSeasonVocab, elapsed_mask, encode_state, result_mask, type_mask
 from ..model.transformer import EventTransformer, ModelConfig
-from ..vocab import PLAY_TYPES, PT, RESULTS, RS
+from ..vocab import PLAY_TYPES, PT
 
 MAX_EVENTS = 700  # safety cap on events per game (real games: 250-400)
 
@@ -48,10 +48,8 @@ class Simulator:
         ck = torch.load(path, map_location="cpu", weights_only=False)
         model = EventTransformer(ModelConfig(**ck["config"]))
         model.load_state_dict(ck["state_dict"])
-        ts = TeamSeasonVocab([])
-        ts.keys = ck["team_seasons"]
-        ts.idx = {k: i + 1 for i, k in enumerate(ts.keys)}
-        ratings = RatingsTable.from_records(ck["ratings"]) if ck.get("ratings") else None
+        ts = TeamSeasonVocab.from_checkpoint(ck)
+        ratings = RatingsTable.from_records(ck["ratings"], ts.league) if ck.get("ratings") else None
         meta = {k: v for k, v in ck.items() if k not in ("state_dict", "ratings")}
         return cls(model, ts, meta, ratings)
 
@@ -60,11 +58,12 @@ class Simulator:
         return sorted({int(k.rsplit("_", 1)[1]) for k in self.ts.keys})
 
     def _rows_to_feats(self, rows: list[dict], batch_first: bool) -> dict[str, torch.Tensor]:
+        names = self.model.features
         if batch_first:  # B rows, one step each
-            feats = {f: torch.tensor([[r[f]] for r in rows], dtype=torch.long) for f in FEATURES}
+            feats = {f: torch.tensor([[r[f]] for r in rows], dtype=torch.long) for f in names}
             feats["cont"] = torch.tensor([[r["cont"]] for r in rows], dtype=torch.float32)
         else:  # one game, T steps
-            feats = {f: torch.tensor([[r[f] for r in rows]], dtype=torch.long) for f in FEATURES}
+            feats = {f: torch.tensor([[r[f] for r in rows]], dtype=torch.long) for f in names}
             feats["cont"] = torch.tensor([[r["cont"] for r in rows]], dtype=torch.float32)
         return feats
 
@@ -105,13 +104,14 @@ class Simulator:
         tt = torch.as_tensor(t)
         names = [PLAY_TYPES[k] for k in t]
 
+        lg = self.ts.league
         rm = np.stack([result_mask(s, n) for s, n in zip(states, names)])
         for i, f in enumerate(forced):
-            if f and f.get("result") in RS and rm[i, RS[f["result"]]]:
+            if f and f.get("result") in lg.rs and rm[i, lg.rs[f["result"]]]:
                 rm[i] = False
-                rm[i, RS[f["result"]]] = True
+                rm[i, lg.rs[f["result"]]] = True
         r = self._sample(m.result_logits(h, tt), rm, temperature, gen)
-        rnames = [RESULTS[k] for k in r]
+        rnames = [lg.results[k] for k in r]
 
         em = np.stack([elapsed_mask(s, n) for s, n in zip(states, names)])
         e = self._sample(m.elapsed_logits(h, tt, torch.as_tensor(r)), em, temperature, gen)

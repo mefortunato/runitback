@@ -1,0 +1,119 @@
+# Everything the college basketball foundation folds (C2) build on, rebuilt from the public sources in
+# the calling run (nothing comes from the repository or from an earlier run), as nba-experiment-inputs.yml
+# does for the NBA. Called once per gender by college-foundation.yml:
+#
+#   data ─► foundation (one fold per season)
+#
+# Artifacts, all in the calling run (<gender> is cbb, men's, or wcbb, women's):
+#   <gender>-data       data/<gender>/processed: games, plays (engine events with team fouls and the
+#                       possession arrow), pre-game ratings, teams (ESPN id -> key, Non-D1 pooled) and
+#                       replay.json (the engine's replay agreement against the real games)
+#   <gender>-fold<S>    the generator that never sees season S (runitback college foundation): model.pt,
+#                       pca_32.npz and pbp_32.parquet (pooled per possession, PCA fit on games before S),
+#                       plus history.json (validation loss per epoch)                       [foundation]
+name: College experiment inputs
+
+on:
+  workflow_call:
+    inputs:
+      gender:
+        description: "cbb (men's) or wcbb (women's)"
+        type: string
+        default: cbb
+      seasons:
+        description: "Test seasons (JSON list, the year a season ends) for the folds"
+        type: string
+        default: "[2022, 2023, 2024, 2025, 2026, 2027]"
+      start-season:
+        description: "First season of play-by-play to download (a fold trains on the 5 seasons before its test season)"
+        type: string
+        default: "2017"
+      end-season:
+        description: "Last season of play-by-play to download"
+        type: string
+        default: "2027"
+      foundation:
+        description: "Train the foundation folds"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      # ESPN play-by-play and schedules from sportsdataverse's releases (the schedule says which teams
+      # are Division I); the engine replays every real game and keeps those it reproduces (>= 90%)
+      - name: Play-by-play, schedules, engine events and the replay check
+        run: |
+          G=${{ inputs.gender }}
+          runitback college pbp-download --gender $G --start ${{ inputs.start-season }} --end ${{ inputs.end-season }}
+          runitback college pbp-preprocess --gender $G --start ${{ inputs.start-season }} \
+            --end ${{ inputs.end-season }} --jobs $(nproc) | tee replay.log
+          python -c "import pandas as pd; g = pd.read_parquet('data/$G/processed/games.parquet'); \
+            print(g.groupby('season').size().to_string())"
+          ls -la data/$G/processed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.gender }}-data
+          path: |
+            data/${{ inputs.gender }}/processed/games.parquet
+            data/${{ inputs.gender }}/processed/plays.parquet
+            data/${{ inputs.gender }}/processed/ratings.parquet
+            data/${{ inputs.gender }}/processed/teams.parquet
+            data/${{ inputs.gender }}/processed/replay.json
+          if-no-files-found: error
+          retention-days: 7
+
+  foundation:
+    needs: data
+    if: ${{ inputs.foundation }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        season: ${{ fromJSON(inputs.seasons) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ inputs.gender }}-data", path: "data/${{ inputs.gender }}/processed" }
+      - name: Train fold ${{ matrix.season }} (never sees it) and embed every game (PCA on games before it)
+        run: |
+          G=${{ inputs.gender }}
+          S=${{ matrix.season }}
+          # runitback.nba.foundation.TRAIN: validated on the last 40% of S-1, trained on the 5 seasons before
+          # (runitback.nba.league.CBB / WCBB `train_seasons`)
+          runitback college foundation --gender $G --root runs/foundation --season $S --threads $(nproc)
+          ls -la runs/foundation/fold$S
+      - name: Keep the validation history
+        run: |
+          S=${{ matrix.season }}
+          python -c "import json, torch; ck = torch.load('runs/foundation/fold$S/model.pt', weights_only=False); \
+            json.dump({'val_season': ck['val_season'], 'history': ck['history'], 'team_seasons': ck['team_seasons'], \
+            'n_teams': len(ck['teams'])}, open('runs/foundation/fold$S/history.json', 'w'), indent=1)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.gender }}-fold${{ matrix.season }}
+          path: runs/foundation/fold${{ matrix.season }}
+          retention-days: 30

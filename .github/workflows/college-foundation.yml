@@ -1,0 +1,86 @@
+# C2 (docs/multisport/PLAN.md): the college basketball foundation folds (pbp32), men's and women's, one
+# generator per test season and gender, each in its own job:
+#
+#   inputs (data, foundation: 5 backtest seasons + the current one), per gender ─► report, per gender
+#
+# Data and the folds are rebuilt in the run (college-experiment-inputs.yml). Fold S's generator is trained
+# on the five seasons before the last 40% of season S-1 (validated on that 40%) and never sees S; its
+# per-possession game embeddings are projected with a PCA fit on games before S. The report job checks
+# those rules for every fold, prints the engine's replay agreement and summarizes validation loss,
+# explained variance and a team-strength sanity check (scripts/nba_foundation_report.py), uploaded as
+# <gender>-foundation-results; the folds are kept as <gender>-foundation-models.
+#
+# Started by hand from the Actions tab: it has no push trigger, because 12 fold jobs of 2-4 hours each
+# are not something a commit should start.
+name: College foundation
+
+on:
+  workflow_dispatch:
+    inputs:
+      seasons:
+        description: "Test seasons (JSON list, the year a season ends)"
+        type: string
+        default: "[2022, 2023, 2024, 2025, 2026, 2027]"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: college-foundation-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  men:
+    uses: ./.github/workflows/college-experiment-inputs.yml
+    with:
+      gender: cbb
+      seasons: ${{ inputs.seasons }}
+
+  women:
+    uses: ./.github/workflows/college-experiment-inputs.yml
+    with:
+      gender: wcbb
+      seasons: ${{ inputs.seasons }}
+
+  report:
+    needs: [men, women]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        gender: [cbb, wcbb]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ matrix.gender }}-data", path: "data/${{ matrix.gender }}/processed" }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "${{ matrix.gender }}-fold*", path: folds }
+      - name: Report
+        run: |
+          G=${{ matrix.gender }}
+          mkdir -p runs/foundation out
+          for d in folds/$G-fold*; do mv "$d" "runs/foundation/${d#folds/$G-}"; done
+          ls runs/foundation
+          python scripts/nba_foundation_report.py runs/foundation --data data/$G/processed \
+            --out out/report.md --json out/report.json
+          cp data/$G/processed/replay.json out/replay.json
+          python -c "import json; r = json.load(open('out/replay.json')); \
+            print('engine replay agreement', r['agreement'], 'over', r['transitions'], 'transitions in', \
+            r['games'], 'games')" | tee -a out/report.md
+          cat out/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: "${{ matrix.gender }}-foundation-results", path: out, retention-days: 90 }
+      - uses: actions/upload-artifact@v4
+        with: { name: "${{ matrix.gender }}-foundation-models", path: runs/foundation, retention-days: 90 }

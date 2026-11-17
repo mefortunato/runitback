@@ -1,0 +1,71 @@
+{
+ "encode_state": "5a5a602611d6e22f7cb4dca323755302bb34a32e660037fb426717f5412ed07d",
+ "encoded": "d752590bd4835f6839c8b282be9b21c2de43eb6ce6ac28e26d7190e3a833213f",
+ "feature_sizes": {
+  "def_team": 31,
+  "def_ts": 9,
+  "diff": 81,
+  "fts_left": 4,
+  "game_type": 2,
+  "is_home": 2,
+  "off_team": 31,
+  "off_ts": 9,
+  "phase": 3,
+  "prev_elapsed": 62,
+  "prev_result": 19,
+  "prev_type": 10,
+  "qsec": 49,
+  "qtr": 7,
+  "season": 39,
+  "to_def": 8,
+  "to_off": 8
+ },
+ "game0": {
+  "final": "3aa469d168eebc31b0e6b9515c8a5fc9b876e2bd891f921b7736b6001b111ad3",
+  "n": 104,
+  "rows": "9a7ec7c8223a18fedfb7eac4bb7fa81acb4040c22a2cddfe9707babdd1c118c5",
+  "states": "44b95b8263ef83557439922d23925795b61289307f88faf7d4a1a1639d3f31ed"
+ },
+ "game1": {
+  "final": "91facc78a57f43c58da4c2d772b0f812304ace1e1a84e58f17eb1ee3625550a5",
+  "n": 112,
+  "rows": "697146a3c7bdac9c6e98a87e5f836521dd12cbf31c94a85e600ace2ea39fe79c",
+  "states": "cc8ed0f75208731cb251d2fd11590fa7a6248bfe58c4b1fc0ce47b4c2343452e"
+ },
+ "game2": {
+  "final": "3615bcc4a3e92a706e0892d15f88b812f9f2b2bbd37559ae2d95dd5c0a2f4204",
+  "n": 107,
+  "rows": "fb2ab6b19eca93228603a28b62520023d278310cce3f298a54ce94a4c3a65ad9",
+  "states": "b398401c1e81f3c7f870c613eb9d8703f6bd0b24277972c2374090ee1ea08f7c"
+ },
+ "game3": {
+  "final": "ad3b9d0ad8b2efd92bd061bc8d176b49e720c90fb6952cd2fd73229da9c0ec39",
+  "n": 107,
+  "rows": "17d7642094c5e0cc0afb77af54121bdd6f8c33ef7b4e0f61963f01e45dc246c1",
+  "states": "061dc5294d9a290d72bdd2bc4c0adb8dcb867494e75cde9ff9e67d517f71fffd"
+ },
+ "game4": {
+  "final": "a07aa491c92df86880d977b00dcee8cbe241c8167d014f52c7e2fc48f80b8802",
+  "n": 98,
+  "rows": "aef1d32e7cfd879ce2fb95ba5415d2f9715ad0b91bf5b8f42008b873697c2091",
+  "states": "1adcedcfc02fd9f9fb47e658df1a65fdb7acd7664c7459f3b0908b042fec4bca"
+ },
+ "game5": {
+  "final": "45bcd760267118179177f73e5e4c4e96d667881e9a1359c7f16f4baecf77f2fd",
+  "n": 96,
+  "rows": "aefe465972464ea89f69e37a807bc9a95d54f6a212decc396c5cd71a38fbc8d7",
+  "states": "8fd6f742b13e9fb339aa922755ff828e7368ff3e8fd90a96bd7ccc9f9bd59eea"
+ },
+ "game6": {
+  "final": "9fd3a1bd6db187dadee8707a789a572782797e6b447fb0268a1ddc70e7f43351",
+  "n": 89,
+  "rows": "ed70d336fc3a383bea012cc7108664855b344e4a47f8b02443964d456cd964ab",
+  "states": "84df520bdb4dcee3953f74e8187e60411c74554a72409dd537fe233fcc618865"
+ },
+ "game7": {
+  "final": "f6b9853dd1ad3c981da6cd2f6ff34b55e4991dd91d157f84a4a72146266a1eb8",
+  "n": 98,
+  "rows": "955c0f131bec8ef89f95842ff80e8d1a593545b5fb7363476527f27d6c574ef1",
+  "states": "4ac786d7717be6702e7ab1bcb88868c68252fe5f9eaaee667ef4b91600ae83ba"
+ }
+}

@@ -2,7 +2,7 @@
 evaluate | calibrate | simulate | serve, runitback mlb download | process | lineups | player-values |
 probables, runitback nhl download | events | lineups, runitback cfb download | preprocess | train |
 foundation | players | player-values, and runitback college download | players | lineups | cbbd |
-player-values."""
+player-values | pbp-download | pbp-preprocess | foundation."""
 from __future__ import annotations
 
 import csv
@@ -952,6 +952,65 @@ def college_player_values(gender: str = GENDER_OPT,
     gv = pv.build(pg, tg, proj, first_season or pv.FIRST_SEASON[g], poss, players, apm_from=cl.FIRST_SEASON)
     pv.write_game_table(gv, out or Path(f"player_values/{g}"), players)
     typer.echo(f"{len(gv.pv)} team-games, {len(gv.fits)} weekly fits -> {out or Path(f'player_values/{g}')}")
+
+
+def _college_league(gender: str):
+    from .nba.league import get_league
+    from .college.data import gender as get
+    return get_league(get(gender).name)
+
+
+@college.command("pbp-download")
+def college_pbp_download(gender: str = GENDER_OPT, start: int = typer.Option(None, help="first season (default: "
+                                                                                         "the league's first)"),
+                         end: int = 2027, force: bool = False):
+    """Download ESPN play-by-play and schedules (sportsdataverse) to data/<gender>/raw."""
+    from .nba.data.college import download_season
+    _log()
+    lg = _college_league(gender)
+    for s in range(start or lg.first_season, end + 1):
+        got = download_season(lg, s, _college_dir(lg.name) / "raw", force)
+        typer.echo(f"{s}: {got[0] if got else 'not published'}")
+
+
+@college.command("pbp-preprocess")
+def college_pbp_preprocess(gender: str = GENDER_OPT, start: int = typer.Option(None), end: int = 2027,
+                           jobs: int = typer.Option(1, help="seasons to process in parallel")):
+    """Play-by-play to engine events (data/<gender>/processed: games, plays, ratings, teams) and the engine's
+    replay agreement against the real games (replay.json)."""
+    from .nba.data.college import preprocess
+    _log()
+    lg = _college_league(gender)
+    d = _college_dir(lg.name)
+    stats = preprocess(lg, list(range(start or lg.first_season, end + 1)), d / "raw", d / "processed", jobs=jobs)
+    typer.echo(json.dumps(stats, indent=1))
+
+
+@college.command("foundation")
+def college_foundation(gender: str = GENDER_OPT,
+                       root: Path = typer.Option(None, help="fold directory (default foundation/<gender>)"),
+                       season: list[int] = typer.Option(None, help="fold (test season, the year it ends); repeat "
+                                                                   "for several. Default: the last 5 complete and the current"),
+                       train: bool = typer.Option(True, help="train a fold that has no model"),
+                       existing: bool = typer.Option(False, help="only add new games to the folds already in --root "
+                                                                 "(no training)"),
+                       epochs: int = typer.Option(0, help="override the fold recipe's epochs (0 = the NBA recipe's)"),
+                       threads: int = 0):
+    """Foundation folds (pbp32) for the college wager models: train missing ones, embed new games."""
+    from .core.foundation import default_seasons, existing_folds
+    from .nba.foundation import GENERATORS, BasketballGenerator, prepare
+    _log()
+    lg = _college_league(gender)
+    data = _college_dir(lg.name) / "processed"
+    root = root or Path(f"foundation/{lg.name}")
+    gen = BasketballGenerator(lg, epochs=epochs) if epochs else GENERATORS[lg.name]
+    if existing:
+        season = existing_folds(root)
+        train = False
+    elif not season:
+        season = default_seasons(gen, data)
+    for s, what in prepare(root, data, season, train=train, threads=threads or None, gen=gen).items():
+        typer.echo(f"fold{s}: {what}")
 
 
 @cfb.command("wager-embeddings")
