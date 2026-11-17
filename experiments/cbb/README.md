@@ -321,9 +321,11 @@ Work package C2 parameterizes the basketball engine by league (`runitback.nba.le
 - **What is left is the feed, not the rules:** a team acting twice in a row after a made basket or a turnover (a
   row missing between them), fouls by the team with the ball, and rare trips. Biggest misses, men: made shot then
   same team acts (19.0k), turnover then same team (13.7k), a foul with no free throws then a different team (7.3k).
-- **Folds are untrained here.** Heavy training runs in Actions, so no fold exists yet; unit tests train tiny folds
-  end to end (leak checks, PCA on games before the test season, incremental updates). A smoke step on real men's
-  data ran 1.45 s per 32 games on 4 threads: about 2-3 hours per fold (30k games, 6 epochs), like the NBA's.
+- **The workflow runs end to end.** A smoke run of `college-foundation.yml` with only the 2025 fold per gender
+  (run 44002544228) passed every job: data (about 8 min), fold training and embedding (men 1h48m, women 2h01m on a
+  4-core runner, under the 330-minute limit) and the report. Only that fold was run; the other folds and the fold
+  table (validation loss, PCA, team-strength check) are still to come. Unit tests cover the leak checks, PCA on games
+  before the test season and incremental updates on tiny folds.
 - **Women's data is thin before 2020.** The release has about 1,550 games a season in 2017-2019 against
   about 5,500 from 2022, so women's folds 2022-2023 train on fewer games.
 
