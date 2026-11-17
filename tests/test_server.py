@@ -61,7 +61,7 @@ def test_sports_listing_matches_the_exports_and_the_web_app(tmp_path, monkeypatc
     assert [s["id"] for s in listed if s["generator"]] == ["nfl", "nba"]
     assert not any(s["model_available"] for s in listed if not s["generator"])
     web = (Path(__file__).resolve().parents[1] / "web" / "src" / "sports.ts").read_text()
-    entries = re.findall(r'\{ id: "(\w+)", label: "(\w+)", generator: (true|false) \}', web)
+    entries = re.findall(r'\{ id: "(\w+)", label: "(\w+)", generator: (true|false)[^}]*\}', web)
     assert [(i, g == "true") for i, _, g in entries] == [(s["id"], s["generator"]) for s in listed]
     assert [label for _, label, _ in entries] == [s["name"] for s in listed]
 

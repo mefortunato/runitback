@@ -39,13 +39,17 @@ def test_register_release_and_next_version(tmp_path):
     path.write_text((release.RELEASES_FILE).read_text())
     ck = tmp_path / "model.pt"
     ck.write_bytes(b"new weights")
-    rel = release.register_release("v0.2.0", ck, path)
-    assert rel["latest"] == "v0.2.0"
-    assert rel["models"]["v0.2.0"] == {"tag": "v0.2.0", "asset": "runitback-nfl-model-v0.2.0.pt",
-                                       "sha256": hashlib.sha256(b"new weights").hexdigest()}
+    new = release.next_patch_version(release.LATEST)  # the next unregistered version, whatever has shipped
+    assert new not in release.MODELS
+    rel = release.register_release(new, ck, path)
+    assert rel["latest"] == new
+    assert rel["models"][new] == {"tag": new, "asset": f"runitback-nfl-model-{new}.pt",
+                                  "sha256": hashlib.sha256(b"new weights").hexdigest()}
     assert json.loads(path.read_text())["models"]["v0.1.0"]  # earlier releases stay listed
     with pytest.raises(ValueError, match="already registered"):
-        release.register_release("v0.2.0", ck, path)
+        release.register_release(new, ck, path)
+    with pytest.raises(ValueError, match="already registered"):
+        release.register_release(release.LATEST, ck, path)
     with pytest.raises(ValueError):
         release.register_release("0.3", ck, path)
     assert release.next_patch_version("v0.2.0") == "v0.2.1"
