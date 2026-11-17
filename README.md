@@ -767,6 +767,35 @@ runitback cfb player-values --start 2012 --end 2026   # → player_values/cfb/{p
   starter) and the starting-QB-change term (vs the team's last 7 starters), in the layout of
   `runitback.wager.cfb.lineup.LINEUP`. Write-up: `experiments/cfb/README.md`.
 
+## College basketball
+
+`runitback.nba` is the basketball engine for every league: a `League` (`src/runitback/nba/league.py`) holds the
+rules and sizes, and the engine, features, model and fold code take it as a parameter (C2,
+`docs/multisport/PLAN.md`; the WNBA, W1, is the next value). `NBA` reproduces the original engine exactly
+(`tests/nba/test_league.py` pins digests of its games and tensors). `CBB` (men's) and `WCBB` (women's) add:
+
+- **Periods and clock.** Men play two 20-minute halves, women four 10-minute quarters, both with 5-minute
+  overtimes and a 30-second shot clock (two clocks, 60 seconds, is the longest gap one event spans).
+- **Timeouts.** Four a team, no more than three carried into the men's second half, one more per overtime.
+- **Team fouls and the bonus.** Fouls are events: a foul with no free throws (`fts_0`) counts toward the
+  bonus. Men: the 7th team foul of a half is a 1-and-1, the 10th two shots, counts reset in the second half;
+  women: the 5th foul of a quarter is two shots, reset every quarter; overtime keeps the count. The model sees
+  both teams' foul counts and whether the shot is the first of a 1-and-1.
+- **Possession arrow.** Every period and overtime starts with a toss. Most games' rows don't show held balls,
+  so the arrow is only the first guess and the toss event says who actually got the ball.
+- **360+ teams.** The team list is the training games' Division I schools (ESPN files them under a conference in
+  the schedule) plus one pooled `Non-D1` opponent, keyed as `runitback.wager.cbb` keys them.
+
+```bash
+runitback college pbp-download --gender cbb --start 2017      # → data/cbb/raw/{pbp,schedule}_<season>.parquet
+runitback college pbp-preprocess --gender cbb --start 2017    # → data/cbb/processed/{games,plays,ratings,teams}.parquet, replay.json
+runitback college foundation --gender cbb --season 2025       # → foundation/cbb/fold2025/{model.pt,pca_32.npz,pbp_32.parquet}
+```
+
+`.github/workflows/college-foundation.yml` (by hand from the Actions tab) rebuilds the data and trains one fold per
+test season and gender in matrix jobs. Each fold trains on the five seasons before its test season. Results and the
+replay check: `experiments/cbb/README.md`, "Engine and foundation folds (C2)".
+
 ## Quick start (pre-trained model)
 
 You need Python 3.10+ and Node 18+. This takes about 5 minutes and needs no data download or training.

@@ -306,3 +306,49 @@ replacement; players of the last two seasons with 600+ minutes in the window):
    rank (CBBD `/recruiting/players`; one call a year).
 4. **Live rotations** for upcoming games: ESPN team rosters plus recent minutes. There is no college
    injury feed, so posted starters, where ESPN has them, are the only availability signal.
+
+## Engine and foundation folds (C2)
+
+Work package C2 parameterizes the basketball engine by league (`runitback.nba.league`) and trains the
+`pbp32` generator folds for both genders. Rules and commands: README, "College basketball". Code:
+`nba/data/college.py` (ESPN rows to events), `nba/engine/rules.py`, `nba/foundation.py`.
+
+**Short answer**
+- **The engine reproduces real games.** Applying each real outcome to the real state gives the next state
+  (period, phase, possession, free throws left, score, team fouls) on **99.47% of 12.4M men's transitions**
+  (57,113 games, 2017-2027) and **99.60% of 9.4M women's** (42,280 games). Games below 90% agreement are
+  dropped (men 98.5% kept, women 98.6%). The per-season agreement is 99.2-99.7%, rising from 2024.
+- **What is left is the feed, not the rules:** a team acting twice in a row after a made basket or a turnover (a
+  row missing between them), fouls by the team with the ball, and rare trips. Biggest misses, men: made shot then
+  same team acts (19.0k), turnover then same team (13.7k), a foul with no free throws then a different team (7.3k).
+- **Folds are untrained here.** Heavy training runs in Actions, so no fold exists yet; unit tests train tiny folds
+  end to end (leak checks, PCA on games before the test season, incremental updates). A smoke step on real men's
+  data ran 1.45 s per 32 games on 4 threads: about 2-3 hours per fold (30k games, 6 epochs), like the NBA's.
+- **Women's data is thin before 2020.** The release has about 1,550 games a season in 2017-2019 against
+  about 5,500 from 2022, so women's folds 2022-2023 train on fewer games.
+
+| season | men games | men agreement | women games | women agreement |
+|---|---|---|---|---|
+| 2017 | 5,476 | 99.57% | 1,577 | 99.58% |
+| 2018 | 5,496 | 99.43% | 1,533 | 99.37% |
+| 2019 | 5,437 | 99.23% | 1,537 | 99.49% |
+| 2020 | 5,355 | 99.19% | 4,918 | 99.35% |
+| 2021 | 4,014 | 99.36% | 3,579 | 99.55% |
+| 2022 | 5,816 | 99.28% | 5,337 | 99.51% |
+| 2023 | 6,114 | 99.33% | 5,695 | 99.59% |
+| 2024 | 6,151 | 99.71% | 5,777 | 99.75% |
+| 2025 | 6,130 | 99.71% | 5,463 | 99.72% |
+| 2026 | 6,270 | 99.70% | 6,007 | 99.74% |
+| 2027 | 854 | 99.67% | 857 | 99.67% |
+
+**How the rows become events** (what differs from the NBA's)
+- Free throws have no "1 of 2": consecutive shots by a team at one clock are a trip; the foul or shot around it
+  says what it was. A foul in the bonus is `fts_2`; the engine decides 1-and-1 or two shots.
+- An offensive foul (foul and turnover by one team) and a foul by the team with the ball are turnovers.
+  Intentional and technical fouls give the ball back, so they are a foul followed by technical-style shots.
+- A basket the rows don't flag as scoring is detected from the score. Media timeouts are dropped.
+- 2027 is the season in progress. Embeddings are fit before each fold's season, so it only gets folds once
+  played games exist.
+
+**Not done / next:** run `college-foundation.yml` and add the fold table (validation loss, PCA, the
+`nba_foundation_report.py` team-strength check) here; C4 joins `pbp_32.parquet` on `(game_id, team)`.
