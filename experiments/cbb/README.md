@@ -47,6 +47,19 @@ toward those box values. `experiments/wcbb/` points here.
 
   It sharpens the level, not the change columns: the within-season change coefficient does not rise.
   2027 was not used for tuning, so its row is a clean out-of-sample check.
+- **CBBD lineup quality.** Matching CBBD player ids to ESPN ids by name, and keeping the possessions
+  with all ten players known on the floor (`season_possessions` statistics):
+
+  | season | games | player ids matched | possessions | kept (full ten) |
+  |---|---|---|---|---|
+  | 2024 | 6,150 | 99.88% | 985,729 | 826,764 (83.9%) |
+  | 2025 | 6,134 | 99.97% | 962,481 | 934,581 (97.1%) |
+  | 2026 | 6,263 | 99.71% | 1,030,480 | 974,187 (94.5%) |
+  | 2027 (so far) | 851 | 99.97% | 158,916 | 153,395 (96.5%) |
+
+  Unmatched ids and rows without a full ten are dropped, not their games. 2024 loses the most
+  possessions to missing lineups. The two sources disagree on which side is home for at most 50 team-sides
+  a season (neutral sites); the side is taken from the roster match.
 - **Tuning the adjusted plus-minus** (`python scripts/college_player_values.py tune-apm`). Each
   season is fit once on the possessions before 5 January, around the box prior as of that Monday,
   and scored on its possessions after (squared-error reduction per possession x 1e-4 vs a constant;

@@ -8,9 +8,9 @@
 #                            values_latest.csv)
 #
 # Men's adjusted plus-minus (`cbbd: true`) fetches every 2024+ game day from CollegeBasketballData,
-# one call a day (about 150 a season), and needs the CBBD_API_KEY secret. A key's monthly call limit
-# is usually below a full backfill (experiments/cbb/README.md), so it is off by default: the men's
-# values are then the box-score values throughout.
+# one call a day: about 470 calls for 2024-2027, since the run rebuilds from source and caches nothing
+# between runs. The CBBD_API_KEY secret's quota is shared with the CFB pipeline, so it is off by
+# default: the men's values are then the box-score values throughout.
 name: College player values
 
 on:
