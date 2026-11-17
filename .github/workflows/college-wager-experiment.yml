@@ -1,0 +1,327 @@
+# C4 (docs/multisport/PLAN.md): the college basketball wager model on the foundation (pbp32) and the
+# player values (pvc), walk-forward over 2022-2026 (experiments/<gender>/wager.yaml). One gender per
+# run (cbb = men's, wcbb = women's); run it twice from the Actions tab.
+#
+#   inputs (foundation folds, 2022-2026) ─┐
+#   games (games with lines)              ├─► arms (config × season, one seed each) ─► report
+#   values (rotations, weekly values)    ─┴─► swap (2026: one starter of the listed team changed)
+#
+# Every input is rebuilt from the public sources in the run: college-experiment-inputs.yml (ESPN
+# play-by-play -> engine events -> one generator per test season), the games job (sportsdataverse's
+# ESPN files and ESPN's odds API; men's lines from CollegeBasketballData), and the values job
+# (sportsdataverse's player box scores -> projected rotations and weekly values; men's adjusted
+# plus-minus only with `cbbd: true`). Nothing comes from the repository or an earlier run's artifacts.
+#
+# A college fit takes 1-2 hours, so each seed of a 4-seed ensemble is its own matrix job
+# (`<arm>_s0 .. _s3`); the report averages them (scripts/ensemble_predictions.py) and scores every arm
+# against prod: seed 0 alone ("single") and the ensembles against each other ("e4", the promotion
+# comparison). Uploaded as <gender>-wager-results. Nothing is committed.
+#
+# Dispatch only: no push trigger. A run is about 100 jobs of 1-2 hours plus the folds (about 2 hours
+# each); the men's lines use ~a dozen CollegeBasketballData calls a season (CBBD_API_KEY), and `cbbd`
+# adds ~470 calls for the adjusted plus-minus from the key's quota shared with the CFB pipeline.
+name: College wager experiment
+
+on:
+  workflow_dispatch:
+    inputs:
+      gender:
+        description: "cbb (men's) or wcbb (women's)"
+        type: choice
+        options: [cbb, wcbb]
+        default: cbb
+      configs:
+        description: "Arms to run (JSON list of names in experiments/<gender>/wager.yaml); default: all"
+        type: string
+        default: >-
+          ["prod_s0","prod_s1","prod_s2","prod_s3","pbp32_s0","pbp32_s1","pbp32_s2","pbp32_s3",
+          "pbp32_pvc_s0","pbp32_pvc_s1","pbp32_pvc_s2","pbp32_pvc_s3","prod_pvc_s0","prod_pvc_s1",
+          "prod_pvc_s2","prod_pvc_s3","prod_pvc_prev_s0","prod_pvc_prev_s1","prod_pvc_prev_s2",
+          "prod_pvc_prev_s3","prod_pvc_w6_s0"]
+      cbbd:
+        description: "Men's: fetch CBBD lineups (2024 on, ~470 calls) for the adjusted plus-minus"
+        type: boolean
+        default: false
+      swap-stride:
+        description: "Swap test: predict every n-th game day of 2026 (1 = every day)"
+        type: string
+        default: "2"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: college-wager-experiment-${{ inputs.gender }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+  G: ${{ inputs.gender }}
+
+jobs:
+  inputs:
+    uses: ./.github/workflows/college-experiment-inputs.yml
+    with:
+      gender: ${{ inputs.gender }}
+      seasons: "[2022, 2023, 2024, 2025, 2026]"
+
+  games:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - name: Games with lines (runitback.wager)
+        env:
+          # men's college lines: about a dozen requests a season instead of ~5,000 from ESPN, which
+          # answers a runner that many with 403 (runitback.wager.cbb.data.cbbd)
+          CBBD_API_KEY: ${{ secrets.CBBD_API_KEY }}
+        run: |
+          if [ "$G" = cbb ] && [ -z "$CBBD_API_KEY" ]; then
+            echo "::error::CBBD_API_KEY is not set: men's college lines would come from ~85,000 ESPN odds requests"
+            exit 1
+          fi
+          runitback-wager $G download --output_file data/$G/raw.csv
+          runitback-wager $G process --games data/$G/raw.csv --output_file data/$G/games.csv
+          python - <<EOF
+          import pandas as pd
+          g = pd.read_csv("data/$G/games.csv", low_memory=False)
+          g = g[g.result.notna()]
+          print(g.groupby("season").agg(rows=("result", "size"),
+                lined=("spread_line", lambda v: v.notna().mean()),
+                neutral=("location", lambda v: (v == 0).mean())).tail(8).to_string())
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.gender }}-games
+          path: data/${{ inputs.gender }}/games.csv
+          retention-days: 7
+
+  values:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - name: Player box scores, player tables and both projected rotations
+        run: |
+          runitback college download --gender $G
+          runitback college players --gender $G
+          # the default rotation drops players who did not play (a documented leak: ESPN gives no
+          # reason); `previous` is the team's last 3 games' players, nobody removed
+          runitback college lineups --gender $G
+          runitback college lineups --gender $G --rule previous
+      - name: CBBD lineups (men's, 2024 on)
+        if: ${{ inputs.cbbd && inputs.gender == 'cbb' }}
+        env:
+          CBBD_API_KEY: ${{ secrets.CBBD_API_KEY }}
+        run: runitback college cbbd --season 2024 --season 2025 --season 2026 --season 2027
+      - name: Weekly values and pv.parquet (both rotations; the swap test reads 2026's weekly fits)
+        run: |
+          runitback college player-values --gender $G --fits-season 2026
+          runitback college player-values --gender $G --out player_values/${G}_prev \
+            --lineups data/$G/processed/projected_lineups_previous.parquet
+          python - <<EOF
+          import pandas as pd
+          for d in ("$G", "${G}_prev"):
+              pv = pd.read_parquet(f"player_values/{d}/pv.parquet")
+              print(d, len(pv), "team-games;", pv.game_id.nunique(), "games")
+              print(pv.describe().T[["mean", "std", "min", "max"]].round(2).to_string())
+          EOF
+          mkdir -p swapdata
+          cp data/$G/processed/{player_games,projected_lineups}.parquet swapdata/
+      - uses: actions/upload-artifact@v4
+        with: { name: "${{ inputs.gender }}-values", path: player_values, retention-days: 30 }
+      - uses: actions/upload-artifact@v4
+        with: { name: "${{ inputs.gender }}-swapdata", path: swapdata, retention-days: 7 }
+
+  # the embeddings and player values must join the games table (a mismatch makes every row "missing"
+  # with no error): checked before the arms spend hours on it
+  joins:
+    needs: [inputs, games, values]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ inputs.gender }}-games", path: "data/${{ inputs.gender }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ inputs.gender }}-fold2026", path: runs/foundation/fold2026 }
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ inputs.gender }}-values", path: player_values }
+      - name: Share of Division I games joined, per season
+        run: |
+          python scripts/college_join_check.py $G --pbp runs/foundation/fold2026/pbp_32.parquet \
+            --pv player_values/$G/pv.parquet --pv player_values/${G}_prev/pv.parquet | tee join.txt
+          cat join.txt >> "$GITHUB_STEP_SUMMARY"
+
+  arms:
+    needs: [inputs, games, values, joins]
+    runs-on: ubuntu-latest
+    # GitHub's limit is 360; a college fit takes 1-2 hours
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        config: ${{ fromJSON(inputs.configs) }}
+        season: [2022, 2023, 2024, 2025, 2026]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ inputs.gender }}-games", path: "data/${{ inputs.gender }}" }
+      - uses: actions/download-artifact@v4
+        if: ${{ contains(matrix.config, 'pbp32') }}
+        with: { name: "${{ inputs.gender }}-fold${{ matrix.season }}", path: "runs/foundation/fold${{ matrix.season }}" }
+      - uses: actions/download-artifact@v4
+        if: ${{ contains(matrix.config, 'pvc') }}
+        with: { name: "${{ inputs.gender }}-values", path: player_values }
+      - name: Backtest ${{ matrix.config }} on ${{ matrix.season }}
+        run: |
+          python scripts/wager_arm.py ${{ matrix.config }} ${{ matrix.season }} --sport $G \
+            --experiment experiments/$G/wager.yaml --output-dir runs/wager --threads $(nproc)
+          mkdir -p out/${{ matrix.config }}
+          cp runs/wager/${{ matrix.config }}/${{ matrix.season }}.csv out/${{ matrix.config }}/
+      - uses: actions/upload-artifact@v4
+        with: { name: "arm-${{ inputs.gender }}-${{ matrix.config }}-${{ matrix.season }}", path: out, retention-days: 30 }
+
+  swap:
+    needs: [inputs, games, values, joins]
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      # the plan's arm, and the production model plus the values (the NBA's promoted arm)
+      matrix:
+        config: [pbp32_pvc_s0, prod_pvc_s0]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ inputs.gender }}-games", path: "data/${{ inputs.gender }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ inputs.gender }}-fold2026", path: runs/foundation/fold2026 }
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ inputs.gender }}-values", path: player_values }
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ inputs.gender }}-swapdata", path: "data/${{ inputs.gender }}/processed" }
+      - name: Swap test (2026, ${{ matrix.config }} fit on the seasons before)
+        run: |
+          mkdir -p out
+          python scripts/college_lineup_swap.py --gender $G --season 2026 --config ${{ matrix.config }} \
+            --day-stride ${{ inputs.swap-stride }} --out out/swap_2026_${{ matrix.config }}.csv \
+            --threads $(nproc)
+          cat out/swap_2026_${{ matrix.config }}.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: "${{ inputs.gender }}-swap-${{ matrix.config }}", path: out, retention-days: 30 }
+
+  report:
+    needs: [inputs, games, values, joins, arms, swap]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ inputs.gender }}-games", path: "data/${{ inputs.gender }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: "${{ inputs.gender }}-values", path: player_values }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "arm-${{ inputs.gender }}-*", path: "experiments/${{ inputs.gender }}/wager", merge-multiple: true }
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: { pattern: "${{ inputs.gender }}-swap-*", path: "experiments/${{ inputs.gender }}/wager/swap", merge-multiple: true }
+      - name: Score
+        run: |
+          R=experiments/$G/wager
+          S="2022, 2023, 2024, 2025, 2026"
+          ls $R
+          # seed 0 of each arm, against prod (the single-seed comparison)
+          O=$R/single; mkdir -p $O
+          for a in prod pbp32 pbp32_pvc prod_pvc prod_pvc_prev prod_pvc_w6; do
+            if [ -d $R/${a}_s0 ]; then cp -r $R/${a}_s0 $O/$a; fi
+          done
+          # seeds 0-3 averaged, the ensembles against each other (the promotion comparison)
+          E=$R/e4; mkdir -p $E
+          for a in prod pbp32 pbp32_pvc prod_pvc prod_pvc_prev; do
+            if [ -d $R/${a}_s0 ] && [ -d $R/${a}_s1 ] && [ -d $R/${a}_s2 ] && [ -d $R/${a}_s3 ]; then
+              python scripts/ensemble_predictions.py $E/${a}_e4 $R/${a}_s0 $R/${a}_s1 $R/${a}_s2 $R/${a}_s3
+            fi
+          done
+          python - <<PY
+          import pathlib
+          from runitback.wager.experiments import ablate
+          seasons = [$S]
+          for d, base in (("$O", "prod"), ("$E", "prod_e4")):
+              have = {p.name: {} for p in sorted(pathlib.Path(d).iterdir())
+                      if p.is_dir() and all((p / f"{s}.csv").exists() for s in seasons)}
+              print(d, "complete:", list(have))
+              if base in have:
+                  ablate("data/$G/games.csv", "$G", {base: {}} | have, seasons, d, base, 1, 1)
+          PY
+          # every game, neutral sites included (the college tournaments); n is in each table
+          A="--all-games"
+          python scripts/foundation_report.py $O --baseline prod $A --out $O/report.md
+          python scripts/foundation_report.py $E --baseline prod_e4 $A --out $E/report.md
+          python scripts/lineup_report.py $E --baseline prod_e4 $A --pv player_values/$G/pv.parquet --sport $G \
+            --out $E/subsets.md
+          # optional comparisons, when their arms ran: pbp32 as the baseline (does the foundation add
+          # to the values?), prod_pvc as the baseline (the weight start; the leak-free rotation)
+          if [ -d $E/pbp32_e4 ]; then
+            python scripts/foundation_report.py $E --baseline pbp32_e4 $A --out $E/report_vs_pbp32.md
+            python scripts/lineup_report.py $E --baseline pbp32_e4 $A --pv player_values/$G/pv.parquet \
+              --sport $G --out $E/subsets_vs_pbp32.md
+          fi
+          if [ -d $E/prod_pvc_e4 ]; then
+            python scripts/foundation_report.py $E --baseline prod_pvc_e4 $A --out $E/report_vs_prod_pvc.md
+          fi
+          if [ -d $O/prod_pvc ]; then
+            python scripts/foundation_report.py $O --baseline prod_pvc $A --out $O/report_vs_prod_pvc.md
+          fi
+          {
+            echo "## College wager experiment: $G"
+            echo "### 1 seed vs prod"; cat $O/ablation.md; echo; cat $O/report.md; echo
+            echo "### 1 seed: prod_pvc (college lineup weight start 0.2) vs prod_pvc_w6 (0.6)"
+            cat $O/report_vs_prod_pvc.md 2>/dev/null || echo "(not run)"; echo
+            echo "### 4 seeds vs prod_e4"; cat $E/ablation.md; echo; cat $E/report.md; echo
+            echo "### 4 seeds vs pbp32_e4"; cat $E/report_vs_pbp32.md 2>/dev/null || echo "(not run)"; echo
+            echo "### 4 seeds: leak-free rotation (prod_pvc_prev_e4) vs prod_pvc_e4"
+            cat $E/report_vs_prod_pvc.md 2>/dev/null || echo "(not run)"; echo
+            echo "### Rotation-moved subsets (vs prod_e4)"; cat $E/subsets.md; echo
+            echo "### Swap test"; cat $R/swap/*.md 2>/dev/null || echo "(no swap results)"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: "${{ inputs.gender }}-wager-results", path: "experiments/${{ inputs.gender }}/wager", retention-days: 90 }

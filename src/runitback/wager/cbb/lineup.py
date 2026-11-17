@@ -4,7 +4,8 @@
 
 As the NBA's (:mod:`runitback.wager.nba.lineup`): each position group (G / F / C, from the ESPN
 position) has an offense and a defense column; offense adds to the total, defense takes it away. The
-layout is not on ``SPORT`` yet: C4 (the college wager experiments) registers it with the ``pvc`` arms.
+layout is registered on both college ``SPORT``s (``Sport.lineup``) for the ``pv`` / ``pva`` / ``pvc``
+lineup sets (C4, experiments/cbb and experiments/wcbb).
 """
 
 from ..core.lineup import LineupSpec

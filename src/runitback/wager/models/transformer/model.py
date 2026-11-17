@@ -151,6 +151,7 @@ class PairHead(nn.Module, HyperparametersMixin):
         additive_total_sign: tuple[float, ...] = (),
         additive_kind: tuple[int, ...] = (),
         mask_context: tuple[int, ...] = (),
+        additive_init: float | None = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -187,7 +188,11 @@ class PairHead(nn.Module, HyperparametersMixin):
             self.register_buffer("add_std", torch.ones(k, 2))
             self.register_buffer("add_mean", torch.zeros(k, 2))
             self.register_buffer("add_out_std", torch.ones(2))
-            self.add_w = nn.Parameter(torch.full((2,), -0.2))     # softplus: ~0.6 points per point
+            # softplus(-0.2): ~0.6 points per point (the NFL's learned 0.58). ``additive_init`` starts
+            # both kinds at another weight, for a sport whose lineup changes are worth less (college
+            # basketball, experiments/cbb); None keeps the default, so existing models are unchanged
+            w0 = -0.2 if additive_init is None else float(np.log(np.expm1(float(additive_init))))
+            self.add_w = nn.Parameter(torch.full((2,), w0))
             self.add_u = nn.Parameter(torch.full((2,), -2.25))    # ~0.1
         keep = torch.ones(context_dim)
         keep[list(mask_context)] = 0.0

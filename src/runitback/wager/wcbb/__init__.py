@@ -1,4 +1,5 @@
 from ..cbb.data.features import SCHEMA
+from ..cbb.lineup import LINEUP
 from ..core.efficiency import basketball_efficiency
 from ..core.sport import Sport
 from .data.download import download
@@ -8,6 +9,8 @@ SPORT = Sport(
     schema=SCHEMA,
     download=download,
     efficiency=basketball_efficiency,
+    # the player-value lineup sets (pv / pva / pvc; runitback college player-values, experiments/cbb)
+    lineup=LINEUP,
     gnn={"hidden_dim": 128, "out_dim": 64, "num_layers": 3},
     # as men's college basketball
     # past-line tokens + efficiency as in the other sports (not backtested
