@@ -14,8 +14,9 @@ import torch
 
 from ..core.training import autocast, batches, cpu_state_dict, resolve_device, to_device
 from .data.ratings import RatingsTable
+from .league import League, get_league
 from .model.dataset import build_team_seasons, collate, encode_games
-from .model.features import CONT_FEATURES, TeamSeasonVocab, feature_sizes
+from .model.features import CONT_FEATURES, TeamSeasonVocab
 from .model.transformer import EventTransformer, ModelConfig
 
 log = logging.getLogger(__name__)
@@ -72,8 +73,10 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
           d_model: int = 192, n_layers: int = 4, n_heads: int = 6, dropout: float = 0.1,
           min_season: int = 2002, max_games: int | None = None, unk_ts_prob: float = 0.1,
           unk_cont_prob: float = 0.05, use_ratings: bool = True, threads: int | None = None,
-          seed: int = 0, init: Path | None = None, device: str | None = "auto", amp: bool = True) -> Path:
-    """Train a model (or fine-tune the checkpoint `init`, keeping its architecture and vocabulary)."""
+          seed: int = 0, init: Path | None = None, device: str | None = "auto", amp: bool = True,
+          league: League | str | None = None) -> Path:
+    """Train a model (or fine-tune the checkpoint `init`, keeping its architecture and vocabulary).
+    `league` (default: the NBA) sets the rules the processed games follow; a fine-tune keeps its checkpoint's."""
     if threads:
         torch.set_num_threads(threads)
     torch.manual_seed(seed)
@@ -93,14 +96,14 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
     base = torch.load(init, map_location="cpu", weights_only=False) if init else None
     if base is not None:
         cfg = ModelConfig(**base["config"])
-        ts = TeamSeasonVocab([])
-        ts.keys = list(base["team_seasons"])
-        ts.idx = {k: i + 1 for i, k in enumerate(ts.keys)}
+        ts = TeamSeasonVocab.from_checkpoint(base)
         log.info("fine-tuning %s (d_model=%d, n_layers=%d)", init, cfg.d_model, cfg.n_layers)
     else:
-        ts = build_team_seasons(train_g)
-        cfg = ModelConfig(feature_sizes=feature_sizes(len(ts)), d_model=d_model, n_layers=n_layers,
-                          n_heads=n_heads, dropout=dropout, n_cont=len(CONT_FEATURES) if ratings is not None else 0)
+        lg = get_league(league)
+        ts = build_team_seasons(train_g, lg)
+        cfg = ModelConfig(feature_sizes=ts.sizes(), d_model=d_model, n_layers=n_layers,
+                          n_heads=n_heads, dropout=dropout, n_cont=len(CONT_FEATURES) if ratings is not None else 0,
+                          league=lg.name)
     train_items = encode_games(plays[plays.game_id.isin(train_g.game_id)], train_g, ts, cfg.max_len, ratings)
     val_items = encode_games(plays[plays.game_id.isin(val_g.game_id)], val_g, ts, cfg.max_len, ratings) \
         if len(val_g) else []
@@ -117,7 +120,7 @@ def train(data_dir: Path | Sequence[Path], out_dir: Path, *, val_season: int | N
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min(1.0, (s + 1) / warmup) * 0.5 * (1 + math.cos(math.pi * min(s, total_steps) / total_steps)))
 
-    meta = dict(sport="nba", config=cfg.to_dict(), team_seasons=ts.keys, val_season=val_season,
+    meta = dict(sport=ts.league.name, config=cfg.to_dict(), **ts.meta(), val_season=val_season,
                 val_fraction=val_fraction,
                 ratings=RatingsTable(ratings).to_records() if ratings is not None else None,
                 init_checkpoint=str(init) if init else None)

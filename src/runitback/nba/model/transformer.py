@@ -9,8 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ...core.transformer import Block, KVCache, mlp
-from ..vocab import N_ELAPSED, PLAY_TYPES, RESULTS
-from .features import FEATURES
+from ..league import get_league
+from ..vocab import N_ELAPSED, PLAY_TYPES
 
 NEG = -1e9
 
@@ -24,6 +24,7 @@ class ModelConfig:
     max_len: int = 512
     dropout: float = 0.1
     n_cont: int = 0  # continuous team-strength inputs (0 = model without ratings)
+    league: str = "nba"  # the rules whose vocabulary and features the model uses (checkpoints from before leagues: NBA)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -34,14 +35,16 @@ class EventTransformer(nn.Module):
         super().__init__()
         self.cfg = cfg
         d = cfg.d_model
-        self.emb = nn.ModuleDict({f: nn.Embedding(cfg.feature_sizes[f], d) for f in FEATURES})
+        league = get_league(cfg.league)
+        self.features = league.features
+        self.emb = nn.ModuleDict({f: nn.Embedding(cfg.feature_sizes[f], d) for f in self.features})
         self.pos = nn.Embedding(cfg.max_len, d)
         self.cont = nn.Linear(cfg.n_cont, d) if cfg.n_cont else None
         self.in_ln = nn.LayerNorm(d)
         self.drop = nn.Dropout(cfg.dropout)
         self.blocks = nn.ModuleList([Block(d, cfg.n_heads, cfg.dropout) for _ in range(cfg.n_layers)])
         self.ln_f = nn.LayerNorm(d)
-        nT, nR = len(PLAY_TYPES), len(RESULTS)
+        nT, nR = len(PLAY_TYPES), league.n_results
         self.e_type, self.e_res = nn.Embedding(nT, d), nn.Embedding(nR, d)
         self.type_head = mlp(d, d, nT)
         self.res_head = mlp(d, d, nR)
@@ -49,7 +52,7 @@ class EventTransformer(nn.Module):
 
     # -- trunk
     def encode(self, feats: dict[str, torch.Tensor], cache: KVCache | None = None) -> torch.Tensor:
-        x = sum(self.emb[f](feats[f]) for f in FEATURES)
+        x = sum(self.emb[f](feats[f]) for f in self.features)
         if self.cont is not None:
             x = x + self.cont(feats["cont"])
         T = x.shape[1]

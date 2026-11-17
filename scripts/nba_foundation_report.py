@@ -1,6 +1,7 @@
-"""Summarize NBA foundation folds (runitback nba foundation): one row per fold.
+"""Summarize basketball foundation folds (runitback nba|college foundation): one row per fold.
 
     python scripts/nba_foundation_report.py runs/foundation --data data/nba/processed --out report.md
+    python scripts/nba_foundation_report.py runs/foundation --data data/cbb/processed --out report.md   # college
 
 Per fold S it checks the walk-forward rules and reports what the fold learned:
 - **leak checks**: the checkpoint was validated on S-1, its team-season vocabulary has no season
@@ -78,7 +79,9 @@ def fold_row(d: Path, games: pd.DataFrame, ratings: pd.DataFrame | None) -> dict
     return {
         "fold": s,
         "val_season": ck["val_season"],
+        "earliest_train_season": min(ts_seasons),
         "latest_train_season": max(ts_seasons),
+        "n_teams": len(ck.get("teams") or []),
         "leak_free": ck["val_season"] == s - 1 and max(ts_seasons) < s,
         "epochs": len(hist),
         "kept_epoch": best.get("epoch"),
@@ -114,7 +117,9 @@ def main() -> None:
     ratings = pd.read_parquet(rpath) if rpath.exists() else None
     folds = sorted(d for d in args.root.glob("fold*") if (d / "model.pt").exists())
     df = pd.DataFrame([fold_row(d, games, ratings) for d in folds])
-    md = ("# NBA foundation folds\n\n"
+    sport = torch.load(folds[0] / "model.pt", map_location="cpu", weights_only=False).get("sport", "nba") if folds else "nba"
+    title = {"nba": "NBA", "cbb": "Men's college basketball", "wcbb": "Women's college basketball"}.get(sport, sport)
+    md = (f"# {title} foundation folds\n\n"
           "One event generator per test season S (validated on the last 40% of S-1); `pbp_32` pooled "
           "per possession, PCA fit on games before S. `corr_*`: correlation with the home margin in S "
           f"of a ridge (fit before S) on the teams' previous-{WINDOW}-game means.\n\n" + to_markdown(df))

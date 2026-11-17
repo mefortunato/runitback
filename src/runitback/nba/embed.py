@@ -35,10 +35,7 @@ def load_foundation(ckpt: Path) -> tuple[EventTransformer, TeamSeasonVocab, dict
     ck = torch.load(ckpt, map_location="cpu", weights_only=False)
     model = EventTransformer(ModelConfig(**ck["config"]))
     model.load_state_dict(ck["state_dict"])
-    ts = TeamSeasonVocab([])
-    ts.keys = list(ck["team_seasons"])
-    ts.idx = {k: i + 1 for i, k in enumerate(ts.keys)}
-    return model.eval(), ts, ck
+    return model.eval(), TeamSeasonVocab.from_checkpoint(ck), ck
 
 
 def encode_all(ckpt: Path, data_dir: Path, game_ids=None) -> tuple[EventTransformer, list[dict], pd.DataFrame]:
@@ -120,15 +117,16 @@ def game_embeddings(ckpt: Path, data_dir: Path, batch_size: int = 32, game_ids=N
     return pd.concat([pd.DataFrame(rows, columns=["game_id", "team", "season"]), out], axis=1)
 
 
-def embed_fold(ckpt: Path, data_dir: Path, out: Path, before_season: int, dim: int = 32) -> Path:
+def embed_fold(ckpt: Path, data_dir: Path, out: Path, before_season: int, dim: int = 32, gen=None) -> Path:
     """Write <out>/raw.parquet (per team-game raw embeddings), <out>/pbp_<dim>.parquet (PCA fit on
-    games before `before_season`) and <out>/pca_<dim>.npz (runitback.core.foundation.embed_fold)."""
+    games before `before_season`) and <out>/pca_<dim>.npz (runitback.core.foundation.embed_fold).
+    `gen` is the league's generator (``runitback.nba.foundation``; default the NBA's)."""
     from .foundation import NBA
-    return foundation.embed_fold(NBA, ckpt, data_dir, out, before_season, dim)
+    return foundation.embed_fold(gen or NBA, ckpt, data_dir, out, before_season, dim)
 
 
-def update_fold(ckpt: Path, data_dir: Path, out: Path, dim: int = 32) -> tuple[Path, int]:
+def update_fold(ckpt: Path, data_dir: Path, out: Path, dim: int = 32, gen=None) -> tuple[Path, int]:
     """Add the played games missing from <out>/pbp_<dim>.parquet with the fold's stored projection
     (runitback.core.foundation.update_fold). Returns the table and how many games were added."""
     from .foundation import NBA
-    return foundation.update_fold(NBA, ckpt, data_dir, out, dim)
+    return foundation.update_fold(gen or NBA, ckpt, data_dir, out, dim)
