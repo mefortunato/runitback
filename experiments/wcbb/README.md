@@ -18,11 +18,29 @@ Work package C4 (`docs/multisport/PLAN.md`): does the women's college basketball
 values of each game's projected rotation (`pvc`), and does changing a starter move its prediction the
 right way at every position? It is the NBA's N5 (`experiments/nba/README.md`) with college data.
 
-**Short answer: pending. The code, configurations, workflow and tests are in; the experiment has not been
-run.** Nothing below "Results" has numbers because the arms take about 100 jobs of 1-2 hours each, and CLAUDE.md
-reserves heavy training for Actions runs that someone starts deliberately. To get the results, dispatch
-`College wager experiment` (`.github/workflows/college-wager-experiment.yml`) with `gender: wcbb`
-(see "Running it"), then fill the tables from its `wcbb-wager-results` artifact.
+**Short answer** (run 44214590965 of `college-wager-experiment.yml`, `gender: wcbb`; 4-seed ensembles against `prod_e4`, 10,973
+games over 2022-2026, neutral sites included; `cbbd` has no effect on the women's values)
+- **`prod_pvc_e4` improves all three markets.** Moneyline **-0.0035 ± 0.0007**, spread **-0.0036 ± 0.0010**, total
+  **-0.0039 ± 0.0006** (paired Brier, 95% CI, negative is better), better than the NBA's gain on the total and about the same on the
+  others. It is better in every season (moneyline -0.0004 to -0.0052; 2022 and 2026 only slightly).
+- **`pbp32_pvc_e4`, the plan's arm, does not pass:** total +0.0024 ± 0.0012 (worse than production), moneyline +0.0004 ± 0.0010 and
+  spread -0.0008 ± 0.0012 neutral. `pbp32_e4` alone is neutral on all three. As in the NBA, the foundation embeddings add nothing and the player
+  values carry the gain.
+- **The leak accounts for about a quarter of the gain.** On the leak-free rotation (`prod_pvc_prev_e4`) the gains are moneyline
+  -0.0026 ± 0.0006, spread -0.0024 ± 0.0009 and total -0.0039 ± 0.0007: still significant on every market.
+- **The gain is in games where the rotation moved.** `prod_pvc_e4` moneyline: -0.0070 ± 0.0019 on the 2,800 games whose projected
+  rotation moved most, -0.0019 ± 0.0008 on the 5,097 steadiest. Spread: -0.0108 ± 0.0027 and -0.0010 ± 0.0010.
+- **The swap test passes** for both swapped arms (100% of 2026 games at G, F and C). A regular-to-replacement swing is about 2 points of
+  margin at G and F and 1 point at C.
+- **The learned weight is above the start.** From 0.2, the fits ended at 0.32 (`pbp32_pvc_s0`) and 0.40 (`prod_pvc_s0`), between C3's
+  0.14 (within a season) and 0.47 (season openers). Starting at 0.6 (`prod_pvc_w6`) is within noise of 0.2.
+- **Far behind the market.** `prod_pvc_e4` trails the closing moneyline by +0.0151 ± 0.0023 Brier (`prod_e4`: +0.0186 ± 0.0024), more than
+  the men's gap.
+- **Single seeds are unusable here.** One seed of `pbp32_pvc` shows -0.0125 on moneyline and one seed of `prod_pvc` +0.0219 on the
+  total, against +0.0004 and -0.0039 for the 4-seed ensembles. The single-seed intervals are paired per game and do not include
+  seed-to-seed variation, so read only the `_e4` tables.
+
+Results: `e4/report.md`, `e4/subsets.md`, `single/report.md` and `swap/*.md` in the run's `wcbb-wager-results` artifact.
 
 ### Setup
 
@@ -82,36 +100,69 @@ reserves heavy training for Actions runs that someone starts deliberately. To ge
 
 ### Results
 
-**Not run yet.** The tables fill from the run's `wcbb-wager-results` artifact (`e4/report.md`,
-`e4/subsets.md`, `single/report.md`, `swap/*.md`, and the run's step summary).
-
-Paired Brier difference vs `prod_e4` (negative is better), ± 95% CI half-width, 4 seeds:
+Paired Brier difference vs `prod_e4` (negative is better), ± 95% CI half-width, 4 seeds, 2022-2026. "fails" means the interval is above 0.
 
 | arm | n | Brier (moneyline) | Δ moneyline | Δ spread | Δ total | margin RMSE |
 |---|---|---|---|---|---|---|
-| prod_e4 (baseline) | pending | | | | | |
-| pbp32_e4 | | | | | | |
-| pbp32_pvc_e4 | | | | | | |
-| prod_pvc_e4 | | | | | | |
-| prod_pvc_prev_e4 (leak-free rotation) | | | | | | |
-| market | | | | | | |
+| prod_e4 (baseline) | 10,973 | 0.1707 | | | | 13.89 |
+| pbp32_e4 | 10,973 | 0.1705 | -0.0003 ± 0.0007 | -0.0001 ± 0.0010 | -0.0003 ± 0.0013 | 13.88 |
+| pbp32_pvc_e4 | 10,973 | 0.1711 | +0.0004 ± 0.0010 | -0.0008 ± 0.0012 | **+0.0024 ± 0.0012 (fails)** | 14.00 |
+| **prod_pvc_e4** | 10,973 | **0.1673** | **-0.0035 ± 0.0007** | **-0.0036 ± 0.0010** | **-0.0039 ± 0.0006** | 13.68 |
+| prod_pvc_prev_e4 (leak-free rotation) | 10,973 | 0.1682 | -0.0026 ± 0.0006 | -0.0024 ± 0.0009 | -0.0039 ± 0.0007 | 13.74 |
+| market | 10,932 | 0.1533 | | | | 12.63 |
 
-Promotion bar (`docs/multisport/PLAN.md` section 3): on every market the 95% CI includes 0 or favors the arm.
+Promotion bar (`docs/multisport/PLAN.md` section 3): on every market the 95% CI includes 0 or favors the arm. `prod_pvc_e4`,
+`prod_pvc_prev_e4` and `pbp32_e4` meet it; `pbp32_pvc_e4` does not (total). Against `prod_pvc_e4` as the baseline, `prod_pvc_prev_e4` is worse
+on moneyline (+0.0009 ± 0.0004) and spread (+0.0012 ± 0.0006) and equal on the total; `pbp32_pvc_e4` is worse on all three
+(+0.0039, +0.0028 and +0.0063, each ± 0.0009-0.0014).
 
-Single seed (`single/report.md`): `pbp32`, `pbp32_pvc`, `prod_pvc`, `prod_pvc_prev`, `prod_pvc_w6` against
-`prod`. Pending.
+Moneyline Δ Brier by season, `prod_pvc_e4`: 2022 -0.0008, 2023 -0.0052, 2024 -0.0032, 2025 -0.0024, 2026 -0.0004. `pbp32_pvc_e4`: +0.0093, -0.0012,
+-0.0009, +0.0002, +0.0007. The women's play-by-play is thin before 2020 (C2), so the 2022 fold trained on little.
 
-Swap test (2026, 1 seed): pending.
+**Games where the rotation moved** (Δ vs `prod_e4`; `rotation_moved` is the top quarter of games by the summed change in both teams' lineup
+values, `steady` the bottom half):
+
+| market | arm | all | rotation_moved (n about 2,800) | steady (n about 5,090) |
+|---|---|---|---|---|
+| moneyline | prod_pvc_e4 | -0.0035 ± 0.0007 | -0.0070 ± 0.0019 | -0.0019 ± 0.0008 |
+| moneyline | prod_pvc_prev_e4 | -0.0026 ± 0.0006 | -0.0038 ± 0.0015 | -0.0018 ± 0.0008 |
+| spread | prod_pvc_e4 | -0.0036 ± 0.0010 | -0.0108 ± 0.0027 | -0.0010 ± 0.0010 |
+| spread | prod_pvc_prev_e4 | -0.0024 ± 0.0009 | -0.0053 ± 0.0022 | -0.0011 ± 0.0011 |
+| total | prod_pvc_e4 | -0.0039 ± 0.0006 | -0.0031 ± 0.0011 | -0.0040 ± 0.0010 |
+
+The total improves equally in moved and steady games, unlike the moneyline and spread. That is not the pattern of a rotation effect; it suggests
+the values also improve the scoring-level estimate for every team, which is not a lineup-change effect.
+
+**Single seed** (`single/report.md`) is too noisy to use: `pbp32_pvc` shows -0.0125 ± 0.0018 on moneyline and `prod_pvc` +0.0219 ± 0.0019 on the total, where the
+4-seed ensembles show +0.0004 and -0.0039. The intervals are paired per game and leave out seed-to-seed variation, which is several times larger
+here than the men's. `prod_pvc_w6` against `prod_pvc`: moneyline +0.0002 ± 0.0003, spread -0.0006 ± 0.0005, total +0.0003 ± 0.0003.
+
+### Swap test (2026, `prod_pvc_s0`, 3,139 games, every second game day)
+
+One change to the listed (home) team's projected rotation; Δ margin in points (`swap/swap_2026_prod_pvc_s0.md`; `pbp32_pvc_s0` is about 20% smaller, as its learned weight is 0.32).
 
 | group | best regular (Δ margin) | worst regular | replacement | out |
 |---|---|---|---|---|
-| G | | | | |
-| F | | | | |
-| C | | | | |
+| G | +3.28 (Rachael Rose) | -2.85 | -2.27 | -0.67 |
+| F | +4.63 (Sarah Strong) | -2.51 | -1.85 | -0.59 |
+| C | +2.43 (Lauren Betts) | -1.33 | -0.96 | -0.07 |
+
+Each is ± 0.03-0.08 (95% CI) and moves the right way in 100% of games where the value moved by more than 0.05 points. The predicted total moves by
+at most 0.4 points.
+
+### What it means
+
+- **Promote `prod_pvc_e4` if anything, not `pbp32_pvc_e4`.** It passes on every market with a significant gain on each, and the gain survives
+  the leak-free rotation at about three quarters of its size. Turning the terms on in production is a production setting and is not part of
+  this package.
+- **The foundation does not help**, and with the values it hurts the total, as in the NBA.
+- **The women's model is far from the market** (+0.0151 Brier on moneyline after the values). The gap may come more from the women's data (lines only from 2021-22, thin
+  play-by-play before 2020) than the lineup terms can close; this run does not test that.
+- **Next:** a larger ensemble (seed variance is large here), the freshman prior and live rotations from C3's list.
 
 ### Running it
 
-Run `College wager experiment` from the Actions tab (it has no push trigger, so editing the
+Once the workflow is on `main`, run `College wager experiment` from the Actions tab (it has no push trigger, so editing the
 configuration or the workflow does not start it):
 - `gender`: `wcbb`. Run it once for each gender; the artifacts are named by gender.
 - `cbbd`: not used for women's.
@@ -129,10 +180,8 @@ python scripts/wager_arm.py prod_pvc_s0 2025 --sport wcbb --experiment experimen
 (with `data/wcbb/games.csv` and `player_values/wcbb/pv.parquet` in place; `pbp32` arms also need
 `runs/foundation/fold2025/`).
 
-### Next steps
+### How these results were run
 
-1. Run the workflow for both genders and fill the tables above.
-2. If an arm passes: the NBA's switch (`RUNITBACK_NBA_PLAYER_VALUES`) is the pattern for turning on the wcbb
-   lineup terms in production; that is a production setting and is not part of this package.
-3. C3's next steps (better shrinkage for changes) matter most here: the weight the fit learns, printed by the
-   swap test, says how far the values are from what a starter's absence costs.
+Run 44214590965 (18 Nov 2026, the C4 branch at the commit that held a temporary push trigger, since a workflow that exists only on a branch cannot be dispatched through
+the API; the trigger is removed in the next commit). All jobs succeeded. The artifact is kept 90 days. A rerun reproduces
+these tables within seed noise; the women's `_e4` tables are the ones to compare. The runs are not committed: only this write-up is.
