@@ -56,12 +56,25 @@ on:
         default: 0
       max_new_seasons:
         description: >-
-          Backtest at most this many seasons that no cache has (the latest ones; 0: all). A sport's
-          first build is several hours a season: run with 2 until every season is cached (the NBA
-          needs ~75 min a season, so a first run with all five does not fit in a job's limit). Each
-          sport has its own job, so it applies to each sport's seasons alike
+          Backtest at most this many seasons that no cache has (the latest ones; 0: all), for each
+          sport that has no input of its own below. A sport's first build is several hours a
+          season, and a season that does not finish before its job's limit is lost: the NBA takes
+          ~190 min a season, CFB ~65 min (plus ~50 min of setup), so size each sport's value to
+          fit its job's 350 minutes
         type: number
         default: 0
+      max_new_seasons_nfl:
+        description: "max_new_seasons for the NFL alone (empty: use max_new_seasons)"
+        type: string
+        default: ""
+      max_new_seasons_nba:
+        description: "max_new_seasons for the NBA alone (empty: use max_new_seasons)"
+        type: string
+        default: ""
+      max_new_seasons_cfb:
+        description: "max_new_seasons for college football alone (empty: use max_new_seasons)"
+        type: string
+        default: ""
   schedule:
     - cron: "41 7 1 * *" # the 1st of each month
 
@@ -375,12 +388,21 @@ jobs:
             echo "no previous predictions-webdata release: backtesting every season"
           fi
       - name: Download, train, backtest
-        run: >
-          runitback-wager web build --sports '[nfl]' --output_dir webdata
-          --cache release:predictions-backtest-cache
-          --refresh_backtest ${{ inputs.refresh_backtest || false }}
-          --reuse_model_days ${{ inputs.reuse_model_days || 0 }}
-          ${{ inputs.max_new_seasons > 0 && format('--max_new_seasons {0}', inputs.max_new_seasons) || '' }}
+        env:
+          # this sport's input, else the shared one ("" or 0: every season)
+          MAX_NEW_SEASONS: ${{ inputs.max_new_seasons_nfl || inputs.max_new_seasons }}
+        run: |
+          max=()
+          case "$MAX_NEW_SEASONS" in
+            ""|0) ;;
+            *[!0-9]*) echo "::error::max_new_seasons must be a whole number, got '$MAX_NEW_SEASONS'"; exit 1 ;;
+            *) max=(--max_new_seasons "$MAX_NEW_SEASONS") ;;
+          esac
+          runitback-wager web build --sports '[nfl]' --output_dir webdata \
+            --cache release:predictions-backtest-cache \
+            --refresh_backtest ${{ inputs.refresh_backtest || false }} \
+            --reuse_model_days ${{ inputs.reuse_model_days || 0 }} \
+            "${max[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: webdata-nfl
@@ -423,12 +445,21 @@ jobs:
             echo "no previous predictions-webdata release: backtesting every season"
           fi
       - name: Download, train, backtest
-        run: >
-          runitback-wager web build --sports '[nba]' --output_dir webdata
-          --cache release:predictions-backtest-cache
-          --refresh_backtest ${{ inputs.refresh_backtest || false }}
-          --reuse_model_days ${{ inputs.reuse_model_days || 0 }}
-          ${{ inputs.max_new_seasons > 0 && format('--max_new_seasons {0}', inputs.max_new_seasons) || '' }}
+        env:
+          # this sport's input, else the shared one ("" or 0: every season)
+          MAX_NEW_SEASONS: ${{ inputs.max_new_seasons_nba || inputs.max_new_seasons }}
+        run: |
+          max=()
+          case "$MAX_NEW_SEASONS" in
+            ""|0) ;;
+            *[!0-9]*) echo "::error::max_new_seasons must be a whole number, got '$MAX_NEW_SEASONS'"; exit 1 ;;
+            *) max=(--max_new_seasons "$MAX_NEW_SEASONS") ;;
+          esac
+          runitback-wager web build --sports '[nba]' --output_dir webdata \
+            --cache release:predictions-backtest-cache \
+            --refresh_backtest ${{ inputs.refresh_backtest || false }} \
+            --reuse_model_days ${{ inputs.reuse_model_days || 0 }} \
+            "${max[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: webdata-nba
@@ -484,12 +515,21 @@ jobs:
             echo "no previous predictions-webdata release: backtesting every season"
           fi
       - name: Download, train, backtest
-        run: >
-          runitback-wager web build --sports '[cfb]' --output_dir webdata
-          --cache release:predictions-backtest-cache
-          --refresh_backtest ${{ inputs.refresh_backtest || false }}
-          --reuse_model_days ${{ inputs.reuse_model_days || 0 }}
-          ${{ inputs.max_new_seasons > 0 && format('--max_new_seasons {0}', inputs.max_new_seasons) || '' }}
+        env:
+          # this sport's input, else the shared one ("" or 0: every season)
+          MAX_NEW_SEASONS: ${{ inputs.max_new_seasons_cfb || inputs.max_new_seasons }}
+        run: |
+          max=()
+          case "$MAX_NEW_SEASONS" in
+            ""|0) ;;
+            *[!0-9]*) echo "::error::max_new_seasons must be a whole number, got '$MAX_NEW_SEASONS'"; exit 1 ;;
+            *) max=(--max_new_seasons "$MAX_NEW_SEASONS") ;;
+          esac
+          runitback-wager web build --sports '[cfb]' --output_dir webdata \
+            --cache release:predictions-backtest-cache \
+            --refresh_backtest ${{ inputs.refresh_backtest || false }} \
+            --reuse_model_days ${{ inputs.reuse_model_days || 0 }} \
+            "${max[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: webdata-cfb
