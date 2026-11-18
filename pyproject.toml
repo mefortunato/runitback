@@ -30,6 +30,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "runitback.nfl" = ["releases.json"]
+"runitback.cfb" = ["releases.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,126 @@
+name: CFB model
+
+# Train the college football play generator on every season and publish it: a GitHub release
+# (cfb-<version>) with the checkpoint, plus a PR that makes it the deployed model (merging that PR runs
+# the Cloud Run deploy). Started by hand; nothing else triggers it.
+#
+# The model is the one `Train predictions` folds are made of (team-level NFL play transformer on
+# college plays, runitback.cfb.foundation) but trained on all games with no held-out season, and with
+# the school names added so the server can list teams. A fold takes 54-97 minutes on a 4-core runner;
+# this has the same ~18,000 games plus one more season, hence the 340-minute limit.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version for the new model, e.g. v0.1.0 (the release tag is cfb-<version>)"
+        required: true
+      epochs:
+        description: "Training epochs"
+        default: "10"
+
+permissions:
+  contents: write        # create the release, push the release branch
+  pull-requests: write   # open the PR that deploys the model
+
+concurrency:
+  group: cfb-model-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      VERSION: ${{ inputs.version }}
+      EPOCHS: ${{ inputs.epochs }}
+      GH_TOKEN: ${{ github.token }}
+      MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
+      MLFLOW_DISABLE_AGENT_HINT: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check the version is new
+        run: |
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must look like v0.1.0"; exit 1; }
+          if jq -e --arg v "$VERSION" '.models[$v]' src/runitback/cfb/releases.json >/dev/null; then
+            echo "::error::$VERSION is already in cfb/releases.json"; exit 1
+          fi
+          if gh release view "cfb-$VERSION" >/dev/null 2>&1; then
+            echo "::error::release cfb-$VERSION already exists"; exit 1
+          fi
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data]"
+
+      - name: Play-by-play and engine replay
+        # a season is current from September (as Train predictions' plan)
+        run: |
+          end=$(python -c "import datetime as d; t=d.date.today(); print(t.year if t.month >= 9 else t.year - 1)")
+          echo "END=$end" >> "$GITHUB_ENV"
+          runitback cfb download --start 2004 --end "$end" --no-players
+          runitback cfb preprocess --start 2004 --end "$end" 2>&1 | tail -8
+
+      - name: Train on all data
+        run: |
+          runitback cfb train --out runs/cfb/prod --epochs "$EPOCHS" --threads "$(nproc)" \
+            2>&1 | tee runs-train.log | grep -v " step "
+
+      - name: Smoke test the checkpoint
+        run: |
+          python - <<'PY'
+          from runitback.cfb.sim.api import simulate_games
+          from runitback.cfb.sim.sampler import Simulator
+          sim = Simulator.load("runs/cfb/prod/model.pt")
+          season = sim.seasons[-1]
+          names = sim.team_names()
+          home, away = sim.teams(season)[:2]
+          assert len(sim.teams(season)) > 100 and all(t in names for t in sim.teams(season)), "school names missing"
+          r = simulate_games(sim, home, away, season, n=20, seed=0)
+          total = r.home_score_mean + r.away_score_mean
+          assert r.n == 20 and 20 < total < 90, r
+          print(f"{names[home]} vs {names[away]} {season}: sample total {total:.1f}")
+          PY
+
+      - name: Release notes
+        run: |
+          python - <<'PY' > notes.md
+          import os, torch
+          ck = torch.load("runs/cfb/prod/model.pt", map_location="cpu", weights_only=False)
+          cfg = ck["config"]
+          last = max(((r["season"], r["week"]) for r in ck.get("ratings") or []), default=None)
+          print(f"College football model **{os.environ['VERSION']}**, trained by "
+                f"[this workflow run]({os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
+                f"/actions/runs/{os.environ['GITHUB_RUN_ID']}) from commit {os.environ['GITHUB_SHA'][:7]}.\n")
+          print(f"- Data through: {last[0]} week {last[1]}" if last else "- Data: unknown")
+          print(f"- Training: {os.environ['EPOCHS']} epochs, d_model {cfg['d_model']}, {cfg['n_layers']} layers, "
+                "team-level (no lineups)")
+          print(f"- Schools: {len(ck.get('team_names') or {})}")
+          hist = ck.get("history") or []
+          if hist and "val_total" in hist[-1]:
+              print(f"- Final validation loss: {hist[-1]['val_total']:.4f}")
+          PY
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish release and open the deploy PR
+        run: scripts/ci/publish_cfb_release.sh "$VERSION" runs/cfb/prod/model.pt notes.md
+
+      - name: Keep logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cfb-train-${{ inputs.version }}
+          path: |
+            runs-train.log
+            runs/cfb/*/history.json
+            notes.md
+          if-no-files-found: ignore

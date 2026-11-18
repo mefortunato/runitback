@@ -821,7 +821,43 @@ def cfb_train(out: Path = cfb_paths.runs_dir() / "prod", data: Path = CFB_DATA /
     from .cfb.foundation import CFBGenerator
     _log()
     gen = CFBGenerator(val_week=val_week, epochs=epochs, device=device, max_games=max_games or None)
-    typer.echo(gen.train(data, out, val_season, threads or None))
+    ckpt = gen.train(data, out, val_season, threads or None)
+    from .cfb.sim.sampler import attach_team_names  # the server lists schools from the checkpoint
+    typer.echo(f"{len(attach_team_names(ckpt, data))} school names added to {ckpt}")
+    typer.echo(ckpt)
+
+
+@cfb.command("fetch-model")
+def cfb_fetch_model(version: str = typer.Option(None, help="release version (default: the latest)"),
+                    dest: Path = cfb_paths.default_checkpoint(), force: bool = False,
+                    optional: bool = typer.Option(False, help="succeed without downloading if no college "
+                                                              "football model has been released yet")):
+    """Download a released, pre-trained college football model (no data download or training needed)."""
+    from .cfb import release
+    if optional and version is None and release.LATEST is None:
+        typer.echo("no college football model released yet; skipping")
+        return
+    typer.echo(f"model ready: {release.fetch_model(dest, version, force)}")
+
+
+@cfb.command("register-release")
+def cfb_register_release(version: str = typer.Argument(..., help="new version, e.g. v0.1.0 (the tag is cfb-<version>)"),
+                         ckpt: Path = typer.Option(..., help="the checkpoint attached to that release"),
+                         file: Path = typer.Option(None, help="releases.json to edit (default: the installed package's; "
+                                                              "pass src/runitback/cfb/releases.json in a checkout)")):
+    """Add a published checkpoint to cfb/releases.json and make it the latest (what the Docker image bakes in)."""
+    from .cfb.release import RELEASES_FILE
+    from .cfb.release import register_release as run
+    path = file or RELEASES_FILE
+    rel = run(version, ckpt, path)
+    typer.echo(json.dumps({"latest": rel["latest"], "file": str(path), **rel["models"][version]}, indent=1))
+
+
+@cfb.command("sha256")
+def cfb_sha256(ckpt: Path = cfb_paths.default_checkpoint()):
+    """Print a checkpoint's SHA-256, for adding a release to runitback/cfb/release.py."""
+    from .core.release import sha256
+    typer.echo(f"{sha256(ckpt)}  {ckpt}")
 
 
 @cfb.command("foundation")
