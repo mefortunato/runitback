@@ -56,23 +56,23 @@ on:
         default: 0
       max_new_seasons:
         description: >-
-          Backtest at most this many seasons that no cache has (the latest ones; 0: all), for each
-          sport that has no input of its own below. A sport's first build is several hours a
-          season, and a season that does not finish before its job's limit is lost: the NBA takes
-          ~190 min a season, CFB ~65 min (plus ~50 min of setup), so size each sport's value to
-          fit its job's 350 minutes
-        type: number
-        default: 0
+          How many seasons that no cache has to backtest (the latest ones), for each sport that has no
+          input of its own below. Empty or "all": every one. A number: at most that many, and 0 builds
+          the sport from its cached seasons alone (it needs at least one cached season). A season that does not finish before its job's limit
+          is lost, so size each sport's value to its job's 350 minutes (the NBA takes ~190 min a
+          season, CFB ~65 min plus ~50 min of setup)
+        type: string
+        default: ""
       max_new_seasons_nfl:
-        description: "max_new_seasons for the NFL alone (empty: use max_new_seasons)"
+        description: "max_new_seasons for the NFL alone (empty: use max_new_seasons; all, or a number, 0 included)"
         type: string
         default: ""
       max_new_seasons_nba:
-        description: "max_new_seasons for the NBA alone (empty: use max_new_seasons)"
+        description: "max_new_seasons for the NBA alone (empty: use max_new_seasons; all, or a number, 0 included)"
         type: string
         default: ""
       max_new_seasons_cfb:
-        description: "max_new_seasons for college football alone (empty: use max_new_seasons)"
+        description: "max_new_seasons for college football alone (empty: use max_new_seasons; all, or a number, 0 included)"
         type: string
         default: ""
   schedule:
@@ -389,13 +389,15 @@ jobs:
           fi
       - name: Download, train, backtest
         env:
-          # this sport's input, else the shared one ("" or 0: every season)
-          MAX_NEW_SEASONS: ${{ inputs.max_new_seasons_nfl || inputs.max_new_seasons }}
+          SPORT_MAX: ${{ inputs.max_new_seasons_nfl }}
+          SHARED_MAX: ${{ inputs.max_new_seasons }}
         run: |
+          # this sport's input, else the shared one; empty or "all": every season, 0: none
+          MAX_NEW_SEASONS=${SPORT_MAX:-$SHARED_MAX}
           max=()
           case "$MAX_NEW_SEASONS" in
-            ""|0) ;;
-            *[!0-9]*) echo "::error::max_new_seasons must be a whole number, got '$MAX_NEW_SEASONS'"; exit 1 ;;
+            ""|all) ;;
+            *[!0-9]*) echo "::error::max_new_seasons must be a whole number or all, got '$MAX_NEW_SEASONS'"; exit 1 ;;
             *) max=(--max_new_seasons "$MAX_NEW_SEASONS") ;;
           esac
           runitback-wager web build --sports '[nfl]' --output_dir webdata \
@@ -446,13 +448,15 @@ jobs:
           fi
       - name: Download, train, backtest
         env:
-          # this sport's input, else the shared one ("" or 0: every season)
-          MAX_NEW_SEASONS: ${{ inputs.max_new_seasons_nba || inputs.max_new_seasons }}
+          SPORT_MAX: ${{ inputs.max_new_seasons_nba }}
+          SHARED_MAX: ${{ inputs.max_new_seasons }}
         run: |
+          # this sport's input, else the shared one; empty or "all": every season, 0: none
+          MAX_NEW_SEASONS=${SPORT_MAX:-$SHARED_MAX}
           max=()
           case "$MAX_NEW_SEASONS" in
-            ""|0) ;;
-            *[!0-9]*) echo "::error::max_new_seasons must be a whole number, got '$MAX_NEW_SEASONS'"; exit 1 ;;
+            ""|all) ;;
+            *[!0-9]*) echo "::error::max_new_seasons must be a whole number or all, got '$MAX_NEW_SEASONS'"; exit 1 ;;
             *) max=(--max_new_seasons "$MAX_NEW_SEASONS") ;;
           esac
           runitback-wager web build --sports '[nba]' --output_dir webdata \
@@ -516,13 +520,15 @@ jobs:
           fi
       - name: Download, train, backtest
         env:
-          # this sport's input, else the shared one ("" or 0: every season)
-          MAX_NEW_SEASONS: ${{ inputs.max_new_seasons_cfb || inputs.max_new_seasons }}
+          SPORT_MAX: ${{ inputs.max_new_seasons_cfb }}
+          SHARED_MAX: ${{ inputs.max_new_seasons }}
         run: |
+          # this sport's input, else the shared one; empty or "all": every season, 0: none
+          MAX_NEW_SEASONS=${SPORT_MAX:-$SHARED_MAX}
           max=()
           case "$MAX_NEW_SEASONS" in
-            ""|0) ;;
-            *[!0-9]*) echo "::error::max_new_seasons must be a whole number, got '$MAX_NEW_SEASONS'"; exit 1 ;;
+            ""|all) ;;
+            *[!0-9]*) echo "::error::max_new_seasons must be a whole number or all, got '$MAX_NEW_SEASONS'"; exit 1 ;;
             *) max=(--max_new_seasons "$MAX_NEW_SEASONS") ;;
           esac
           runitback-wager web build --sports '[cfb]' --output_dir webdata \
