@@ -23,11 +23,6 @@
 name: College wager experiment
 
 on:
-  # TEMPORARY: a push to this file on the C4 branch starts one cbb run (cbbd on), because a workflow that
-  # exists only on a branch cannot be dispatched through the API. Removed in the next commit.
-  push:
-    branches: [claude/c4-college-basketball-experiments]
-    paths: [.github/workflows/college-wager-experiment.yml]
   workflow_dispatch:
     inputs:
       gender:
