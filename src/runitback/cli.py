@@ -917,7 +917,13 @@ def college_player_values(gender: str = GENDER_OPT,
                           first_season: int = typer.Option(0, help="first season with pv.parquet rows "
                                                                    "(default: cbb 2012, wcbb 2017)"),
                           apm: bool = typer.Option(True, help="men's: adjusted plus-minus from the cached CBBD "
-                                                              "days (data/cbb/cbbd) around the box values")):
+                                                              "days (data/cbb/cbbd) around the box values"),
+                          fits_season: int = typer.Option(0, help="also write that season's weekly values "
+                                                                  "(fits_<season>.parquet, for the swap test)"),
+                          lineups: Path = typer.Option(None, help="projected rotations to sum (default "
+                                                                  "<processed>/projected_lineups.parquet; "
+                                                                  "projected_lineups_previous.parquet is the "
+                                                                  "leak-free rule)")):
     """Weekly leak-free player values and each team-game's lineup values (pv.parquet, ppg.json,
     values_latest.csv; runitback.college.player_values). Needs `players` and `lineups` first."""
     import pandas as pd
@@ -931,7 +937,7 @@ def college_player_values(gender: str = GENDER_OPT,
     proc = d / "processed"
     pg = pd.read_parquet(proc / "player_games.parquet")
     tg = pd.read_parquet(proc / "team_games.parquet")
-    proj = pd.read_parquet(proc / "projected_lineups.parquet")
+    proj = pd.read_parquet(lineups or proc / "projected_lineups.parquet")
     players = pd.read_parquet(proc / "players.parquet")
     poss = None
     if g == "cbb" and apm and (d / "cbbd").exists():
@@ -951,6 +957,8 @@ def college_player_values(gender: str = GENDER_OPT,
             typer.echo(json.dumps(stats))
     gv = pv.build(pg, tg, proj, first_season or pv.FIRST_SEASON[g], poss, players, apm_from=cl.FIRST_SEASON)
     pv.write_game_table(gv, out or Path(f"player_values/{g}"), players)
+    if fits_season:
+        typer.echo(pv.write_fits(gv, out or Path(f"player_values/{g}"), fits_season))
     typer.echo(f"{len(gv.pv)} team-games, {len(gv.fits)} weekly fits -> {out or Path(f'player_values/{g}')}")
 
 

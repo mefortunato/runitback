@@ -292,6 +292,17 @@ def build(pg: pd.DataFrame, tg: pd.DataFrame, proj: pd.DataFrame, first_season: 
     return game_table(pg, tg, proj, fits, games)
 
 
+def write_fits(gv: GameValues, out: Path, season: int) -> Path:
+    """``<out>/fits_<season>.parquet``: the weekly values tables of ``season``'s Mondays (``before`` is
+    the Monday's day number), for the swap test to re-value a changed rotation without refitting."""
+    start = (pd.Timestamp(season - 1, 8, 1) - pd.Timestamp("1970-01-01")).days
+    stop = (pd.Timestamp(season, 8, 1) - pd.Timestamp("1970-01-01")).days
+    parts = [f.assign(before=b) for b, f in gv.fits.items() if start <= b < stop]
+    path = out / f"fits_{season}.parquet"
+    pd.concat(parts, ignore_index=True).to_parquet(path, index=False)
+    return path
+
+
 def write_game_table(gv: GameValues, out: Path, players: pd.DataFrame | None = None) -> None:
     """``<out>/pv.parquet``, ``ppg.json`` (possessions per team-game by season) and
     ``values_latest.csv`` (the latest fit: every player's value per possession and per 40 minutes)."""
@@ -306,3 +317,77 @@ def write_game_table(gv: GameValues, out: Path, players: pd.DataFrame | None = N
     last["pts_per_40"] = last.value * gv.ppg[max(gv.ppg)]
     last.sort_values(["side", "pts_per_40"], ascending=[True, False]).to_csv(
         out / "values_latest.csv", index=False, float_format="%.4f")
+
+
+# -- the swap test (experiments/cbb, scripts/college_lineup_swap.py) ---------------------------------
+
+SWAPS = ("best", "worst", "replacement", "out")
+REPLACEMENT_ID = -1             # a player with no value of his own: replacement level (0)
+REGULAR_MINUTES = 600           # minutes on the floor (in a fit's window) for a "regular"
+
+
+def swap_rotation(rows: list[tuple[int, float]], group_of: dict, group: str, kind: str,
+                  ref: int | None = None) -> list[tuple[int, float]] | None:
+    """A projected rotation (``(player_id, minutes)`` rows) with its ``group`` starter (the group's
+    player with the most projected minutes) changed: to player ``ref`` for the same minutes (``best`` /
+    ``worst``: a regular from another team), to a replacement-level player (``replacement``), or ruled
+    out (``out``: the others' minutes are scaled up to the team's 200, none above 38, as the projection
+    does for a player who did not play). None when the team has no player in ``group`` or ``ref`` is
+    already in its rotation."""
+    from .lineups import MAX_MINUTES, TEAM_MINUTES, scale_minutes
+
+    rows = sorted(rows, key=lambda r: -r[1])
+    starter = next((r for r in rows if group_of.get(r[0], DEFAULT_GROUP) == group), None)
+    if starter is None:
+        return None
+    if kind == "out":
+        rest = [r for r in rows if r is not starter]
+        if not rest:
+            return None
+        mins = scale_minutes(np.array([m for _, m in rest]), TEAM_MINUTES, MAX_MINUTES)
+        return [(p, float(m)) for (p, _), m in zip(rest, mins)]
+    if kind == "replacement":
+        new = REPLACEMENT_ID
+    elif kind in ("best", "worst"):
+        if ref is None or any(p == ref for p, _ in rows):
+            return None
+        new = ref
+    else:
+        raise ValueError(f"unknown swap {kind!r}; choose from {SWAPS}")
+    return [(new, r[1]) if r is starter else r for r in rows]
+
+
+def swap_refs(fit: pd.DataFrame, min_minutes: float = REGULAR_MINUTES,
+              active: set | None = None) -> dict[tuple[str, str], int]:
+    """``{(group, "best" | "worst"): player_id}``: each group's best and worst regular by offense plus
+    defense value in ``fit`` (a values table: ``side, player_id, group, minutes, value``), among players
+    with at least ``min_minutes`` on the floor in the fit's window and, with ``active``, in that set."""
+    tab = fit.pivot_table(index=["player_id", "group"], columns="side", values="value", aggfunc="sum").dropna()
+    minutes = fit.groupby("player_id").minutes.max()
+    keep = minutes.reindex(tab.index.get_level_values(0)).to_numpy() >= min_minutes
+    if active is not None:
+        keep &= tab.index.get_level_values(0).isin(active)
+    value = tab[keep].sum(axis=1)
+    out = {}
+    for g in POSITIONS:
+        v = value[value.index.get_level_values(1) == g]
+        if len(v):
+            out[(g, "best")], out[(g, "worst")] = int(v.idxmax()[0]), int(v.idxmin()[0])
+    return out
+
+
+def swap_delta(rows: list[tuple[int, float]], vals: dict, group_of: dict, rate: float, group: str, kind: str,
+               ref: int | None = None) -> np.ndarray | None:
+    """The swap's change to a team-game's 14 ``_pv_*`` columns (in :data:`PV_COLUMNS` order), given the
+    week's values ``vals`` (``{(side, player_id): value per possession}``) and the possessions per game
+    ``rate``: the levels' change, the offense / defense summaries' change, and the changes vs the team's
+    recent rotations (the same as the levels', as those rotations do not move). None when
+    :func:`swap_rotation` has no swap."""
+    new = swap_rotation(rows, group_of, group, kind, ref)
+    if new is None:
+        return None
+    cur, nxt = side_values(rows, vals, group_of, rate), side_values(new, vals, group_of, rate)
+    d = np.array([nxt[c] - cur[c] for c in GROUP_COLUMNS])
+    off = sum(d[i] for i, c in enumerate(GROUP_COLUMNS) if c in OFF_COLUMNS)
+    dfn = sum(d[i] for i, c in enumerate(GROUP_COLUMNS) if c in DEF_COLUMNS)
+    return np.concatenate([d, [off, dfn], d])
