@@ -125,3 +125,25 @@ def test_ensemble_predictions_average_members(tmp_path):
     assert out.pred_margin.tolist() == pytest.approx([1.15, 2.15])
     assert out.win_prob.tolist() == pytest.approx([0.65, 0.75])
     assert out.result.tolist() == [1, -1]
+
+
+def test_wcbb_player_value_terms_follow_the_environment(tmp_path, monkeypatch):
+    import importlib
+
+    import runitback.wager.wcbb as wcbb
+
+    monkeypatch.delenv("RUNITBACK_WCBB_PLAYER_VALUES", raising=False)
+    try:
+        importlib.reload(wcbb)
+        assert "lineup" not in wcbb.SPORT.transformer          # off unless a pipeline sets it
+        monkeypatch.setenv("RUNITBACK_WCBB_PLAYER_VALUES", str(tmp_path) + "/")
+        t = importlib.reload(wcbb).SPORT.transformer
+        assert t["lineup"] == f"{tmp_path}/pv.parquet" and t["lineup_set"] == "pvc"
+        assert t["ensemble"] == 4 and t["additive_init"] == 0.2
+        # the sport's settings build the model the experiment's prod_pvc arm did
+        head = default_model("wcbb", **{k: v for k, v in t.items() if k not in ("history",)}).head
+        assert softplus(head.add_w).tolist() == pytest.approx([0.2, 0.2], abs=1e-6)
+        assert len(head.additive_pairs) == 6
+    finally:
+        monkeypatch.delenv("RUNITBACK_WCBB_PLAYER_VALUES", raising=False)
+        importlib.reload(wcbb)

@@ -185,3 +185,11 @@ python scripts/wager_arm.py prod_pvc_s0 2025 --sport wcbb --experiment experimen
 Run 44214590965 (18 Nov 2026, the C4 branch at the commit that held a temporary push trigger, since a workflow that exists only on a branch cannot be dispatched through
 the API; the trigger is removed in the next commit). All jobs succeeded. The artifact is kept 90 days. A rerun reproduces
 these tables within seed noise; the women's `_e4` tables are the ones to compare. The runs are not committed: only this write-up is.
+
+### The production switch
+
+`RUNITBACK_WCBB_PLAYER_VALUES=<dir>` turns the lineup terms on for the women's wager model (`prod_pvc_e4`: the `pvc` set, 4 seeds, the lineup
+weight starting at 0.2), as the NBA's `RUNITBACK_NBA_PLAYER_VALUES` does. `<dir>` holds `pv.parquet` from
+`runitback college player-values --gender wcbb`. It is off unless set, and no workflow sets it yet. Before a pipeline does, it needs
+the table rebuilt on each run and **pv rows for upcoming games** (live projected rotations; C3 left that open), because games without a row
+carry the missing flag and get no lineup effect.
