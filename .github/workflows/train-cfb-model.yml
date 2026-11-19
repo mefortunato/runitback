@@ -60,7 +60,7 @@ jobs:
       - name: Install
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e ".[data]"
+          pip install -e ".[data,wager]"
 
       - name: Play-by-play and engine replay
         # a season is current from September (as Train predictions' plan)
