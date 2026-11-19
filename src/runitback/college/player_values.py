@@ -23,6 +23,10 @@ behind the change columns (so those measure who is in or out, not the projection
 Every week (Monday) from ``first_season`` is fit on the games (and possessions) before it, and each
 game uses its week's fit, so no game ever sees itself or later games.
 
+Upcoming games (``upcoming=``: :mod:`.live`'s rotations from current rosters) get rows the same way, through
+the fit before their Monday and the team's played games before them; ``pv.parquet`` then holds the games
+the model has not seen played, for the wager model to predict.
+
 ``pv.parquet``: one row per team-game, ``game_id, season, team_id, team`` and the wager model's
 ``_pv_*`` columns in the layout of :data:`runitback.wager.cbb.lineup.LINEUP`:
 
@@ -167,11 +171,15 @@ def holdout_score(events: Events, prior: pd.DataFrame, before: int, season: int,
 
 # -- weekly values -----------------------------------------------------------------------------------
 
-def week_cutoffs(pg: pd.DataFrame, first_season: int) -> pd.DataFrame:
+def week_cutoffs(pg: pd.DataFrame, first_season: int, upcoming: pd.DataFrame | None = None) -> pd.DataFrame:
     """Every team-game from ``first_season``: ``game_id, season, game_date, team_id, team, before``
-    (the Monday its values are fit before)."""
-    g = pg[pg.season >= first_season][["game_id", "season", "game_date", "team_id", "team"]].drop_duplicates(
-        ["game_id", "team_id"])
+    (the Monday its values are fit before). ``upcoming`` (:func:`runitback.college.live.live_lineups`)
+    adds the not yet played games, so their weeks are fit too (on the games before the Monday)."""
+    keep = ["game_id", "season", "game_date", "team_id", "team"]
+    g = pg[pg.season >= first_season][keep].drop_duplicates(["game_id", "team_id"])
+    if upcoming is not None and len(upcoming):
+        up = upcoming[keep].drop_duplicates(["game_id", "team_id"])
+        g = pd.concat([g, up[~up.game_id.isin(set(g.game_id))]], ignore_index=True)
     t = pd.to_datetime(g.game_date).sub(pd.Timestamp("1970-01-01")).dt.days.astype(np.int64)
     return g.assign(before=week_start(t).to_numpy()).reset_index(drop=True)
 
@@ -241,6 +249,7 @@ def game_table(pg: pd.DataFrame, tg: pd.DataFrame, proj: pd.DataFrame, fits: dic
     vals = {b: dict(zip(zip(f.side, f.player_id), f.value)) for b, f in fits.items()}
     proj_rows = {k: list(zip(d.player_id, d.proj_minutes)) for k, d in
                  proj[["game_id", "team_id", "player_id", "proj_minutes"]].groupby(["game_id", "team_id"])}
+    # an upcoming game (no box score yet) has the team's earlier games before it: all of those it played
     # the team's earlier games as projected (the same minutes model as the current game's, so the
     # change columns measure who is in or out rather than the projection's smoothing); a game
     # without a projection: as played
@@ -261,7 +270,7 @@ def game_table(pg: pd.DataFrame, tg: pd.DataFrame, proj: pd.DataFrame, fits: dic
             continue
         rate = ppg.get(g.season) or ppg[seasons[-1]]
         cur = side_values(pr, vp, group_of, rate)
-        i = pos_in[(g.game_id, g.team_id)]
+        i = pos_in.get((g.game_id, g.team_id), len(played_by.get(g.team_id, ())))   # upcoming: all played
         before = played_by[g.team_id][:i]
         prev = before[-1] if len(before) else None
         pv_prev = side_values(actual[(prev, g.team_id)], vp, group_of, rate) if (prev, g.team_id) in actual else None
@@ -281,15 +290,33 @@ def game_table(pg: pd.DataFrame, tg: pd.DataFrame, proj: pd.DataFrame, fits: dic
 
 def build(pg: pd.DataFrame, tg: pd.DataFrame, proj: pd.DataFrame, first_season: int,
           poss: pd.DataFrame | None = None, players: pd.DataFrame | None = None,
-          box_cfg: BoxConfig | None = None, apm_cfg: APMConfig | None = None, apm_from: int | None = None
-          ) -> GameValues:
+          box_cfg: BoxConfig | None = None, apm_cfg: APMConfig | None = None, apm_from: int | None = None,
+          upcoming: pd.DataFrame | None = None) -> GameValues:
     """Weekly values and ``pv`` for every team-game from ``first_season`` (``poss``: men's CBBD
-    possessions for the adjusted plus-minus)."""
+    possessions for the adjusted plus-minus). ``upcoming`` (``projected_lineups_upcoming.parquet``,
+    :func:`runitback.college.live.live_lineups`) adds a row for each not yet played game: its rotation
+    through the values of the fit before its Monday and the team's played games before it."""
     box = BoxModel.build(pg, tg, box_cfg)
-    games = week_cutoffs(pg, first_season)
+    if upcoming is not None and len(upcoming):
+        upcoming = upcoming.assign(game_id=upcoming.game_id.astype(str))
+        done = set(pg.game_id.astype(str))
+        upcoming = upcoming[~upcoming.game_id.isin(done)]
+        proj = pd.concat([proj, upcoming[proj.columns.intersection(upcoming.columns)]], ignore_index=True)
+    games = week_cutoffs(pg, first_season, upcoming)
     log.info("%d team-games, %d weeks", len(games), games.before.nunique())
     fits = weekly_values(box, games, poss, players, apm_cfg, apm_from)
     return game_table(pg, tg, proj, fits, games)
+
+
+def write_fits(gv: GameValues, out: Path, season: int) -> Path:
+    """``<out>/fits_<season>.parquet``: the weekly values tables of ``season``'s Mondays (``before`` is
+    the Monday's day number), for the swap test to re-value a changed rotation without refitting."""
+    start = (pd.Timestamp(season - 1, 8, 1) - pd.Timestamp("1970-01-01")).days
+    stop = (pd.Timestamp(season, 8, 1) - pd.Timestamp("1970-01-01")).days
+    parts = [f.assign(before=b) for b, f in gv.fits.items() if start <= b < stop]
+    path = out / f"fits_{season}.parquet"
+    pd.concat(parts, ignore_index=True).to_parquet(path, index=False)
+    return path
 
 
 def write_game_table(gv: GameValues, out: Path, players: pd.DataFrame | None = None) -> None:
@@ -306,3 +333,77 @@ def write_game_table(gv: GameValues, out: Path, players: pd.DataFrame | None = N
     last["pts_per_40"] = last.value * gv.ppg[max(gv.ppg)]
     last.sort_values(["side", "pts_per_40"], ascending=[True, False]).to_csv(
         out / "values_latest.csv", index=False, float_format="%.4f")
+
+
+# -- the swap test (experiments/cbb, scripts/college_lineup_swap.py) ---------------------------------
+
+SWAPS = ("best", "worst", "replacement", "out")
+REPLACEMENT_ID = -1             # a player with no value of his own: replacement level (0)
+REGULAR_MINUTES = 600           # minutes on the floor (in a fit's window) for a "regular"
+
+
+def swap_rotation(rows: list[tuple[int, float]], group_of: dict, group: str, kind: str,
+                  ref: int | None = None) -> list[tuple[int, float]] | None:
+    """A projected rotation (``(player_id, minutes)`` rows) with its ``group`` starter (the group's
+    player with the most projected minutes) changed: to player ``ref`` for the same minutes (``best`` /
+    ``worst``: a regular from another team), to a replacement-level player (``replacement``), or ruled
+    out (``out``: the others' minutes are scaled up to the team's 200, none above 38, as the projection
+    does for a player who did not play). None when the team has no player in ``group`` or ``ref`` is
+    already in its rotation."""
+    from .lineups import MAX_MINUTES, TEAM_MINUTES, scale_minutes
+
+    rows = sorted(rows, key=lambda r: -r[1])
+    starter = next((r for r in rows if group_of.get(r[0], DEFAULT_GROUP) == group), None)
+    if starter is None:
+        return None
+    if kind == "out":
+        rest = [r for r in rows if r is not starter]
+        if not rest:
+            return None
+        mins = scale_minutes(np.array([m for _, m in rest]), TEAM_MINUTES, MAX_MINUTES)
+        return [(p, float(m)) for (p, _), m in zip(rest, mins)]
+    if kind == "replacement":
+        new = REPLACEMENT_ID
+    elif kind in ("best", "worst"):
+        if ref is None or any(p == ref for p, _ in rows):
+            return None
+        new = ref
+    else:
+        raise ValueError(f"unknown swap {kind!r}; choose from {SWAPS}")
+    return [(new, r[1]) if r is starter else r for r in rows]
+
+
+def swap_refs(fit: pd.DataFrame, min_minutes: float = REGULAR_MINUTES,
+              active: set | None = None) -> dict[tuple[str, str], int]:
+    """``{(group, "best" | "worst"): player_id}``: each group's best and worst regular by offense plus
+    defense value in ``fit`` (a values table: ``side, player_id, group, minutes, value``), among players
+    with at least ``min_minutes`` on the floor in the fit's window and, with ``active``, in that set."""
+    tab = fit.pivot_table(index=["player_id", "group"], columns="side", values="value", aggfunc="sum").dropna()
+    minutes = fit.groupby("player_id").minutes.max()
+    keep = minutes.reindex(tab.index.get_level_values(0)).to_numpy() >= min_minutes
+    if active is not None:
+        keep &= tab.index.get_level_values(0).isin(active)
+    value = tab[keep].sum(axis=1)
+    out = {}
+    for g in POSITIONS:
+        v = value[value.index.get_level_values(1) == g]
+        if len(v):
+            out[(g, "best")], out[(g, "worst")] = int(v.idxmax()[0]), int(v.idxmin()[0])
+    return out
+
+
+def swap_delta(rows: list[tuple[int, float]], vals: dict, group_of: dict, rate: float, group: str, kind: str,
+               ref: int | None = None) -> np.ndarray | None:
+    """The swap's change to a team-game's 14 ``_pv_*`` columns (in :data:`PV_COLUMNS` order), given the
+    week's values ``vals`` (``{(side, player_id): value per possession}``) and the possessions per game
+    ``rate``: the levels' change, the offense / defense summaries' change, and the changes vs the team's
+    recent rotations (the same as the levels', as those rotations do not move). None when
+    :func:`swap_rotation` has no swap."""
+    new = swap_rotation(rows, group_of, group, kind, ref)
+    if new is None:
+        return None
+    cur, nxt = side_values(rows, vals, group_of, rate), side_values(new, vals, group_of, rate)
+    d = np.array([nxt[c] - cur[c] for c in GROUP_COLUMNS])
+    off = sum(d[i] for i, c in enumerate(GROUP_COLUMNS) if c in OFF_COLUMNS)
+    dfn = sum(d[i] for i, c in enumerate(GROUP_COLUMNS) if c in DEF_COLUMNS)
+    return np.concatenate([d, [off, dfn], d])

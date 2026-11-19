@@ -169,8 +169,10 @@ def transformer_config(
         stats_weight = settings.get("stats_weight", 0.0)
     distribution = bool(settings.get("distribution", False))
     antisymmetric = bool(settings.get("antisymmetric", False))
+    # the lineup terms' starting weight in points per point of value (PairHead ``additive_init``)
+    additive_init = settings.get("additive_init")
     output_keys = (
-        "total_weight", "stats_weight", "distribution", "antisymmetric",
+        "total_weight", "stats_weight", "distribution", "antisymmetric", "additive_init",
         *TOKEN_KEYS, *PBP_KEYS, *FIT_KEYS,
     )  # fmt: skip
     settings = {k: v for k, v in settings.items() if k not in output_keys}
@@ -195,6 +197,8 @@ def transformer_config(
         sch = spec.schema.with_features(context)
         n_before = len(sch.context) + (1 if sch.location else 0)
         head |= additive_spec(n_before, tokens.get("lineup_set"), sport)
+        if additive_init is not None:
+            head["additive_init"] = float(additive_init)
     return {
         "encoder": {"token_dim": dims["token_dim"], **encoder},
         "head": head,

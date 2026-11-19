@@ -1,0 +1,48 @@
+# C4 (docs/multisport/PLAN.md): the men's college basketball wager model on the play-by-play foundation (pbp32, C2) and the
+# player values (pvc, C3's weekly values on its projected rotations), walk-forward over the last 5
+# complete seasons. Run by .github/workflows/college-wager-experiment.yml (gender: cbb), which rebuilds
+# every input in the run (games with lines, foundation folds, projected rotations, weekly values) and
+# uploads the cbb-wager-results artifact; see experiments/cbb/README.md.
+#   python scripts/wager_arm.py pbp32_pvc_s0 2025 --sport cbb --experiment experiments/cbb/wager.yaml
+#
+# Arms (each name ends _s<seed>; a 4-seed ensemble "_e4" is the mean of seeds 0-3, assembled by
+# scripts/ensemble_predictions.py, because a college fit takes 1-2 hours and four would pass the 6-hour
+# job limit; promotion decisions compare _e4 with _e4, seed noise is about +-0.002 Brier):
+#   prod           the S4a box-score production model (the baseline; prod_s0 is the NBA/NFL "prod")
+#   pbp32          + the frozen foundation's 32-dim game embeddings in the history tokens
+#   pbp32_pvc      + each position group's change in the projected rotation's value vs the team's last 8
+#                  rotations, through sign-constrained additive terms on margin and total (the NFL's pvc)
+#   prod_pvc       the player values without the foundation (the NBA's promoted arm)
+#   prod_pvc_prev  prod_pvc on the leak-free rotation (the team's last 3 games' players, nobody removed;
+#                  the default rotation drops players who did not play, a documented leak: C3)
+#   prod_pvc_w6    prod_pvc with the NFL's lineup weight (0.6 points per point) instead of the college
+#                  start, one seed: does the start matter?
+# The lineup terms' weight starts at 0.2 points of margin per point of value (additive_init), not the
+# head's default 0.6 (the NFL learned 0.58): C3 measured 0.14-0.15 per point within a season and
+# 0.25 (men) / 0.47 (women) at season openers, because the values overstate the gap between a starter
+# and his backup. The weight is learned; the start only sets where the fit begins.
+
+seasons: [2022, 2023, 2024, 2025, 2026]
+baseline: prod_s0
+configs:
+  prod_s0: {fit: {seed: 0}}
+  prod_s1: {fit: {seed: 1}}
+  prod_s2: {fit: {seed: 2}}
+  prod_s3: {fit: {seed: 3}}
+  pbp32_s0: {model: {pbp: "runs/foundation/fold{season}/pbp_32.parquet", pbp_dim: 32}, fit: {seed: 0}}
+  pbp32_s1: {model: {pbp: "runs/foundation/fold{season}/pbp_32.parquet", pbp_dim: 32}, fit: {seed: 1}}
+  pbp32_s2: {model: {pbp: "runs/foundation/fold{season}/pbp_32.parquet", pbp_dim: 32}, fit: {seed: 2}}
+  pbp32_s3: {model: {pbp: "runs/foundation/fold{season}/pbp_32.parquet", pbp_dim: 32}, fit: {seed: 3}}
+  pbp32_pvc_s0: {model: {pbp: "runs/foundation/fold{season}/pbp_32.parquet", pbp_dim: 32, lineup: "player_values/cbb/pv.parquet", lineup_set: "pvc", additive_init: 0.2}, fit: {seed: 0}}
+  pbp32_pvc_s1: {model: {pbp: "runs/foundation/fold{season}/pbp_32.parquet", pbp_dim: 32, lineup: "player_values/cbb/pv.parquet", lineup_set: "pvc", additive_init: 0.2}, fit: {seed: 1}}
+  pbp32_pvc_s2: {model: {pbp: "runs/foundation/fold{season}/pbp_32.parquet", pbp_dim: 32, lineup: "player_values/cbb/pv.parquet", lineup_set: "pvc", additive_init: 0.2}, fit: {seed: 2}}
+  pbp32_pvc_s3: {model: {pbp: "runs/foundation/fold{season}/pbp_32.parquet", pbp_dim: 32, lineup: "player_values/cbb/pv.parquet", lineup_set: "pvc", additive_init: 0.2}, fit: {seed: 3}}
+  prod_pvc_s0: {model: {lineup: "player_values/cbb/pv.parquet", lineup_set: "pvc", additive_init: 0.2}, fit: {seed: 0}}
+  prod_pvc_s1: {model: {lineup: "player_values/cbb/pv.parquet", lineup_set: "pvc", additive_init: 0.2}, fit: {seed: 1}}
+  prod_pvc_s2: {model: {lineup: "player_values/cbb/pv.parquet", lineup_set: "pvc", additive_init: 0.2}, fit: {seed: 2}}
+  prod_pvc_s3: {model: {lineup: "player_values/cbb/pv.parquet", lineup_set: "pvc", additive_init: 0.2}, fit: {seed: 3}}
+  prod_pvc_prev_s0: {model: {lineup: "player_values/cbb_prev/pv.parquet", lineup_set: "pvc", additive_init: 0.2}, fit: {seed: 0}}
+  prod_pvc_prev_s1: {model: {lineup: "player_values/cbb_prev/pv.parquet", lineup_set: "pvc", additive_init: 0.2}, fit: {seed: 1}}
+  prod_pvc_prev_s2: {model: {lineup: "player_values/cbb_prev/pv.parquet", lineup_set: "pvc", additive_init: 0.2}, fit: {seed: 2}}
+  prod_pvc_prev_s3: {model: {lineup: "player_values/cbb_prev/pv.parquet", lineup_set: "pvc", additive_init: 0.2}, fit: {seed: 3}}
+  prod_pvc_w6_s0: {model: {lineup: "player_values/cbb/pv.parquet", lineup_set: "pvc", additive_init: 0.6}, fit: {seed: 0}}
