@@ -113,10 +113,11 @@ def candidates(pg: pd.DataFrame, rule: str = "dnp", team_games: int = TEAM_GAMES
     return c[keep].assign(source="previous").reset_index(drop=True)
 
 
-def projected_lineups(pg: pd.DataFrame, rule: str = "dnp", decay: float = DECAY) -> pd.DataFrame:
-    """Every team-game's projected rotation (see the module docstring): :data:`COLUMNS`."""
-    hist = player_history(pg, decay)
-    c = history_before(hist, candidates(pg, rule))
+def project(c: pd.DataFrame, hist: pd.DataFrame) -> pd.DataFrame:
+    """The projected rotation of every team-game's candidates ``c`` (:func:`candidates`' columns, with
+    ``game_date``) from the players' histories ``hist`` (:func:`player_history`): :data:`COLUMNS`. Only
+    games strictly before a candidate's ``game_date`` count."""
+    c = history_before(hist, c)
     c["exp_minutes"] = c.ewm_minutes.fillna(NEW_MINUTES)
     c["_start"] = c.ewm_start.fillna(0.0)
     c = c.sort_values(["game_id", "team_id", "exp_minutes"], ascending=[True, True, False], kind="stable")
@@ -130,6 +131,11 @@ def projected_lineups(pg: pd.DataFrame, rule: str = "dnp", decay: float = DECAY)
     c["proj_starter"] = (st_rank.reindex(c.index) < STARTERS).to_numpy()
     c = c.rename(columns={"games": "recent_games"})
     return c[COLUMNS].reset_index(drop=True)
+
+
+def projected_lineups(pg: pd.DataFrame, rule: str = "dnp", decay: float = DECAY) -> pd.DataFrame:
+    """Every team-game's projected rotation (see the module docstring): :data:`COLUMNS`."""
+    return project(candidates(pg, rule), player_history(pg, decay))
 
 
 def evaluate(proj: pd.DataFrame, pg: pd.DataFrame) -> pd.DataFrame:

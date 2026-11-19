@@ -23,6 +23,10 @@ behind the change columns (so those measure who is in or out, not the projection
 Every week (Monday) from ``first_season`` is fit on the games (and possessions) before it, and each
 game uses its week's fit, so no game ever sees itself or later games.
 
+Upcoming games (``upcoming=``: :mod:`.live`'s rotations from current rosters) get rows the same way, through
+the fit before their Monday and the team's played games before them; ``pv.parquet`` then holds the games
+the model has not seen played, for the wager model to predict.
+
 ``pv.parquet``: one row per team-game, ``game_id, season, team_id, team`` and the wager model's
 ``_pv_*`` columns in the layout of :data:`runitback.wager.cbb.lineup.LINEUP`:
 
@@ -167,11 +171,15 @@ def holdout_score(events: Events, prior: pd.DataFrame, before: int, season: int,
 
 # -- weekly values -----------------------------------------------------------------------------------
 
-def week_cutoffs(pg: pd.DataFrame, first_season: int) -> pd.DataFrame:
+def week_cutoffs(pg: pd.DataFrame, first_season: int, upcoming: pd.DataFrame | None = None) -> pd.DataFrame:
     """Every team-game from ``first_season``: ``game_id, season, game_date, team_id, team, before``
-    (the Monday its values are fit before)."""
-    g = pg[pg.season >= first_season][["game_id", "season", "game_date", "team_id", "team"]].drop_duplicates(
-        ["game_id", "team_id"])
+    (the Monday its values are fit before). ``upcoming`` (:func:`runitback.college.live.live_lineups`)
+    adds the not yet played games, so their weeks are fit too (on the games before the Monday)."""
+    keep = ["game_id", "season", "game_date", "team_id", "team"]
+    g = pg[pg.season >= first_season][keep].drop_duplicates(["game_id", "team_id"])
+    if upcoming is not None and len(upcoming):
+        up = upcoming[keep].drop_duplicates(["game_id", "team_id"])
+        g = pd.concat([g, up[~up.game_id.isin(set(g.game_id))]], ignore_index=True)
     t = pd.to_datetime(g.game_date).sub(pd.Timestamp("1970-01-01")).dt.days.astype(np.int64)
     return g.assign(before=week_start(t).to_numpy()).reset_index(drop=True)
 
@@ -241,6 +249,7 @@ def game_table(pg: pd.DataFrame, tg: pd.DataFrame, proj: pd.DataFrame, fits: dic
     vals = {b: dict(zip(zip(f.side, f.player_id), f.value)) for b, f in fits.items()}
     proj_rows = {k: list(zip(d.player_id, d.proj_minutes)) for k, d in
                  proj[["game_id", "team_id", "player_id", "proj_minutes"]].groupby(["game_id", "team_id"])}
+    # an upcoming game (no box score yet) has the team's earlier games before it: all of those it played
     # the team's earlier games as projected (the same minutes model as the current game's, so the
     # change columns measure who is in or out rather than the projection's smoothing); a game
     # without a projection: as played
@@ -261,7 +270,7 @@ def game_table(pg: pd.DataFrame, tg: pd.DataFrame, proj: pd.DataFrame, fits: dic
             continue
         rate = ppg.get(g.season) or ppg[seasons[-1]]
         cur = side_values(pr, vp, group_of, rate)
-        i = pos_in[(g.game_id, g.team_id)]
+        i = pos_in.get((g.game_id, g.team_id), len(played_by.get(g.team_id, ())))   # upcoming: all played
         before = played_by[g.team_id][:i]
         prev = before[-1] if len(before) else None
         pv_prev = side_values(actual[(prev, g.team_id)], vp, group_of, rate) if (prev, g.team_id) in actual else None
@@ -281,12 +290,19 @@ def game_table(pg: pd.DataFrame, tg: pd.DataFrame, proj: pd.DataFrame, fits: dic
 
 def build(pg: pd.DataFrame, tg: pd.DataFrame, proj: pd.DataFrame, first_season: int,
           poss: pd.DataFrame | None = None, players: pd.DataFrame | None = None,
-          box_cfg: BoxConfig | None = None, apm_cfg: APMConfig | None = None, apm_from: int | None = None
-          ) -> GameValues:
+          box_cfg: BoxConfig | None = None, apm_cfg: APMConfig | None = None, apm_from: int | None = None,
+          upcoming: pd.DataFrame | None = None) -> GameValues:
     """Weekly values and ``pv`` for every team-game from ``first_season`` (``poss``: men's CBBD
-    possessions for the adjusted plus-minus)."""
+    possessions for the adjusted plus-minus). ``upcoming`` (``projected_lineups_upcoming.parquet``,
+    :func:`runitback.college.live.live_lineups`) adds a row for each not yet played game: its rotation
+    through the values of the fit before its Monday and the team's played games before it."""
     box = BoxModel.build(pg, tg, box_cfg)
-    games = week_cutoffs(pg, first_season)
+    if upcoming is not None and len(upcoming):
+        upcoming = upcoming.assign(game_id=upcoming.game_id.astype(str))
+        done = set(pg.game_id.astype(str))
+        upcoming = upcoming[~upcoming.game_id.isin(done)]
+        proj = pd.concat([proj, upcoming[proj.columns.intersection(upcoming.columns)]], ignore_index=True)
+    games = week_cutoffs(pg, first_season, upcoming)
     log.info("%d team-games, %d weeks", len(games), games.before.nunique())
     fits = weekly_values(box, games, poss, players, apm_cfg, apm_from)
     return game_table(pg, tg, proj, fits, games)
