@@ -10,7 +10,8 @@ import numpy as np
 import torch
 
 from ..data.ratings import RatingsTable, scale_ratings
-from ..engine.rules import GameState, Outcome, apply_outcome
+from ..engine import rules as nfl_rules
+from ..engine.rules import GameState, Outcome
 from ..model.features import (
     FEATURES, TeamSeasonVocab, elapsed_mask, encode_state, result_mask, type_mask, yards_mask,
 )
@@ -42,6 +43,10 @@ class GameLineups:
 
 
 class Simulator:
+    # the rules the sampled outcomes are legal under and applied with (a module with apply_outcome,
+    # legal_types, legal_results and yards_range): the college simulator swaps in its own
+    engine = nfl_rules
+
     def __init__(self, model: PlayTransformer, ts: TeamSeasonVocab, meta: dict | None = None,
                  ratings: RatingsTable | None = None):
         self.model = model.eval()
@@ -186,7 +191,7 @@ class Simulator:
         h = self.model.encode(self._feats(states, prevs, ratings, lineups), cache)[:, 0]
         m = self.model
 
-        tm = np.stack([type_mask(s) for s in states])
+        tm = np.stack([type_mask(s, self.engine) for s in states])
         for i, f in enumerate(forced):
             if f and f.get("play_type") and tm[i, PT[f["play_type"]]]:
                 tm[i] = False
@@ -213,7 +218,7 @@ class Simulator:
             p = p + m.who_vec(wt, tt, cand)
             who_codes = [codes[i][k] if k < SIDE else None for i, k in enumerate(w)]
 
-        rm = np.stack([result_mask(s, n) for s, n in zip(states, names)])
+        rm = np.stack([result_mask(s, n, self.engine) for s, n in zip(states, names)])
         if m.has_who and pers is not None:
             rm = rm & m.who_result_mask(tt, wt, rm.shape[-1]).numpy()
         for i, f in enumerate(forced):
@@ -227,7 +232,7 @@ class Simulator:
         rt = torch.as_tensor(r)
         rnames = [RESULTS[k] for k in r]
 
-        ym = np.stack([yards_mask(s, n, rn) for s, n, rn in zip(states, names, rnames)])
+        ym = np.stack([yards_mask(s, n, rn, self.engine) for s, n, rn in zip(states, names, rnames)])
         y = self._sample(m.yards_logits(h, tt, rt, p) + m.yards_effect(eff, rt), ym, temperature, gen)
         em = np.stack([elapsed_mask(s) for s in states])
         e = self._sample(m.elapsed_logits(h, tt, rt, torch.as_tensor(y), p), em, temperature, gen)
@@ -276,7 +281,7 @@ class Simulator:
                         continue
                     if b0 + i < keep_plays:
                         game_logs[i].append((s, o))
-                    states[i] = apply_outcome(s, o, rng)
+                    states[i] = self.engine.apply_outcome(s, o, rng)
                     prevs[i] = o
             finals += states
             logs += game_logs[: max(0, keep_plays - b0)]

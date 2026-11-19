@@ -1,6 +1,6 @@
 """The combined Run It Back server: the generator APIs, the predictions data and the web app.
 
-Routes: /api/nfl/... and /api/nba/... for the sports with a play-by-play generator (the NFL routes
+Routes: /api/nfl/..., /api/cfb/... and /api/nba/... for the sports with a play-by-play generator (the NFL routes
 are also served at /api/... for clients written before the NBA was added), /api/sports listing
 every sport the site has pages for (:data:`SPORTS`), /data/... for the precomputed predictions pages'
 JSON (`runitback-wager web export`; from $RUNITBACK_PREDICTIONS when set, so the data can be
@@ -39,11 +39,13 @@ def get_api() -> FastAPI:
     if _api is None:
         with _api_lock:
             if _api is None:
+                from .cfb.server.app import router as cfb_router
                 from .nba.server.app import router as nba_router
                 from .nfl.server.app import router as nfl_router
 
                 api = FastAPI(title="Run It Back API", version="0.2.0")
                 api.include_router(nfl_router, prefix="/nfl", tags=["nfl"])
+                api.include_router(cfb_router, prefix="/cfb", tags=["cfb"])
                 api.include_router(nba_router, prefix="/nba", tags=["nba"])
                 api.include_router(nfl_router, include_in_schema=False)  # legacy NFL paths (/api/...)
                 _api = api
@@ -54,10 +56,11 @@ def warm_up() -> None:
     """Import the sport APIs and load every generator checkpoint that is present."""
     try:
         get_api()
+        from .cfb.server.app import get_sim as cfb_sim
         from .nba.server.app import get_sim as nba_sim
         from .nfl.server.app import get_sim as nfl_sim
 
-        for sport, get_sim in (("nfl", nfl_sim), ("nba", nba_sim)):
+        for sport, get_sim in (("nfl", nfl_sim), ("cfb", cfb_sim), ("nba", nba_sim)):
             if _generator_loaded(sport):
                 get_sim()
                 log.info("warm-up: %s generator loaded", sport)
@@ -86,7 +89,7 @@ app = FastAPI(title="Run It Back", version="0.2.0", lifespan=lifespan)
 # written them; `generator` marks the sports with a simulator served under /api/<sport>.
 SPORTS = (
     ("nfl", "NFL", True),
-    ("cfb", "CFB", False),
+    ("cfb", "CFB", True),
     ("nba", "NBA", True),
     ("cbb", "CBB", False),
     ("wnba", "WNBA", False),
@@ -99,6 +102,8 @@ SPORTS = (
 def _generator_loaded(sport: str) -> bool:
     if sport == "nfl":
         from .nfl.paths import checkpoint_path
+    elif sport == "cfb":
+        from .cfb.paths import checkpoint_path
     elif sport == "nba":
         from .nba.paths import checkpoint_path
     else:

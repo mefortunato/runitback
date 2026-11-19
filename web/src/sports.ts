@@ -14,7 +14,7 @@ export interface SportDef {
 
 export const SPORTS: SportDef[] = [
   { id: "nfl", label: "NFL", generator: true, wagerUsesGenerator: true },
-  { id: "cfb", label: "CFB", generator: false, wagerUsesGenerator: true },
+  { id: "cfb", label: "CFB", generator: true, wagerUsesGenerator: true },
   { id: "nba", label: "NBA", generator: true },
   { id: "cbb", label: "CBB", generator: false },
   { id: "wnba", label: "WNBA", generator: false },
