@@ -556,7 +556,119 @@ jobs:
           path: webdata/cfb
           retention-days: 1
           if-no-files-found: error
+  # women's college basketball: ESPN's lines (finished games', one request each) come a season per
+  # job, as CFB's do (ESPN refuses a runner after a burst of requests: a first build that fetched
+  # them all in one job got a 403). Each job starts from the `wcbb-espn-cache` release, so only
+  # games the cache lacks are requested; a job ESPN refuses keeps what it fetched for the next run.
+  wcbb-plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - id: plan
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import datetime, json
+          t = datetime.date.today()
+          end = t.year + 1 if t.month >= 8 else t.year   # the season a date belongs to (runitback.wager.cbb.data.download)
+          # lines start in 2022 (runitback.wager.cbb.data.download.WOMEN); earlier seasons' schedules and
+          # box scores need no odds requests
+          shards = [{"first": 2006, "last": 2021}] + [{"first": s, "last": s} for s in range(2022, end + 1)]
+          print("shards=" + json.dumps(shards))
+          PY
+  wcbb-lines:
+    needs: wcbb-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.wcbb-plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - name: Fetch the cached lines
+        run: |
+          source scripts/ci/release.sh
+          mkdir -p data/wcbb/espn_cache
+          assets=$(release_assets wcbb-espn-cache)
+          if grep -qx wcbb-espn-cache.tar.gz <<<"$assets"; then
+            fetch_asset wcbb-espn-cache wcbb-espn-cache.tar.gz dl/wcbb
+            tar -xzf dl/wcbb/wcbb-espn-cache.tar.gz -C data/wcbb/espn_cache
+          fi
+      - name: Download seasons ${{ matrix.shard.first }}-${{ matrix.shard.last }}
+        run: |
+          set -o pipefail
+          runitback-wager wcbb download --first_season ${{ matrix.shard.first }} \
+            --last_season ${{ matrix.shard.last }} --cache_dir data/wcbb/espn_cache \
+            --output_file shard.csv 2>&1 | tee download.log
+          if grep -q "odds API returned 403" download.log; then
+            echo "::warning::ESPN refused odds requests: the lines fetched so far are kept; run Train again later for the rest"
+          fi
+      - name: Keep this shard's files
+        run: |
+          mkdir shard
+          for s in $(seq ${{ matrix.shard.first }} ${{ matrix.shard.last }}); do
+            cp data/wcbb/espn_cache/*_$s.* shard/ 2>/dev/null || true
+          done
+          ls -la shard
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wcbb-lines-${{ matrix.shard.first }}
+          path: shard
+          retention-days: 1
+          if-no-files-found: error
+  # The lines the shards fetched, kept for the next run and for Refresh predictions: its own job, so
+  # the shards that succeeded are kept when another shard or the build fails, laid over the cache so
+  # far (a failed shard never removes anything).
+  wcbb-lines-cache:
+    needs: [wcbb-plan, wcbb-lines]
+    if: ${{ !cancelled() && needs.wcbb-plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Fetch the cache so far
+        run: |
+          source scripts/ci/release.sh
+          mkdir -p data/wcbb/espn_cache
+          assets=$(release_assets wcbb-espn-cache)
+          if grep -qx wcbb-espn-cache.tar.gz <<<"$assets"; then
+            fetch_asset wcbb-espn-cache wcbb-espn-cache.tar.gz dl/wcbb
+            tar -xzf dl/wcbb/wcbb-espn-cache.tar.gz -C data/wcbb/espn_cache
+          fi
+      - uses: actions/download-artifact@v4
+        # no artifact when every shard failed
+        continue-on-error: true
+        with: { pattern: "wcbb-lines-*", path: data/wcbb/espn_cache, merge-multiple: true }
+      - name: Publish the cache
+        # only finished seasons' files and finished games' lines are in it
+        run: |
+          if [ -z "$(ls -A data/wcbb/espn_cache)" ]; then echo "nothing to publish"; exit 0; fi
+          tar -czf wcbb-espn-cache.tar.gz -C data/wcbb/espn_cache .
+          gh release view wcbb-espn-cache >/dev/null 2>&1 || gh release create wcbb-espn-cache \
+            --title "WCBB lines cache (ESPN odds, schedules, box scores)" --latest=false \
+            --notes "Finished games' lines and finished seasons' files, so a download only requests new games. Written by Train predictions; Refresh predictions reads it." \
+            || gh release view wcbb-espn-cache >/dev/null
+          gh release upload wcbb-espn-cache wcbb-espn-cache.tar.gz --clobber
+  # Needs every lines job: without all of its lines the women's model is not built (the web build
+  # refuses a sport whose lines ESPN refused), and its published data stays.
   build-wcbb:
+    needs: [wcbb-plan, wcbb-lines, wcbb-lines-cache]
     runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
@@ -581,6 +693,13 @@ jobs:
           runitback college players --gender wcbb
           runitback college lineups --gender wcbb --live --days 3
           runitback college player-values --gender wcbb --out "$RUNITBACK_WCBB_PLAYER_VALUES"
+      - name: WCBB lines cache
+        # published by wcbb-lines-cache: the finished games' lines, so the build only requests new ones
+        run: |
+          source scripts/ci/release.sh
+          mkdir -p data/wcbb/espn_cache
+          fetch_asset wcbb-espn-cache wcbb-espn-cache.tar.gz dl/wcbb
+          tar -xzf dl/wcbb/wcbb-espn-cache.tar.gz -C data/wcbb/espn_cache
       - name: Fetch the previous build (its backtest seasons can be reused)
         run: |
           mkdir webdata

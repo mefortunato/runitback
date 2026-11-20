@@ -142,6 +142,11 @@ jobs:
           runitback college players --gender wcbb
           runitback college lineups --gender wcbb --live --days 3
           runitback college player-values --gender wcbb --out "$RUNITBACK_WCBB_PLAYER_VALUES"
+          # the finished games' lines Train kept, so the export only requests the newest games'
+          source scripts/ci/release.sh
+          mkdir -p data/wcbb/espn_cache
+          fetch_asset wcbb-espn-cache wcbb-espn-cache.tar.gz dl/wcbb
+          tar -xzf dl/wcbb/wcbb-espn-cache.tar.gz -C data/wcbb/espn_cache
       - name: CFB folds (embed the games played since), quarterback values, cached lines
         # only once Train has published CFB: until then there is nothing to export, and the work
         # (about ten minutes) would be wasted
