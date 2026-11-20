@@ -19,6 +19,8 @@ so each sport derives them here:
 - **NHL**: shot-attempt (Corsi) and unblocked-attempt (Fenwick) shares,
   shot share, shooting and save percentage without empty-net goals, PDO and
   power-play conversion.
+- **Premier League**: shot share, shots on target per shot, goals per
+  shot and per shot on target, corner share and cards.
 - **MLB**: OBP, SLG, OPS, ISO, strikeout / walk / home-run rates, BABIP
   and a FIP-style pitching line (from the opponent's batting).
 
@@ -245,3 +247,27 @@ def _mlb_side(own: Getter, opp: Getter) -> dict[str, pd.Series]:
 
 def mlb_efficiency(games: pd.DataFrame) -> pd.DataFrame:
     return both_sides(games, _mlb_side)
+
+
+# --- Premier League ---------------------------------------------------------
+def _epl_side(own: Getter, opp: Getter) -> dict[str, pd.Series]:
+    return {
+        "shots": own("shots"),
+        "accuracy": ratio(own("shots_on_target"), own("shots")),
+        "conversion": ratio(own("goals"), own("shots")),
+        "finishing": ratio(own("goals"), own("shots_on_target")),
+        "cards": own("yellow_cards") + 2 * own("red_cards"),
+    }
+
+
+def epl_efficiency(games: pd.DataFrame) -> pd.DataFrame:
+    def shared(own: Getter, opp: Getter):
+        return {
+            "shot_share": ratio(own("shots"), own("shots") + opp("shots")),
+            "sot_share": ratio(
+                own("shots_on_target"), own("shots_on_target") + opp("shots_on_target")
+            ),
+            "corner_share": ratio(own("corners"), own("corners") + opp("corners")),
+        }
+
+    return both_sides(games, _epl_side, shared)
