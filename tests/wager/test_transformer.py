@@ -321,3 +321,58 @@ def test_additive_lineup_terms_are_monotone_and_hidden_from_the_mlp():
             bumps.append(head.additive(x)[0] - head.additive(ctx)[0])
         assert torch.allclose(bumps[0], bumps[1], atol=1e-5) and (bumps[0] > 0).all()
     assert additive_spec(n_before, "pvc", "nfl")["additive_kind"] == [1] * 9
+
+
+def test_strength_uses_the_sports_own_elo_settings(played_games, toy_sport):
+    import dataclasses
+
+    from runitback.wager.core.sport import register_sport
+    from runitback.wager.models.baselines import EloModel, EloParams
+
+    params = {"k": 6.0, "home": 30.0, "points_per_elo": 1 / 120}
+    register_sport(dataclasses.replace(toy_sport, name="toy_elo", elo=params))
+    own = strength(played_games, TOY_SCHEMA, True, True, sport="toy_elo")
+    nfl = strength(played_games, TOY_SCHEMA, True, True)
+    elo = EloModel(TOY_SCHEMA, EloParams(**params))
+    ratings = elo.pre_game_ratings(played_games)
+    np.testing.assert_allclose(own["_team_elo"], ratings["team_elo"])
+    expected = elo.replay(played_games) * params["points_per_elo"]
+    np.testing.assert_allclose(own["_margin_vs_elo"], played_games["margin"] - expected)
+    assert not np.allclose(own["_team_elo"], nfl["_team_elo"])
+    # opponent margin averages do not involve Elo
+    pd.testing.assert_series_equal(own["_opp_margin_avg"], nfl["_opp_margin_avg"])
+
+
+def test_sports_without_elo_settings_keep_the_nfl_elo_tokens(played_games, toy_sport):
+    from runitback.wager.core.sport import BUILTIN_SPORTS, get_sport
+    from runitback.wager.models.baselines import EloParams
+
+    assert toy_sport.elo == {}
+    pd.testing.assert_frame_equal(
+        strength(played_games, TOY_SCHEMA, True, True, sport="toy"),
+        strength(played_games, TOY_SCHEMA, True, True),
+    )
+    # the built-in sports that never set Sport.elo get exactly the old tokens
+    default = {name for name in BUILTIN_SPORTS if not get_sport(name).elo}
+    assert {"nfl", "cfb", "nba", "cbb", "wcbb", "epl"} <= default
+    assert all(EloParams(**get_sport(name).elo) == EloParams() for name in default)
+
+
+def test_tokens_use_sport_elo_only_for_features_fit_with_it(played_games, toy_sport):
+    import dataclasses
+
+    from runitback.wager.core.sport import register_sport
+
+    register_sport(dataclasses.replace(toy_sport, name="toy_elo", elo={"k": 6.0}))
+    features = SequenceFeatures.fit(
+        played_games, TOY_SCHEMA, history=8, opponent_strength=True, sport="toy_elo"
+    )
+    assert features.sport_elo
+    new = features.with_derived(played_games)["_team_elo"]
+    # features saved before the option existed: the NFL's Elo, as they were fit
+    features.sport_elo = False
+    old = features.with_derived(played_games)["_team_elo"]
+    pd.testing.assert_series_equal(old, strength(played_games, TOY_SCHEMA)["_team_elo"])
+    assert not np.allclose(new, old)
+    del features.__dict__["sport_elo"]  # a pickle without the attribute
+    pd.testing.assert_series_equal(features.with_derived(played_games)["_team_elo"], old)

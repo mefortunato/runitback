@@ -343,6 +343,7 @@ def strength(
     schema: GameSchema,
     opponent_strength: bool = True,
     elo_margin: bool = False,
+    sport: str | None = None,
 ) -> pd.DataFrame:
     """Each played row's pre-game strength features.
 
@@ -352,15 +353,19 @@ def strength(
     margin (rating gap plus home edge, in points). Elo and the averages
     depend on earlier games only; ``_margin_vs_elo`` adds the game's own
     result, like the raw margin already in each token.
+
+    The Elo is the sport's own (``Sport.elo``) for ``sport``, else the NFL's
+    FiveThirtyEight settings.
     """
     import dataclasses
 
-    from ..baselines import EloModel
+    from ...core.sport import get_sport
+    from ..baselines import EloModel, EloParams
     from ..sklearn.features import training_frame
 
     games = played(games, schema)
     out = pd.DataFrame(index=games.index)
-    elo = EloModel(schema)
+    elo = EloModel(schema, EloParams(**get_sport(sport).elo) if sport else EloParams())
     if opponent_strength:
         ratings = elo.pre_game_ratings(games)
         margin = dataclasses.replace(schema, stats=(schema.target,))
@@ -396,6 +401,9 @@ class SequenceFeatures:
     pbp_only: bool = False
     lineup: str | None = None  # this fold's lineup context table (resolved path)
     lineup_set: str | None = None
+    # the Elo tokens use ``Sport.elo``; False for features saved before that,
+    # whose standardization was fit on the NFL's default Elo
+    sport_elo: bool = False
 
     @classmethod
     def fit(
@@ -435,6 +443,7 @@ class SequenceFeatures:
             pbp_only=pbp_only,
             lineup=lineup if lineup_set else None,
             lineup_set=lineup_set if lineup else None,
+            sport_elo=sport is not None,
         )
         extra = extra_columns(
             opponent_strength, elo_margin, market_tokens, efficiency, sport,
@@ -464,8 +473,11 @@ class SequenceFeatures:
         efficiency = getattr(self, "efficiency", False)
         parts = []
         if self.opponent_strength or self.elo_margin:
+            sport = self.sport if getattr(self, "sport_elo", False) else None
             parts.append(
-                strength(games, self.schema, self.opponent_strength, self.elo_margin)
+                strength(
+                    games, self.schema, self.opponent_strength, self.elo_margin, sport
+                )
             )
         if market:
             parts.append(market_features(games, self.schema))
