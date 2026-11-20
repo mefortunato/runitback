@@ -70,8 +70,9 @@ only says where it plugs in.
 4. **No variation in the total line.** It is always 2.5, so `_mkt_total` is a constant column. Check
    that `SequenceFeatures._standardize` does not divide by a zero standard deviation (E3).
 5. **xG starts in 2026-27.** The 2026-27 file adds `HxG`/`AxG`, and FPL has player xG from 2022-23.
-   Neither covers the training seasons, so the team model leaves them out. The player thread may use
-   FPL xG.
+   Neither covers the training seasons, so the team model leaves them out and D0 does not load them
+   (settled: a display-only column would be NaN for 25 seasons). If football-data backfills team xG,
+   an xG-token arm is a possible later package. The player thread may use FPL xG.
 
 ## 1. Every two-outcome assumption in `src/runitback/wager/`
 
@@ -340,7 +341,7 @@ start runs, so use `[skip ci]` unless a run is intended.
 ## 7. Questions
 
 **Settled:** see the decision table at the top: `strength()` Elo, serving deferred, league-only
-rest, no COVID flag, the market baseline, AH out of scope, both reference arms, RPS, the de-vig
+rest, no COVID flag, 2026-27 xG left for later (§0.5), the market baseline, AH out of scope, both reference arms, RPS, the de-vig
 method window, and `win_prob` semantics.
 
 **Still open:**
@@ -351,5 +352,3 @@ method window, and `win_prob` semantics.
    closing averages. Is it OK to let the 2020–2021 closing-average ranking break a disagreement (§2)?
 3. **Fingerprint baseline.** Record the pinned hashes after the ingest branch (with the `strength()`
    fix) merges to `main`, as §2 assumes. Does the parent session agree that the fix lands before D1?
-4. **2026-27 xG** (`HxG`/`AxG`). Should D0 load it as display-only now, or leave it until enough
-   seasons exist to train on it?
