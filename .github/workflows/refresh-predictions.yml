@@ -142,6 +142,19 @@ jobs:
           runitback college players --gender wcbb
           runitback college lineups --gender wcbb --live --days 3
           runitback college player-values --gender wcbb --out "$RUNITBACK_WCBB_PLAYER_VALUES"
+          # the finished games' lines Train kept, so the export only requests the newest games'
+          source scripts/ci/release.sh
+          mkdir -p data/wcbb/espn_cache
+          fetch_asset wcbb-espn-cache wcbb-espn-cache.tar.gz dl/wcbb
+          tar -xzf dl/wcbb/wcbb-espn-cache.tar.gz -C data/wcbb/espn_cache
+      - name: Men's college lines cache
+        # only once Train has published men's college basketball (it kept the finished games' lines)
+        if: ${{ hashFiles('webdata/cbb/meta.json') != '' }}
+        run: |
+          source scripts/ci/release.sh
+          mkdir -p data/cbb/espn_cache
+          fetch_asset cbb-espn-cache cbb-espn-cache.tar.gz dl/cbb
+          tar -xzf dl/cbb/cbb-espn-cache.tar.gz -C data/cbb/espn_cache
       - name: CFB folds (embed the games played since), quarterback values, cached lines
         # only once Train has published CFB: until then there is nothing to export, and the work
         # (about ten minutes) would be wasted
@@ -176,6 +189,8 @@ jobs:
       - name: Export fresh data and lines
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          # men's college basketball: finished games' lines (without it the export would request ~85,000)
+          CBBD_API_KEY: ${{ secrets.CBBD_API_KEY }}
           SCHEDULE: ${{ github.event.schedule }}
         run: |
           odds="{nfl: oddsapi, cfb: espn}"
@@ -185,6 +200,7 @@ jobs:
           fi
           sports="nfl,nba,cfb"
           if [ -f webdata/wcbb/meta.json ]; then sports="$sports,wcbb"; fi
+          if [ -f webdata/cbb/meta.json ]; then sports="$sports,cbb"; fi
           runitback-wager web export --data_dir webdata --output_dir out --sports "[$sports]" \
             --refresh true --require_refresh false --odds "$odds" \
             --odds_history previous --challenge_from previous \
