@@ -1,7 +1,7 @@
 # Train the wager model (spread / moneyline / total), run its walk-forward backtest (the
 # performance page, Beat the model, past power rankings) and publish the result as the
 # `predictions-webdata` release asset that Refresh predictions exports from. Ported from
-# sportsml's Train workflow. NFL, NBA and CFB.
+# sportsml's Train workflow. NFL, NBA, CFB and women's college basketball.
 #
 # The NFL model reads the play-by-play foundation's frozen game embeddings (experiments/nfl:
 # pbp32): one foundation model per test season ("fold", runitback.nfl.foundation), kept in the
@@ -29,7 +29,14 @@
 # finished seasons' schedules and box scores) for this workflow and Refresh predictions, which then
 # only request the newest games.
 #
-# Each sport is built in its own parallel job (`build-nfl`, `build-nba`, `build-cfb`, each with its
+# The women's college basketball model (experiments/wcbb: prod_pvc_e4, 4 seeds) reads player values only
+# (`runitback college player-values --gender wcbb`: box-score values of every player, summed over each
+# team's projected rotation; the rotations of upcoming games come from ESPN's rosters,
+# `runitback college lineups --live`). The build job rebuilds them from sportsdataverse's box scores
+# and ESPN, and trains with RUNITBACK_WCBB_PLAYER_VALUES set (runitback.wager.wcbb). Men's college
+# basketball is not built here yet.
+#
+# Each sport is built in its own parallel job (`build-nfl`, `build-nba`, `build-cfb`, `build-wcbb`, each with its
 # own runner and time limit) and `publish` lays what was built over the published web data: a sport
 # whose build failed keeps its previous data, and the others are published.
 #
@@ -75,6 +82,13 @@ on:
         description: "max_new_seasons for college football alone (empty: use max_new_seasons; all, or a number, 0 included)"
         type: string
         default: ""
+      max_new_seasons_wcbb:
+        description: >-
+          max_new_seasons for women's college basketball alone (empty: use max_new_seasons; all, or a number,
+          0 included). Its first run has no cached season: start with 1 and repeat until the backtest cache
+          has them all, as a 4-seed season's time is not yet measured here
+        type: string
+        default: "1"
   schedule:
     - cron: "41 7 1 * *" # the 1st of each month
 
@@ -542,11 +556,68 @@ jobs:
           path: webdata/cfb
           retention-days: 1
           if-no-files-found: error
+  build-wcbb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUNITBACK_WCBB_PLAYER_VALUES: player_values/wcbb
+      MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
+      MLFLOW_DISABLE_AGENT_HINT: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - name: Women's college player values (rotations from rosters for upcoming games)
+        run: |
+          runitback college download --gender wcbb
+          runitback college players --gender wcbb
+          runitback college lineups --gender wcbb --live --days 3
+          runitback college player-values --gender wcbb --out "$RUNITBACK_WCBB_PLAYER_VALUES"
+      - name: Fetch the previous build (its backtest seasons can be reused)
+        run: |
+          mkdir webdata
+          if gh release download predictions-webdata --pattern webdata.tar.gz; then
+            tar -xzf webdata.tar.gz -C webdata && rm webdata.tar.gz
+          else
+            echo "no previous predictions-webdata release: backtesting every season"
+          fi
+      - name: Download, train, backtest
+        env:
+          SPORT_MAX: ${{ inputs.max_new_seasons_wcbb }}
+          SHARED_MAX: ${{ inputs.max_new_seasons }}
+        run: |
+          # this sport's input, else the shared one; empty or "all": every season, 0: none
+          MAX_NEW_SEASONS=${SPORT_MAX:-$SHARED_MAX}
+          max=()
+          case "$MAX_NEW_SEASONS" in
+            ""|all) ;;
+            *[!0-9]*) echo "::error::max_new_seasons must be a whole number or all, got '$MAX_NEW_SEASONS'"; exit 1 ;;
+            *) max=(--max_new_seasons "$MAX_NEW_SEASONS") ;;
+          esac
+          runitback-wager web build --sports '[wcbb]' --output_dir webdata \
+            --cache release:predictions-backtest-cache \
+            --refresh_backtest ${{ inputs.refresh_backtest || false }} \
+            --reuse_model_days ${{ inputs.reuse_model_days || 0 }} \
+            "${max[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webdata-wcbb
+          path: webdata/wcbb
+          retention-days: 1
+          if-no-files-found: error
   # Lays the sports built in this run over the published web data, so a sport that failed (or was
   # not built) keeps what it had, and publishes it.
   publish:
-    needs: [build-nfl, build-nba, build-cfb]
-    if: ${{ !cancelled() && (needs.build-nfl.result == 'success' || needs.build-nba.result == 'success' || needs.build-cfb.result == 'success') }}
+    needs: [build-nfl, build-nba, build-cfb, build-wcbb]
+    if: ${{ !cancelled() && (needs.build-nfl.result == 'success' || needs.build-nba.result == 'success' || needs.build-cfb.result == 'success' || needs.build-wcbb.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -572,7 +643,7 @@ jobs:
             cp -a "$d/." "webdata/$sport/"
             echo "built $sport"
           done
-          echo "NFL: ${{ needs.build-nfl.result }}, NBA: ${{ needs.build-nba.result }}, CFB: ${{ needs.build-cfb.result }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "NFL: ${{ needs.build-nfl.result }}, NBA: ${{ needs.build-nba.result }}, CFB: ${{ needs.build-cfb.result }}, WCBB: ${{ needs.build-wcbb.result }}" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Publish the predictions-webdata release asset
         run: |
           tar -czf webdata.tar.gz -C webdata .

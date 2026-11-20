@@ -73,6 +73,7 @@ jobs:
       RUNITBACK_NBA_PLAYER_VALUES: player_values/nba
       RUNITBACK_CFB_FOUNDATION: foundation/cfb
       RUNITBACK_CFB_PLAYER_VALUES: player_values/cfb
+      RUNITBACK_WCBB_PLAYER_VALUES: player_values/wcbb
     steps:
       - name: Check configuration
         run: |
@@ -133,6 +134,14 @@ jobs:
           runitback nba player-values --start 2015 --end 2027 --out "$RUNITBACK_NBA_PLAYER_VALUES" \
             --lineups data/nba/processed/projected_lineups.parquet \
             --upcoming data/nba/processed/projected_lineups_upcoming.parquet
+      - name: Women's college player values (rotations from rosters for upcoming games)
+        # only once Train has published women's college basketball: until then there is nothing to export
+        if: ${{ hashFiles('webdata/wcbb/meta.json') != '' }}
+        run: |
+          runitback college download --gender wcbb
+          runitback college players --gender wcbb
+          runitback college lineups --gender wcbb --live --days 3
+          runitback college player-values --gender wcbb --out "$RUNITBACK_WCBB_PLAYER_VALUES"
       - name: CFB folds (embed the games played since), quarterback values, cached lines
         # only once Train has published CFB: until then there is nothing to export, and the work
         # (about ten minutes) would be wasted
@@ -174,7 +183,9 @@ jobs:
           if [ -z "$SCHEDULE" ] || [ "$SCHEDULE" = "17 10 * * *" ]; then
             odds="{nfl: oddsapi, nba: oddsapi, cfb: espn}"
           fi
-          runitback-wager web export --data_dir webdata --output_dir out --sports '[nfl,nba,cfb]' \
+          sports="nfl,nba,cfb"
+          if [ -f webdata/wcbb/meta.json ]; then sports="$sports,wcbb"; fi
+          runitback-wager web export --data_dir webdata --output_dir out --sports "[$sports]" \
             --refresh true --require_refresh false --odds "$odds" \
             --odds_history previous --challenge_from previous \
             --player_values "{nfl: $RUNITBACK_NFL_PLAYER_VALUES, nba: $RUNITBACK_NBA_PLAYER_VALUES}"
