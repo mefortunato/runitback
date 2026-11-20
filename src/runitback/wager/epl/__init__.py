@@ -4,7 +4,7 @@ from .data.download import download
 from .data.features import SCHEMA
 
 # Untuned: no Elo / GNN / transformer settings yet (the games table is the
-# ingest; the draw, a third of the games, is not modeled by the two-way
+# ingest; the draw, a quarter of the games, is not modeled by the two-way
 # moneyline columns).
 SPORT = Sport(
     name="epl",

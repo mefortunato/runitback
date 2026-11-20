@@ -16,7 +16,7 @@ OPP_STATS_COLUMNS = [f"opp_{col}" for col in STATS_COLUMNS]
 # The betting market from football-data.co.uk (see download.py for which
 # bookmaker each comes from). Football has three outcomes: ``moneyline`` /
 # ``opp_moneyline`` are the home / away win prices and ``draw_moneyline`` the
-# draw's, all American; a win probability needs all three (a draw is a third
+# draw's, all American; a win probability needs all three (a draw is a quarter
 # of the games), so the two-way moneyline columns alone overstate it. The
 # total is always the 2.5-goal line. ``spread_line`` is the Asian handicap
 # turned into the team's expected margin (positive: favored).
