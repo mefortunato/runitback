@@ -17,7 +17,8 @@ score-distribution summaries, the model scheduler and training helpers. One serv
 The predictions pages come from `runitback.wager`, the game-level models ported from sportsml
 (`runitback-wager <sport> ...`, the `wager` extra). They are precomputed static JSON; see
 [Predictions data](#predictions-data). Ported so far: `nfl`, `cfb`, `mlb`, `nba`, `wnba`, `cbb`
-(men's college basketball) and `wcbb` (women's). The backtests against sportsml are in
+(men's college basketball) and `wcbb` (women's); `nhl` and `epl` have their data ingest (the `epl`
+models need a draw outcome first, see [Premier League](#premier-league)). The backtests against sportsml are in
 `experiments/cfb/README.md` and `experiments/mlb/README.md`; the basketball sports are compared by
 `.github/workflows/basketball-port.yml`. Site pages for the new sports come later.
 
@@ -809,6 +810,59 @@ runitback college foundation --gender cbb --season 2025       # → foundation/c
 `.github/workflows/college-foundation.yml` (by hand from the Actions tab) rebuilds the data and trains one fold per
 test season and gender in matrix jobs. Each fold trains on the five seasons before its test season. Results and the
 replay check: `experiments/cbb/README.md`, "Engine and foundation folds (C2)".
+
+## Premier League
+
+`runitback.wager.epl` is the data ingest for the English Premier League's game-level wager model. There
+are no models for it yet: football has three outcomes (about 25% of games are draws) and the wager code
+assumes two, so the draw mode comes first.
+
+```bash
+runitback-wager epl download --output_file data/epl/games.csv   # 2000-01 on (--first_season 2001), plus the coming week's fixtures
+python -c "from runitback.wager.epl import download_players; download_players('data/epl/players.csv')"
+```
+
+**Games** (`src/runitback/wager/epl/data/download.py`) come from [football-data.co.uk](https://www.football-data.co.uk/englandm.php):
+one CSV per season, no key. One row per team per game, as in the other sports: `result` is the goal
+difference, `location` is +1 / -1 (no neutral sites), seasons are keyed by their ending year (2025-26 is
+2026), `game_id` is `<season>_<home>_<away>` and teams are three-letter codes (`runitback.wager.epl.data.teams`;
+a newly promoted club raises until it is added there).
+
+| Columns | From |
+|---|---|
+| `goals`, `half_time_goals`, `shots`, `shots_on_target`, `corners`, `fouls`, `yellow_cards`, `red_cards` (and `opp_*`), `referee` | the file's results block; shots and cards from 2000-01 |
+| `moneyline`, `opp_moneyline`, `draw_moneyline` | home / away / draw prices, American odds |
+| `total_line` (always 2.5), `over_odds`, `under_odds` | over / under 2.5 goals |
+| `spread_line` | the Asian handicap as the team's expected margin (positive: favored) |
+| `odds_source` | the bookmaker behind the 1X2 prices |
+
+Each price comes from the first bookmaker with a full set, in this order: closing Pinnacle, closing market
+average, closing bet365, the same three before closing prices existed, then William Hill, Interwetten and
+Ladbrokes. Totals start in 2002-03 and handicaps in 2005-06. Because of the draw, the two-way
+`moneyline` pair is not a win probability: it needs `draw_moneyline` too.
+
+The files are hand-maintained and the parser copes with their history: latin-1 files, two- and four-digit
+years, blank trailing rows, and 2003-04 / 2004-05 rows that list extra bookmakers past the header. The
+2026-27 file also has per-match expected goals (`HxG`, `AxG`), which earlier seasons lack; they are not
+loaded yet. Finished seasons are cached in `data/epl/epl_cache`.
+
+**Players** (`src/runitback/wager/epl/data/players.py`) come from the Fantasy Premier League (FPL) data:
+finished seasons from the community archive [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League),
+the current season from the live FPL API (`fantasy.premierleague.com/api`, about 460 requests), which the
+archive trails. One row per player per game played (`minutes > 0`), keyed to the games table's `game_id`.
+
+- The player's team is the fixture's home or away team, not his current club, so transfers are right;
+  `player_id` is the FPL `code`, stable across seasons (the FPL `element` id is not).
+- Stats: minutes, starts, goals, assists, clean sheets, cards, saves, bonus, BPS, the influence /
+  creativity / threat indexes, price and ownership. `starts` and expected goals / assists / goal
+  involvements / goals conceded (`xg`, `xa`, `xgi`, `xgc`) exist from 2022-23; before that they are
+  empty (missing, not zero).
+- It starts in 2019-20: the archive's earlier seasons lack team ids. A postponed and replayed fixture
+  appears twice in the FPL data; the row where the player played is kept.
+- `check(players, games)` compares every team-game's player goals (plus the opponent's own goals) with the
+  score and lists games without player rows. 2019-20 to 2026-27 have no gaps and no mismatches.
+
+Tests: `tests/wager/test_epl.py` and `tests/wager/test_epl_players.py` (offline, synthetic files).
 
 ## Quick start (pre-trained model)
 
