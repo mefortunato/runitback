@@ -1,7 +1,7 @@
 """Premier League player appearances from the Fantasy Premier League data.
 
 One row per player per game he played (``minutes > 0``), with the game's id
-in :mod:`.download`'s games table (``<season>_<home>_<away>``), the player's
+in the games table (:mod:`runitback.wager.epl.data.download`) (``<season>_<home>_<away>``), the player's
 team that game and the Fantasy Premier League (FPL) match statistics: minutes,
 starts, goals, assists, clean sheets, cards, saves, bonus and BPS, the
 influence / creativity / threat indexes and, from 2022-23, expected goals,
@@ -42,9 +42,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ... import espn
-from .download import season_complete, season_of
-from .teams import CLUBS
+from ...wager import espn
+from ...wager.epl.data.download import season_complete, season_of
+from ...wager.epl.data.teams import CLUBS
 
 logger = logging.getLogger(__name__)
 

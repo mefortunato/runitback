@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from runitback.wager.epl.data import players as fpl
+from runitback.epl.data import players as fpl
 
 TEAMS = pd.DataFrame({"id": [1, 2, 3], "short_name": ["ARS", "CHE", "MCI"]})
 # fixture 10: ARS (home) - CHE; 11: MCI - ARS; 12: CHE - MCI (postponed, replayed)

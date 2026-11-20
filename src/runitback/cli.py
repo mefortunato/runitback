@@ -1,6 +1,6 @@
 """Command-line interface: runitback serve, runitback <nfl|nba> download | preprocess | train |
 evaluate | calibrate | simulate | serve, runitback mlb download | process | lineups | player-values |
-probables, runitback nhl download | events | lineups, runitback cfb download | preprocess | train |
+probables, runitback nhl download | events | lineups, runitback epl download, runitback cfb download | preprocess | train |
 foundation | players | player-values, and runitback college download | players | lineups | cbbd |
 player-values | pbp-download | pbp-preprocess | foundation."""
 from __future__ import annotations
@@ -13,6 +13,7 @@ from pathlib import Path
 import typer
 
 from .cfb import paths as cfb_paths
+from .epl import paths as epl_paths
 from .nba import paths as nba_paths
 from .nhl import paths as nhl_paths
 from .nfl.paths import data_dir, default_checkpoint, runs_dir
@@ -22,12 +23,14 @@ nfl = typer.Typer(add_completion=False, help="NFL: data, training, evaluation, s
 nba = typer.Typer(add_completion=False, help="NBA: data, training, evaluation, simulation and the web app")
 app.add_typer(nfl, name="nfl")
 nhl = typer.Typer(add_completion=False, help="NHL: event and personnel data")
+epl = typer.Typer(add_completion=False, help="Premier League: player appearances (Fantasy Premier League data)")
 mlb = typer.Typer(add_completion=False, help="MLB: plate-appearance data from MLB's Stats API")
 cfb = typer.Typer(add_completion=False, help="College football: play-by-play, the college rules engine and its "
                                               "generator, players and quarterback values")
 app.add_typer(nba, name="nba")
 app.add_typer(mlb, name="mlb")
 app.add_typer(nhl, name="nhl")
+app.add_typer(epl, name="epl")
 app.add_typer(cfb, name="cfb")
 college = typer.Typer(add_completion=False, help="College basketball (cbb / wcbb): player values and rotations")
 app.add_typer(college, name="college")
@@ -38,6 +41,7 @@ NBA_DATA = nba_paths.data_dir()
 NBA_RUNS = nba_paths.runs_dir()
 NBA_CKPT = nba_paths.default_checkpoint()
 NHL_DATA = nhl_paths.data_dir()
+EPL_DATA = epl_paths.data_dir()
 CFB_DATA = cfb_paths.data_dir()
 
 
@@ -527,6 +531,28 @@ def nba_sha256(ckpt: Path = NBA_RUNS / "prod" / "model.pt"):
 def nba_serve(ckpt: Path = NBA_CKPT, host: str = "127.0.0.1", port: int = 8000):
     """Run the API + web app (NBA checkpoint from --ckpt; NFL from RUNITBACK_NFL_CKPT)."""
     _serve(host, port, nba_ckpt=ckpt)
+
+
+# ---------------------------------------------------------------- EPL
+
+@epl.command("download")
+def epl_download(start: int = typer.Option(2020, help="first season (the year it ends: 2020 = 2019-20, the first "
+                                                      "with team ids in the archive)"),
+                 end: int = typer.Option(0, help="last season (0 = the current one, from the live FPL API)"),
+                 check: bool = typer.Option(True, help="check every season against the games table "
+                                                       "(runitback.wager.epl, downloaded into the same data dir)")):
+    """Download every season's player appearances (Fantasy Premier League: the vaastav archive for finished
+    seasons, the live API for the current one) into data/epl/players.parquet."""
+    from .epl.data.players import download
+    from .wager.epl.data.download import download as download_games
+    _log()
+    games = download_games(cache_dir=str(EPL_DATA / "epl_cache")) if check else None
+    players = download(first_season=start, last_season=end or None, cache_dir=str(EPL_DATA / "fpl_cache"),
+                       games=games)
+    out = EPL_DATA / "players.parquet"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    players.to_parquet(out, index=False)
+    typer.echo(f"{len(players)} appearances, seasons {players.season.min()}-{players.season.max()} -> {out}")
 
 
 # ---------------------------------------------------------------- NHL

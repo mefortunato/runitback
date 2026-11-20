@@ -818,8 +818,8 @@ are no models for it yet: football has three outcomes (about 25% of games are dr
 assumes two, so the draw mode comes first.
 
 ```bash
-runitback-wager epl download --output_file data/epl/games.csv   # 2000-01 on (--first_season 2001), plus the coming week's fixtures
-python -c "from runitback.wager.epl import download_players; download_players('data/epl/players.csv')"
+runitback-wager epl download --output_file data/epl/games.csv   # games + odds: 2000-01 on (--first_season 2001), plus the coming week's fixtures
+runitback epl download --start 2020                             # → data/epl/players.parquet; checks every season against the games table
 ```
 
 **Games** (`src/runitback/wager/epl/data/download.py`) come from [football-data.co.uk](https://www.football-data.co.uk/englandm.php):
@@ -846,7 +846,7 @@ years, blank trailing rows, and 2003-04 / 2004-05 rows that list extra bookmaker
 2026-27 file also has per-match expected goals (`HxG`, `AxG`), which earlier seasons lack; they are not
 loaded yet. Finished seasons are cached in `data/epl/epl_cache`.
 
-**Players** (`src/runitback/wager/epl/data/players.py`) come from the Fantasy Premier League (FPL) data:
+**Players** (`src/runitback/epl/data/players.py`, `runitback epl download`; `RUNITBACK_EPL_DATA` moves `data/epl`) come from the Fantasy Premier League (FPL) data:
 finished seasons from the community archive [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League),
 the current season from the live FPL API (`fantasy.premierleague.com/api`, about 460 requests), which the
 archive trails. One row per player per game played (`minutes > 0`), keyed to the games table's `game_id`.
@@ -862,7 +862,7 @@ archive trails. One row per player per game played (`minutes > 0`), keyed to the
 - `check(players, games)` compares every team-game's player goals (plus the opponent's own goals) with the
   score and lists games without player rows. 2019-20 to 2026-27 have no gaps and no mismatches.
 
-Tests: `tests/wager/test_epl.py` and `tests/wager/test_epl_players.py` (offline, synthetic files).
+Tests: `tests/wager/test_epl.py` and `tests/epl/test_players.py` (offline, synthetic files).
 
 ## Quick start (pre-trained model)
 
