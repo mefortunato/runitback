@@ -197,8 +197,8 @@ scores **all** games, returns `rps`, `brier3`, `log_loss3` and `accuracy3`, and 
 
 | ID | Title | Deps | Deliverable / acceptance |
 |---|---|---|---|
-| **D0** | Merge the EPL ingest, plus closing-average columns | ingest branch | Merge the ingest (games, players and the `strength()` fix). Add `avg_moneyline`, `avg_draw_moneyline`, `avg_opp_moneyline`, `avg_over_odds` and `avg_under_odds` (`AvgCH/D/A`, `AvgC>2.5`/`<2.5`; NaN before 2019-20) to `epl/data/download.py`, with tests in `tests/wager/test_epl.py`. The PR reports the `odds_source` share per season, 2001–2027 (it should match §0.3) |
-| **D1** | Outcome mode, k-way de-vig, three-way metrics | D0 | `GameSchema.draws` / `market_draw`, `no_vig_probabilities`, `outcome_class`, `three_way_scores`, `evaluate(..., draw_prob=)`. The de-vig method ranking on 2006–2016 and on 2020–2021, recorded in `epl/__init__.py`. Tests: hand-computed RPS cases, a bit-identical k=2 de-vig, probabilities that sum to 1. The fingerprint script and pinned hashes |
+| **D0** | Merge the EPL ingest, plus closing-average columns | ingest branch (incl. `648deed`) | Prerequisite: `claude/laughing-einstein-teugev` merged to `main` through a user-opened PR, or `648deed` (the `strength()` fix) cherry-picked. Merge the ingest (games, players and the `strength()` fix). Add `avg_moneyline`, `avg_draw_moneyline`, `avg_opp_moneyline`, `avg_over_odds` and `avg_under_odds` (`AvgCH/D/A`, `AvgC>2.5`/`<2.5`; NaN before 2019-20) to `epl/data/download.py`, with tests in `tests/wager/test_epl.py`. The PR reports the `odds_source` share per season, 2001–2027 (it should match §0.3) |
+| **D1** | Outcome mode, k-way de-vig, three-way metrics | D0 | `GameSchema.draws` / `market_draw`, `no_vig_probabilities`, `outcome_class`, `three_way_scores`, `evaluate(..., draw_prob=)`. The de-vig method ranking on 2006–2016, with 2020–2021 breaking any disagreement,, recorded in `epl/__init__.py`. Tests: hand-computed RPS cases, a bit-identical k=2 de-vig, probabilities that sum to 1. The fingerprint script and pinned hashes, recorded on `main` after `648deed` is there |
 | **D2** | Draw-aware calibration and predictor | D1 | The ordered-probit `draw_cut` in `calibrate_and_evaluate` / `finish_fit` / `Predictor`. `_from_distributions` emits unconditional `win_prob` / `draw_prob`. Old pickles load. On simulated data with 25% draws, the fitted `c` recovers the draw rate within ±0.02. Fingerprints unchanged |
 | **D3** | Three-way backtest and experiment tables | D2 | `market_predictions` (average-price arm, plus a Pinnacle row where it exists) and `walk_forward` / `summarize` / `compare` / `ablation_table` / `season_table` / `tune` on `game_loss`. ATS is skipped in draws mode. `runitback-wager backtest epl --family elo` prints the model's and the market's RPS with paired CIs. Fingerprints unchanged |
 | **D4** | 1X2 staking | D3 | `"1x2"` market in `staking.py` (EV picks, no push), and `one_x_two_record`. Tests: a draw loses home and away bets and wins draw bets, and `LearnedKelly` fits on three-way picks. Fingerprints unchanged |
@@ -340,15 +340,14 @@ start runs, so use `[skip ci]` unless a run is intended.
 
 ## 7. Questions
 
-**Settled:** see the decision table at the top: `strength()` Elo, serving deferred, league-only
-rest, no COVID flag, 2026-27 xG left for later (§0.5), the market baseline, AH out of scope, both reference arms, RPS, the de-vig
-method window, and `win_prob` semantics.
+All questions are settled; see the decision table at the top and these follow-ups (2026-11-20):
 
-**Still open:**
-1. **Uniform market arm.** Should the market arm use the closing average in every test season (my
-   recommendation, §0.3), or the ingest's `odds_source` order? That order mixes Pinnacle (2022–2025,
-   part of 2026) with the average (the rest of 2026).
-2. **De-vig window (objection to Q3).** 2006–2016 prices are opening bet365 and closing Pinnacle, not
-   closing averages. Is it OK to let the 2020–2021 closing-average ranking break a disagreement (§2)?
-3. **Fingerprint baseline.** Record the pinned hashes after the ingest branch (with the `strength()`
-   fix) merges to `main`, as §2 assumes. Does the parent session agree that the fix lands before D1?
+1. **Market arm:** the closing average in every test season, with Pinnacle as a second row where it
+   exists (§0.3, §5).
+2. **De-vig:** rank the methods on 2006–2016 with the prices available. Any disagreement is broken
+   by the 2020–2021 closing-average ranking, which is leak-free because it is before 2022. Record
+   the disagreement, if any, in `experiments/epl/README.md`.
+3. **Fingerprints:** the `strength()` fix is commit `648deed` on `claude/laughing-einstein-teugev`,
+   not on `main`. Merging that branch (or cherry-picking `648deed`) through a user-opened PR is the
+   prerequisite for D0/D1. The hashes are taken on `main` after that.
+4. **2026-27 xG:** left for later, with no display-only load (§0.5).
