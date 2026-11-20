@@ -397,3 +397,22 @@ def web_season(sport: str, games: str, season: int, checkpoints: str, from_main:
                cache: str | None = None, max_epochs: int = 100) -> None:  # fmt: skip
     """Backtest one season (:func:`backtest_season`) and store it."""
     backtest_season(pd.read_pickle(games), sport, season, checkpoints, from_main, cache, max_epochs)
+
+
+def web_combine(sport: str, games: str, output_dir: str = "webdata", cache: str | None = None,
+                backtest_seasons: int = 5, max_epochs: int = 100, max_model_days: float = 0.5) -> None:  # fmt: skip
+    """Write the sport's web data (``<output_dir>/<sport>/``) from what the other steps stored in
+    the cache: :func:`runitback.wager.web.build.build` with the main model and every backtest season
+    taken from it (never trained here). The model must be one of the last ``max_model_days``."""
+    from .build import build
+
+    build(
+        sports=[sport],
+        output_dir=output_dir,
+        games=pd.read_pickle(games),
+        backtest_seasons=backtest_seasons,
+        max_epochs=max_epochs,
+        cache=cache,
+        reuse_model_days=max_model_days,
+        max_new_seasons=0,
+    )

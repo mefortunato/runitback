@@ -25,7 +25,7 @@ from .web.build import build as web_build
 from .web.build import push_cache
 from .web.export import export as web_export
 from .web.split import prep as web_prep
-from .web.split import web_fit_member, web_main, web_plan, web_season
+from .web.split import web_combine, web_fit_member, web_main, web_plan, web_season
 from .web.export import merge as web_merge
 
 # Table arguments (``str | pd.DataFrame``) stay CSV paths on the command line
@@ -168,6 +168,7 @@ def run(args=None):
         "fit_member": web_fit_member,
         "main": web_main,
         "season": web_season,
+        "combine": web_combine,
     }
     components["version"] = version
     defaults = {}
