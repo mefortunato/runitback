@@ -796,71 +796,31 @@ jobs:
           gh release upload cbb-espn-cache cbb-espn-cache.tar.gz --clobber
   # Needs every lines job: without all of its lines a college model is not built (the web build
   # refuses a sport whose lines ESPN refused), and its published data stays.
+  # one job per ensemble member and per backtest season (.github/workflows/wager-sport.yml), so a
+  # 4-seed model and a season's walk-forward each have their own 350 minutes and finished work is
+  # kept in the backtest cache; the other sports are still one job each
   build-wcbb:
     needs: [wcbb-plan, wcbb-lines, wcbb-lines-cache]
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      RUNITBACK_WCBB_PLAYER_VALUES: player_values/wcbb
-      MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
-      MLFLOW_DISABLE_AGENT_HINT: "1"
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install
-        run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e ".[data,wager]"
-      - name: Women's college player values (rotations from rosters for upcoming games)
-        run: |
-          runitback college download --gender wcbb
-          runitback college players --gender wcbb
-          runitback college lineups --gender wcbb --live --days 3
-          runitback college player-values --gender wcbb --out "$RUNITBACK_WCBB_PLAYER_VALUES"
-      - name: WCBB lines cache
-        # published by wcbb-lines-cache: the finished games' lines, so the build only requests new ones
-        run: |
-          source scripts/ci/release.sh
-          mkdir -p data/wcbb/espn_cache
-          fetch_asset wcbb-espn-cache wcbb-espn-cache.tar.gz dl/wcbb
-          tar -xzf dl/wcbb/wcbb-espn-cache.tar.gz -C data/wcbb/espn_cache
-      - name: Fetch the previous build (its backtest seasons can be reused)
-        run: |
-          mkdir webdata
-          if gh release download predictions-webdata --pattern webdata.tar.gz; then
-            tar -xzf webdata.tar.gz -C webdata && rm webdata.tar.gz
-          else
-            echo "no previous predictions-webdata release: backtesting every season"
-          fi
-      - name: Download, train, backtest
-        env:
-          SPORT_MAX: ${{ inputs.max_new_seasons_wcbb }}
-          SHARED_MAX: ${{ inputs.max_new_seasons }}
-        run: |
-          # this sport's input, else the shared one; empty or "all": every season, 0: none
-          MAX_NEW_SEASONS=${SPORT_MAX:-$SHARED_MAX}
-          max=()
-          case "$MAX_NEW_SEASONS" in
-            ""|all) ;;
-            *[!0-9]*) echo "::error::max_new_seasons must be a whole number or all, got '$MAX_NEW_SEASONS'"; exit 1 ;;
-            *) max=(--max_new_seasons "$MAX_NEW_SEASONS") ;;
-          esac
-          runitback-wager web build --sports '[wcbb]' --output_dir webdata \
-            --cache release:predictions-backtest-cache \
-            --refresh_backtest ${{ inputs.refresh_backtest || false }} \
-            --reuse_model_days ${{ inputs.reuse_model_days || 0 }} \
-            "${max[@]}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: webdata-wcbb
-          path: webdata/wcbb
-          retention-days: 1
-          if-no-files-found: error
+    uses: ./.github/workflows/wager-sport.yml
+    secrets: inherit
+    with:
+      sport: wcbb
+      env: |
+        RUNITBACK_WCBB_PLAYER_VALUES=player_values/wcbb
+      prep: |
+        runitback college download --gender wcbb
+        runitback college players --gender wcbb
+        runitback college lineups --gender wcbb --live --days 3
+        runitback college player-values --gender wcbb --out player_values/wcbb
+        # the finished games' lines wcbb-lines-cache kept, so the games download only requests new ones
+        source scripts/ci/release.sh
+        mkdir -p data/wcbb/espn_cache
+        fetch_asset wcbb-espn-cache wcbb-espn-cache.tar.gz dl/wcbb
+        tar -xzf dl/wcbb/wcbb-espn-cache.tar.gz -C data/wcbb/espn_cache
+      inputs_paths: |
+        player_values/wcbb
+      max_new_seasons: ${{ inputs.max_new_seasons_wcbb || inputs.max_new_seasons }}
+      refresh_backtest: ${{ inputs.refresh_backtest || false }}
   build-cbb:
     needs: [cbb-plan, cbb-lines, cbb-lines-cache]
     runs-on: ubuntu-latest
