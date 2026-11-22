@@ -35,6 +35,13 @@ on:
         description: "paths (one a line) the prep script leaves for the other jobs"
         type: string
         default: ""
+      artifact:
+        description: "an artifact of the calling run to download (into artifact_path) before the prep script"
+        type: string
+        default: ""
+      artifact_path:
+        type: string
+        default: ""
       max_new_seasons:
         description: "empty or all: every missing season; a number: at most that many (the latest)"
         type: string
@@ -84,6 +91,9 @@ jobs:
             --title "Backtest cache (seasons, models, ensemble members)" --latest=false \
             --notes "Backtest seasons and trained models by key (runitback.wager.web.cache); any build can reuse them." \
             || gh release view predictions-backtest-cache >/dev/null
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.artifact != '' }}
+        with: { name: "${{ inputs.artifact }}", path: "${{ inputs.artifact_path }}" }
       - name: The sport's inputs
         if: ${{ inputs.prep != '' }}
         run: bash -e -o pipefail -c "$PREP"
