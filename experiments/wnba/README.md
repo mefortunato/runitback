@@ -21,9 +21,9 @@ rows to events), `nba/foundation.py`.
   acting twice in a row after a made basket (1,340) or a turnover (1,287), where a row is missing between them.
   Quarter starts follow the NBA rule (the loser of the opening tip starts the 2nd and 3rd quarters) with 100
   misses in about 15,000 quarter starts.
-- **The fold pipeline runs end to end on the real data.** Train, embed, PCA fit before the test season, and the
-  incremental update all ran in a local smoke run with a tiny model. The real folds (2022–2027, one job each)
-  are trained by `.github/workflows/wnba-foundation.yml`; their table is below.
+- **The six folds (2022–2027) trained in Actions and are leak-free** (one job each, 12–26 minutes). Their embeddings
+  carry team strength (0.35–0.45 correlation with the margin) but add nothing beyond Elo, as for the NFL and
+  college. Every fold kept its last epoch, so more epochs is worth a try before W2.
 
 ### The bonus, measured
 
@@ -90,7 +90,29 @@ Seasons are calendar years. 2022–2026 are the wager backtest's folds, and 2027
 games. The leak checks (validated on S-1, no team-season of S or later, PCA on games before S) are in
 `scripts/nba_foundation_report.py` and the unit tests.
 
-_Pending: `wnba-foundation.yml` run (results artifact `wnba-foundation-results`)._
+Run 45019041335 (`wnba-foundation.yml`, results artifact `wnba-foundation-results`, folds `wnba-foundation-models`):
+every job passed, 12–26 minutes per fold on a 4-core runner (about 30 minutes of walltime for all six).
+
+| fold | validated on | trained on | leak-free | kept epoch | val loss (type / result / elapsed) | games before / in S | PCA 32 explains | corr pbp32 | corr Elo | corr both |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 2022 | 2021 | 2006–2021 | yes | 5 of 0–5 | 4.427 (1.166 / 0.804 / 2.458) | 3,526 / 240 | 72.0% | 0.379 | 0.458 | 0.420 |
+| 2023 | 2022 | 2006–2022 | yes | 5 | 4.387 (1.161 / 0.804 / 2.423) | 3,766 / 261 | 73.6% | 0.351 | 0.427 | 0.408 |
+| 2024 | 2023 | 2006–2023 | yes | 5 | 4.360 (1.163 / 0.800 / 2.397) | 4,027 / 263 | 73.5% | 0.455 | 0.482 | 0.482 |
+| 2025 | 2024 | 2006–2024 | yes | 5 | 4.384 (1.168 / 0.804 / 2.412) | 4,290 / 311 | 72.7% | 0.374 | 0.395 | 0.393 |
+| 2026 | 2025 | 2006–2025 | yes | 5 | 4.397 (1.177 / 0.806 / 2.415) | 4,601 / 353 | 72.6% | 0.380 | 0.442 | 0.421 |
+| 2027 | 2026 | 2006–2026 | yes | 5 | 4.273 (1.155 / 0.795 / 2.324) | 4,954 / 0 | 73.9% | — | — | — |
+
+`corr_*`: the correlation with the home margin in S of a ridge fit before S on the teams' previous-10-game means
+(`scripts/nba_foundation_report.py`; a sanity check, not the wager experiment).
+
+- **The folds are leak-free.** Each was validated on S-1, has no team-season of S or later, and its PCA was fit on
+  games before S.
+- **The embedding carries team strength, but not beyond Elo.** Its correlation with the margin (0.35–0.45) is a
+  little below the pre-game Elo's (0.39–0.48), and adding it to Elo does not help. That is the NFL's and C2's
+  finding too: layer A mostly carries team strength. Whether `pbp32` helps the wager model is W2's question.
+- **Every fold kept its last epoch.** Validation loss was still falling at epoch 6, so the NBA recipe may be short
+  for a league with a sixth of the NBA's games. More epochs is a cheap thing to try (`--epochs`; a fold takes about
+  20 minutes) before W2 settles on these folds. The recipe is left as it is here.
 
 **Not done / next:** W2 (`docs/multisport/PLAN.md`): WNBA player values and projected lineups, and the
 `prod` / `pbp32` / `pbp32_pvc` arms (4 seeds), built with the per-member, per-season jobs of
