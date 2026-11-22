@@ -41,7 +41,7 @@
 # (CBBD_API_KEY, about a dozen requests a season, a quota shared with CFB's); without the key the build
 # would need ~85,000 ESPN odds requests, so it stops.
 #
-# Each sport is built in its own parallel job (`build-nfl`, `build-nba`, `build-cfb`, `build-wcbb`, `build-cbb`, each with its
+# Each sport is built by .github/workflows/wager-sport.yml, in parallel (`build-nfl`, `build-nba`, `build-cfb`, `build-wcbb`, `build-cbb`; each with its
 # own runner and time limit) and `publish` lays what was built over the published web data: a sport
 # whose build failed keeps its previous data, and the others are published.
 #
@@ -62,17 +62,16 @@ on:
         default: false
       reuse_model_days:
         description: >-
-          Use the backtest cache's model if trained at most this many days ago, instead of
-          training (0: train)
+          No longer used: an ensemble member is taken from the backtest cache when the code, the settings and
+          (for the main model) the games are the same, so a repeated run does not train it again
         type: number
         default: 0
       max_new_seasons:
         description: >-
           How many seasons that no cache has to backtest (the latest ones), for each sport that has no
           input of its own below. Empty or "all": every one. A number: at most that many, and 0 builds
-          the sport from its cached seasons alone (it needs at least one cached season). A season that does not finish before its job's limit
-          is lost, so size each sport's value to its job's 350 minutes (the NBA takes ~190 min a
-          season, CFB ~65 min plus ~50 min of setup)
+          the sport from its cached seasons alone (it needs at least one cached season). Each season runs in
+          its own job (350 minutes), after the sport's ensemble members, which train in parallel
         type: string
         default: ""
       max_new_seasons_nfl:
@@ -366,208 +365,81 @@ jobs:
           tar -czf "folds/fold${{ matrix.season }}.tar.gz" -C "$FOLDS/fold${{ matrix.season }}" \
             model.pt pca_32.npz pbp_32.parquet pbp_32_wager.parquet
           gh release upload foundation-cfb "folds/fold${{ matrix.season }}.tar.gz" --clobber
-  # One build job per sport, in parallel: each gets its own runner and its own time limit (a sport's
-  # backtest runs its seasons one after another, and the NBA's alone takes ~75 min a season), and one
-  # sport failing leaves the others' results to be published. Each uploads its `webdata/<sport>/`.
+  # One build per sport, in parallel, each by .github/workflows/wager-sport.yml: a job per ensemble member
+  # and per backtest season, each with its own runner and time limit, finished work kept in the backtest
+  # cache, and one sport failing leaves the others' results to be published. Each uploads its
+  # `webdata/<sport>/`.
   build-nfl:
     needs: folds
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      RUNITBACK_NFL_FOUNDATION: foundation/nfl
-      RUNITBACK_NFL_PLAYER_VALUES: player_values/nfl
-      MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
-      MLFLOW_DISABLE_AGENT_HINT: "1"
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install
-        run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e ".[data,wager]"
-      - name: Play-by-play
-        run: |
-          end=$(python -c "import datetime as d; t=d.date.today(); print(t.year if t.month >= 9 else t.year - 1)")
-          runitback nfl download --start 1999 --end "$end"
-          runitback nfl preprocess --start 1999 --end "$end"
-      - name: Fetch the foundation folds
-        run: |
-          mkdir -p "$RUNITBACK_NFL_FOUNDATION" folds
-          for a in $(gh release view foundation-nfl --json assets -q '.assets[].name'); do
-            gh release download foundation-nfl --pattern "$a" --dir folds
-            mkdir -p "$RUNITBACK_NFL_FOUNDATION/${a%.tar.gz}"
-            tar -xzf "folds/$a" -C "$RUNITBACK_NFL_FOUNDATION/${a%.tar.gz}"
-          done
-      - name: Player values
-        run: runitback nfl player-values --out "$RUNITBACK_NFL_PLAYER_VALUES"
-      - name: Fetch the previous build (its backtest seasons can be reused)
-        run: |
-          mkdir webdata
-          if gh release download predictions-webdata --pattern webdata.tar.gz; then
-            tar -xzf webdata.tar.gz -C webdata && rm webdata.tar.gz
-          else
-            echo "no previous predictions-webdata release: backtesting every season"
-          fi
-      - name: Download, train, backtest
-        env:
-          SPORT_MAX: ${{ inputs.max_new_seasons_nfl }}
-          SHARED_MAX: ${{ inputs.max_new_seasons }}
-        run: |
-          # this sport's input, else the shared one; empty or "all": every season, 0: none
-          MAX_NEW_SEASONS=${SPORT_MAX:-$SHARED_MAX}
-          max=()
-          case "$MAX_NEW_SEASONS" in
-            ""|all) ;;
-            *[!0-9]*) echo "::error::max_new_seasons must be a whole number or all, got '$MAX_NEW_SEASONS'"; exit 1 ;;
-            *) max=(--max_new_seasons "$MAX_NEW_SEASONS") ;;
-          esac
-          runitback-wager web build --sports '[nfl]' --output_dir webdata \
-            --cache release:predictions-backtest-cache \
-            --refresh_backtest ${{ inputs.refresh_backtest || false }} \
-            --reuse_model_days ${{ inputs.reuse_model_days || 0 }} \
-            "${max[@]}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: webdata-nfl
-          path: webdata/nfl
-          retention-days: 1
-          if-no-files-found: error
+    uses: ./.github/workflows/wager-sport.yml
+    secrets: inherit
+    with:
+      sport: nfl
+      env: |
+        RUNITBACK_NFL_FOUNDATION=foundation/nfl
+        RUNITBACK_NFL_PLAYER_VALUES=player_values/nfl
+      prep: |
+        end=$(python -c "import datetime as d; t=d.date.today(); print(t.year if t.month >= 9 else t.year - 1)")
+        runitback nfl download --start 1999 --end "$end"
+        runitback nfl preprocess --start 1999 --end "$end"
+        # the foundation folds the `folds` job published (a fold per test season)
+        mkdir -p foundation/nfl folds
+        for a in $(gh release view foundation-nfl --json assets -q '.assets[].name'); do
+          gh release download foundation-nfl --pattern "$a" --dir folds
+          mkdir -p "foundation/nfl/${a%.tar.gz}"
+          tar -xzf "folds/$a" -C "foundation/nfl/${a%.tar.gz}"
+        done
+        runitback nfl player-values --out player_values/nfl
+      inputs_paths: |
+        foundation/nfl
+        player_values/nfl
+      max_new_seasons: ${{ inputs.max_new_seasons_nfl || inputs.max_new_seasons }}
+      refresh_backtest: ${{ inputs.refresh_backtest || false }}
   build-nba:
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      RUNITBACK_NBA_PLAYER_VALUES: player_values/nba
-      MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
-      MLFLOW_DISABLE_AGENT_HINT: "1"
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install
-        run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e ".[data,wager]"
-      - name: NBA player values (rotations from rosters and the injury report)
-        run: |
-          runitback nba download --start 2015 --end 2027
-          runitback nba players --start 2015 --end 2027
-          runitback nba lineups --live
-          runitback nba player-values --start 2015 --end 2027 --out "$RUNITBACK_NBA_PLAYER_VALUES" \
-            --lineups data/nba/processed/projected_lineups.parquet \
-            --upcoming data/nba/processed/projected_lineups_upcoming.parquet
-      - name: Fetch the previous build (its backtest seasons can be reused)
-        run: |
-          mkdir webdata
-          if gh release download predictions-webdata --pattern webdata.tar.gz; then
-            tar -xzf webdata.tar.gz -C webdata && rm webdata.tar.gz
-          else
-            echo "no previous predictions-webdata release: backtesting every season"
-          fi
-      - name: Download, train, backtest
-        env:
-          SPORT_MAX: ${{ inputs.max_new_seasons_nba }}
-          SHARED_MAX: ${{ inputs.max_new_seasons }}
-        run: |
-          # this sport's input, else the shared one; empty or "all": every season, 0: none
-          MAX_NEW_SEASONS=${SPORT_MAX:-$SHARED_MAX}
-          max=()
-          case "$MAX_NEW_SEASONS" in
-            ""|all) ;;
-            *[!0-9]*) echo "::error::max_new_seasons must be a whole number or all, got '$MAX_NEW_SEASONS'"; exit 1 ;;
-            *) max=(--max_new_seasons "$MAX_NEW_SEASONS") ;;
-          esac
-          runitback-wager web build --sports '[nba]' --output_dir webdata \
-            --cache release:predictions-backtest-cache \
-            --refresh_backtest ${{ inputs.refresh_backtest || false }} \
-            --reuse_model_days ${{ inputs.reuse_model_days || 0 }} \
-            "${max[@]}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: webdata-nba
-          path: webdata/nba
-          retention-days: 1
-          if-no-files-found: error
+    uses: ./.github/workflows/wager-sport.yml
+    secrets: inherit
+    with:
+      sport: nba
+      env: |
+        RUNITBACK_NBA_PLAYER_VALUES=player_values/nba
+      prep: |
+        runitback nba download --start 2015 --end 2027
+        runitback nba players --start 2015 --end 2027
+        runitback nba lineups --live
+        runitback nba player-values --start 2015 --end 2027 --out player_values/nba \
+          --lineups data/nba/processed/projected_lineups.parquet \
+          --upcoming data/nba/processed/projected_lineups_upcoming.parquet
+      inputs_paths: |
+        player_values/nba
+      max_new_seasons: ${{ inputs.max_new_seasons_nba || inputs.max_new_seasons }}
+      refresh_backtest: ${{ inputs.refresh_backtest || false }}
   # Needs every college job: without all of its inputs CFB is not built, and its published data stays
   # (the NFL and NBA are built and published either way).
   build-cfb:
     needs: [cfb-plan, cfb-data, cfb-folds, cfb-lines, cfb-lines-cache]
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      CFB_FOLDS: ${{ needs.cfb-plan.outputs.folds }}
+    uses: ./.github/workflows/wager-sport.yml
+    secrets: inherit
+    with:
+      sport: cfb
       # the CFB model is pbp32_qb when both are set (runitback.wager.cfb)
-      RUNITBACK_CFB_FOUNDATION: foundation/cfb
-      RUNITBACK_CFB_PLAYER_VALUES: player_values/cfb
-      MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
-      MLFLOW_DISABLE_AGENT_HINT: "1"
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install
-        run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e ".[data,wager]"
-      - name: CFB foundation folds
-        # every season the plan lists must be there, keyed for the wager model (pbp_32_wager.parquet)
-        run: |
-          source scripts/ci/release.sh
-          fetch_folds cfb "$RUNITBACK_CFB_FOUNDATION" $(jq -r '.[]' <<<"$CFB_FOLDS")
-          ls "$RUNITBACK_CFB_FOUNDATION"
-      - uses: actions/download-artifact@v4
-        with: { name: cfb-playervalues, path: player_values/cfb }
-      - name: CFB lines cache
-        # published by cfb-lines-cache: the finished games' lines, so the build only requests new ones
-        run: |
-          source scripts/ci/release.sh
-          mkdir -p data/cfb/espn_cache
-          fetch_asset cfb-espn-cache cfb-espn-cache.tar.gz dl/cfb
-          tar -xzf dl/cfb/cfb-espn-cache.tar.gz -C data/cfb/espn_cache
-      - name: Fetch the previous build (its backtest seasons can be reused)
-        run: |
-          mkdir webdata
-          if gh release download predictions-webdata --pattern webdata.tar.gz; then
-            tar -xzf webdata.tar.gz -C webdata && rm webdata.tar.gz
-          else
-            echo "no previous predictions-webdata release: backtesting every season"
-          fi
-      - name: Download, train, backtest
-        env:
-          SPORT_MAX: ${{ inputs.max_new_seasons_cfb }}
-          SHARED_MAX: ${{ inputs.max_new_seasons }}
-        run: |
-          # this sport's input, else the shared one; empty or "all": every season, 0: none
-          MAX_NEW_SEASONS=${SPORT_MAX:-$SHARED_MAX}
-          max=()
-          case "$MAX_NEW_SEASONS" in
-            ""|all) ;;
-            *[!0-9]*) echo "::error::max_new_seasons must be a whole number or all, got '$MAX_NEW_SEASONS'"; exit 1 ;;
-            *) max=(--max_new_seasons "$MAX_NEW_SEASONS") ;;
-          esac
-          runitback-wager web build --sports '[cfb]' --output_dir webdata \
-            --cache release:predictions-backtest-cache \
-            --refresh_backtest ${{ inputs.refresh_backtest || false }} \
-            --reuse_model_days ${{ inputs.reuse_model_days || 0 }} \
-            "${max[@]}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: webdata-cfb
-          path: webdata/cfb
-          retention-days: 1
-          if-no-files-found: error
+      env: |
+        RUNITBACK_CFB_FOUNDATION=foundation/cfb
+        RUNITBACK_CFB_PLAYER_VALUES=player_values/cfb
+      artifact: cfb-playervalues
+      artifact_path: player_values/cfb
+      prep: |
+        # every fold the plan lists must be there, keyed for the wager model (pbp_32_wager.parquet)
+        source scripts/ci/release.sh
+        fetch_folds cfb foundation/cfb $(echo '${{ needs.cfb-plan.outputs.folds }}' | jq -r '.[]')
+        # the finished games' lines cfb-lines-cache kept, so the games download only requests new ones
+        mkdir -p data/cfb/espn_cache
+        fetch_asset cfb-espn-cache cfb-espn-cache.tar.gz dl/cfb
+        tar -xzf dl/cfb/cfb-espn-cache.tar.gz -C data/cfb/espn_cache
+      inputs_paths: |
+        foundation/cfb
+        player_values/cfb
+      max_new_seasons: ${{ inputs.max_new_seasons_cfb || inputs.max_new_seasons }}
+      refresh_backtest: ${{ inputs.refresh_backtest || false }}
   # women's college basketball: ESPN's lines (finished games', one request each) come a season per
   # job, as CFB's do (ESPN refuses a runner after a burst of requests: a first build that fetched
   # them all in one job got a 403). Each job starts from the `wcbb-espn-cache` release, so only
@@ -798,135 +670,40 @@ jobs:
   # refuses a sport whose lines ESPN refused), and its published data stays.
   build-wcbb:
     needs: [wcbb-plan, wcbb-lines, wcbb-lines-cache]
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      RUNITBACK_WCBB_PLAYER_VALUES: player_values/wcbb
-      MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
-      MLFLOW_DISABLE_AGENT_HINT: "1"
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install
-        run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e ".[data,wager]"
-      - name: Women's college player values (rotations from rosters for upcoming games)
-        run: |
-          runitback college download --gender wcbb
-          runitback college players --gender wcbb
-          runitback college lineups --gender wcbb --live --days 3
-          runitback college player-values --gender wcbb --out "$RUNITBACK_WCBB_PLAYER_VALUES"
-      - name: WCBB lines cache
-        # published by wcbb-lines-cache: the finished games' lines, so the build only requests new ones
-        run: |
-          source scripts/ci/release.sh
-          mkdir -p data/wcbb/espn_cache
-          fetch_asset wcbb-espn-cache wcbb-espn-cache.tar.gz dl/wcbb
-          tar -xzf dl/wcbb/wcbb-espn-cache.tar.gz -C data/wcbb/espn_cache
-      - name: Fetch the previous build (its backtest seasons can be reused)
-        run: |
-          mkdir webdata
-          if gh release download predictions-webdata --pattern webdata.tar.gz; then
-            tar -xzf webdata.tar.gz -C webdata && rm webdata.tar.gz
-          else
-            echo "no previous predictions-webdata release: backtesting every season"
-          fi
-      - name: Download, train, backtest
-        env:
-          SPORT_MAX: ${{ inputs.max_new_seasons_wcbb }}
-          SHARED_MAX: ${{ inputs.max_new_seasons }}
-        run: |
-          # this sport's input, else the shared one; empty or "all": every season, 0: none
-          MAX_NEW_SEASONS=${SPORT_MAX:-$SHARED_MAX}
-          max=()
-          case "$MAX_NEW_SEASONS" in
-            ""|all) ;;
-            *[!0-9]*) echo "::error::max_new_seasons must be a whole number or all, got '$MAX_NEW_SEASONS'"; exit 1 ;;
-            *) max=(--max_new_seasons "$MAX_NEW_SEASONS") ;;
-          esac
-          runitback-wager web build --sports '[wcbb]' --output_dir webdata \
-            --cache release:predictions-backtest-cache \
-            --refresh_backtest ${{ inputs.refresh_backtest || false }} \
-            --reuse_model_days ${{ inputs.reuse_model_days || 0 }} \
-            "${max[@]}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: webdata-wcbb
-          path: webdata/wcbb
-          retention-days: 1
-          if-no-files-found: error
+    uses: ./.github/workflows/wager-sport.yml
+    secrets: inherit
+    with:
+      sport: wcbb
+      env: |
+        RUNITBACK_WCBB_PLAYER_VALUES=player_values/wcbb
+      prep: |
+        runitback college download --gender wcbb
+        runitback college players --gender wcbb
+        runitback college lineups --gender wcbb --live --days 3
+        runitback college player-values --gender wcbb --out player_values/wcbb
+        # the finished games' lines wcbb-lines-cache kept, so the games download only requests new ones
+        source scripts/ci/release.sh
+        mkdir -p data/wcbb/espn_cache
+        fetch_asset wcbb-espn-cache wcbb-espn-cache.tar.gz dl/wcbb
+        tar -xzf dl/wcbb/wcbb-espn-cache.tar.gz -C data/wcbb/espn_cache
+      inputs_paths: |
+        player_values/wcbb
+      max_new_seasons: ${{ inputs.max_new_seasons_wcbb || inputs.max_new_seasons }}
+      refresh_backtest: ${{ inputs.refresh_backtest || false }}
   build-cbb:
     needs: [cbb-plan, cbb-lines, cbb-lines-cache]
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      # men's finished games' lines (runitback.wager.cbb.data.cbbd)
-      CBBD_API_KEY: ${{ secrets.CBBD_API_KEY }}
-      MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
-      MLFLOW_DISABLE_AGENT_HINT: "1"
-    steps:
-      - name: Check the CBBD key
-        run: |
-          if [ -z "$CBBD_API_KEY" ]; then
-            echo "::error::CBBD_API_KEY is not set: men's college lines would come from ~85,000 ESPN odds requests"
-            exit 1
-          fi
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install
-        run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e ".[data,wager]"
-      - name: CBB lines cache
-        # published by cbb-lines-cache: the finished games' lines, so the build only requests new ones
-        run: |
-          source scripts/ci/release.sh
-          mkdir -p data/cbb/espn_cache
-          fetch_asset cbb-espn-cache cbb-espn-cache.tar.gz dl/cbb
-          tar -xzf dl/cbb/cbb-espn-cache.tar.gz -C data/cbb/espn_cache
-      - name: Fetch the previous build (its backtest seasons can be reused)
-        run: |
-          mkdir webdata
-          if gh release download predictions-webdata --pattern webdata.tar.gz; then
-            tar -xzf webdata.tar.gz -C webdata && rm webdata.tar.gz
-          else
-            echo "no previous predictions-webdata release: backtesting every season"
-          fi
-      - name: Download, train, backtest
-        env:
-          SPORT_MAX: ${{ inputs.max_new_seasons_cbb }}
-          SHARED_MAX: ${{ inputs.max_new_seasons }}
-        run: |
-          # this sport's input, else the shared one; empty or "all": every season, 0: none
-          MAX_NEW_SEASONS=${SPORT_MAX:-$SHARED_MAX}
-          max=()
-          case "$MAX_NEW_SEASONS" in
-            ""|all) ;;
-            *[!0-9]*) echo "::error::max_new_seasons must be a whole number or all, got '$MAX_NEW_SEASONS'"; exit 1 ;;
-            *) max=(--max_new_seasons "$MAX_NEW_SEASONS") ;;
-          esac
-          runitback-wager web build --sports '[cbb]' --output_dir webdata \
-            --cache release:predictions-backtest-cache \
-            --refresh_backtest ${{ inputs.refresh_backtest || false }} \
-            --reuse_model_days ${{ inputs.reuse_model_days || 0 }} \
-            "${max[@]}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: webdata-cbb
-          path: webdata/cbb
-          retention-days: 1
-          if-no-files-found: error
+    uses: ./.github/workflows/wager-sport.yml
+    secrets: inherit
+    with:
+      sport: cbb
+      prep: |
+        # the finished games' lines cbb-lines-cache kept (CBBD's and ESPN's), so the games download only requests new ones
+        source scripts/ci/release.sh
+        mkdir -p data/cbb/espn_cache
+        fetch_asset cbb-espn-cache cbb-espn-cache.tar.gz dl/cbb
+        tar -xzf dl/cbb/cbb-espn-cache.tar.gz -C data/cbb/espn_cache
+      max_new_seasons: ${{ inputs.max_new_seasons_cbb || inputs.max_new_seasons }}
+      refresh_backtest: ${{ inputs.refresh_backtest || false }}
   # Lays the sports built in this run over the published web data, so a sport that failed (or was
   # not built) keeps what it had, and publishes it.
   publish:
