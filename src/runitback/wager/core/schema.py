@@ -49,6 +49,11 @@ class GameSchema:
             probabilities. False (the default) leaves every two-outcome
             computation as it is.
         market_draw: American price of the draw (``draws`` only).
+        market_average: ``(team, draw, opponent)`` American price columns of
+            the market arm in a sport with draws (the closing market average,
+            from the same bookmakers in every season), where the sport's
+            ``market_moneyline`` and ``market_draw`` are whichever bookmaker
+            the games table preferred. Missing: those are the market arm.
         devig: How the bookmaker margin is removed from the three prices
             (``"proportional"``, ``"power"`` or ``"shin"``; see
             :func:`runitback.wager.backtest.no_vig_probabilities`).
@@ -76,6 +81,7 @@ class GameSchema:
     market_total_odds: tuple[str, str] | None = None
     draws: bool = False
     market_draw: str | None = None
+    market_average: tuple[str, str, str] | None = None
     devig: str = "proportional"
 
     @property

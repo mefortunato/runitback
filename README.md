@@ -18,7 +18,7 @@ The predictions pages come from `runitback.wager`, the game-level models ported 
 (`runitback-wager <sport> ...`, the `wager` extra). They are precomputed static JSON; see
 [Predictions data](#predictions-data). Ported so far: `nfl`, `cfb`, `mlb`, `nba`, `wnba`, `cbb`
 (men's college basketball) and `wcbb` (women's); `nhl` and `epl` have their data ingest (the `epl`
-models need a draw outcome first, see [Premier League](#premier-league)). The backtests against sportsml are in
+models are being built on its three-outcome mode, see [Premier League](#premier-league)). The backtests against sportsml are in
 `experiments/cfb/README.md` and `experiments/mlb/README.md`; the basketball sports are compared by
 `.github/workflows/basketball-port.yml`. Site pages for the new sports come later.
 
@@ -813,12 +813,28 @@ replay check: `experiments/cbb/README.md`, "Engine and foundation folds (C2)".
 
 ## Premier League
 
-`runitback.wager.epl` is the data ingest for the English Premier League's game-level wager model. There
-are no models for it yet: football has three outcomes (about 25% of games are draws) and the wager code
-assumes two, so the draw mode comes first.
+`runitback.wager.epl` is the data ingest and the schema for the English Premier League's game-level wager
+model; the plan for the models is `docs/epl/PLAN.md` (branch `claude/epl-plan-draws-transformer`). Football
+has three outcomes (about 25% of games are draws), so its schema turns on the wager package's **draws mode**
+(`GameSchema.draws`; every other sport is unchanged, which `tests/wager/test_outcome_identity.py` pins):
+
+- **Probabilities.** Every model gives `win_prob` (the unconditional probability of a win) and `draw_prob`;
+  the loss is what is left. Margin models (Elo, sklearn, GNN, the baselines) fit an ordered probit (the margin's
+  spread and a draw cut together, by maximum likelihood on the validation seasons); a transformer that predicts a
+  score distribution reads them off it (`Predictor.draw_cut`, `core/evaluation.calibrate`).
+- **Market.** `no_vig_probabilities` removes the bookmaker's margin from the three prices (proportional, power or
+  Shin; the EPL uses proportional, `experiments/epl/README.md`). The market arm is the closing market average
+  (`avg_*`, from 2019-20), the same bookmakers in every season; the games table's preferred bookmaker (closing
+  Pinnacle where it has prices) is a second arm, `book`.
+- **Scoring.** The ranked probability score (RPS, lower is better; `core/metrics.three_way_scores`) on every game,
+  draws included, with multiclass Brier and log loss beside it. `backtest`, `benchmark`, the ablation tables and
+  tuning report RPS with paired 95% CIs against the market. There are no spread or moneyline records: a draw loses a
+  side bet (1X2 staking is a later package) and the Asian handicap is out of scope.
 
 ```bash
-runitback-wager epl download --output_file data/epl/games.csv   # games + odds: 2000-01 on (--first_season 2001), plus the coming week's fixtures
+runitback-wager epl download --output_file data/epl/raw.csv   # games + odds: 2000-01 on (--first_season 2001), plus the coming week's fixtures
+runitback-wager epl process --games data/epl/raw.csv --output_file data/epl/games.csv
+runitback-wager epl backtest --games data/epl/games.csv --family elo   # RPS of the model and the market, last 5 seasons
 runitback epl download --start 2020                             # → data/epl/players.parquet; checks every season against the games table
 ```
 

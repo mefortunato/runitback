@@ -10,7 +10,9 @@ def win_probability(margin, sigma: float) -> np.ndarray:
     return scipy.stats.norm.cdf(np.asarray(margin, dtype=float) / sigma)
 
 
-def outcome_probabilities(margin, sigma: float, cut=None) -> tuple[np.ndarray, np.ndarray]:
+def outcome_probabilities(
+    margin, sigma: float, cut=None
+) -> tuple[np.ndarray, np.ndarray]:
     """``(P(win), P(draw))`` for a predicted margin, as an ordered probit.
 
     The realized margin's latent value is Normal(margin, sigma); the game is a
@@ -112,6 +114,27 @@ def three_way_scores(y, win_prob, draw_prob) -> dict[str, np.ndarray]:
         "log_loss3": -np.log(np.clip(p[np.arange(len(actual)), actual], 1e-6, 1.0)),
         "correct3": (p.argmax(axis=-1) == actual).astype(float),
     }
+
+
+def game_loss(y, win_prob, draw_prob=None) -> tuple[np.ndarray, np.ndarray]:
+    """``(loss, counted)``: each game's probability loss and whether it counts.
+
+    Two outcomes: the Brier score of the win probability, counted for decided
+    games (a tie has no winner). With ``draw_prob``: the ranked probability
+    score, counted for every game. Averaging ``loss[counted]`` is what the
+    backtest, experiment tables and tuning compare models by.
+    """
+    y = np.asarray(y, dtype=float)
+    if draw_prob is None:
+        return (np.asarray(win_prob, dtype=float) - (y > 0)) ** 2, y != 0
+    return three_way_scores(y, win_prob, draw_prob)["rps"], np.ones(len(y), dtype=bool)
+
+
+def paired_difference(diff) -> tuple[float, float]:
+    """Mean of per-game loss differences and the half-width of its 95% CI."""
+    diff = np.asarray(diff, dtype=float)
+    diff = diff[np.isfinite(diff)]
+    return float(diff.mean()), float(1.96 * diff.std(ddof=1) / np.sqrt(len(diff)))
 
 
 def evaluate(y, margin, win_prob=None, draw_prob=None) -> dict[str, float]:

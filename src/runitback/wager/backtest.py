@@ -30,7 +30,13 @@ import scipy.stats
 import sklearn.base
 
 from .core.io import Table, read_table
-from .core.metrics import evaluate, fit_sigma, win_probability
+from .core.metrics import (
+    evaluate,
+    fit_sigma,
+    paired_difference,
+    three_way_scores,
+    win_probability,
+)
 from .core.predictor import Predictor
 from .core.schema import GameSchema, one_row_per_game, played, upcoming
 from .core.splits import SeasonSplit, split_seasons
@@ -228,7 +234,10 @@ def no_vig_probabilities(*prices, method: str = "proportional") -> np.ndarray:
         q, t = flat[todo], total[todo]
         lo, hi = np.zeros(len(q)), np.ones(len(q))
         if method == "power":
-            lo, hi = np.ones(len(q)), np.full(len(q), 64.0)  # sum(p ** kappa) falls with kappa
+            lo, hi = (
+                np.ones(len(q)),
+                np.full(len(q), 64.0),
+            )  # sum(p ** kappa) falls with kappa
         else:
             hi = np.full(len(q), 0.999)  # the insider share z
         for _ in range(80):
@@ -236,7 +245,9 @@ def no_vig_probabilities(*prices, method: str = "proportional") -> np.ndarray:
             if method == "power":
                 fair = q ** mid[:, None]
             else:
-                root = np.sqrt(mid[:, None] ** 2 + 4 * (1 - mid[:, None]) * q**2 / t[:, None])
+                root = np.sqrt(
+                    mid[:, None] ** 2 + 4 * (1 - mid[:, None]) * q**2 / t[:, None]
+                )
                 fair = (root - mid[:, None]) / (2 * (1 - mid[:, None]))
             high = fair.sum(axis=1) > 1  # still too much probability: go further
             lo, hi = np.where(high, mid, lo), np.where(high, hi, mid)
@@ -244,7 +255,9 @@ def no_vig_probabilities(*prices, method: str = "proportional") -> np.ndarray:
         if method == "power":
             out[todo] = q ** mid[:, None]
         else:
-            root = np.sqrt(mid[:, None] ** 2 + 4 * (1 - mid[:, None]) * q**2 / t[:, None])
+            root = np.sqrt(
+                mid[:, None] ** 2 + 4 * (1 - mid[:, None]) * q**2 / t[:, None]
+            )
             out[todo] = (root - mid[:, None]) / (2 * (1 - mid[:, None]))
         out[todo] /= out[todo].sum(axis=1, keepdims=True)  # the bisection's last bit
     return out.reshape(p.shape)
@@ -306,7 +319,12 @@ def market_predictions(
     spread with residual spread ``sigma``; the over probability comes from
     the no-vig over/under odds. Without a spread the margin is the one the
     moneylines imply with residual spread ``sigma``.
+
+    A sport with draws (``schema.draws``) gets the three-way probabilities
+    instead: see :func:`three_way_market`.
     """
+    if schema.draws:
+        return three_way_market(rows, schema)
     if schema.market_spread:
         margin = rows[schema.market_spread].astype(float)
         prob = win_probability(margin, sigma)
@@ -320,6 +338,37 @@ def market_predictions(
         z = scipy.stats.norm.ppf(np.clip(prob, 1e-6, 1 - 1e-6))
         margin = sigma * z
     out = pd.DataFrame({"market_margin": margin, "market_prob": prob}, index=rows.index)
+    odds = schema.market_total_odds
+    if odds and all(col in rows for col in odds):
+        out["market_over_prob"] = no_vig_probability(rows[odds[0]], rows[odds[1]])
+    return out
+
+
+def three_way_market(rows: pd.DataFrame, schema: GameSchema) -> pd.DataFrame:
+    """The market's win and draw probabilities for each row of a sport with
+    draws, with the bookmaker margin removed (``schema.devig``).
+
+    - ``market_prob`` / ``market_draw_prob``: the market arm, from
+      ``schema.market_average`` (the closing average, the same bookmakers in
+      every season) or, without it, from the games table's own prices. Where
+      its prices are missing they are NaN: the market is not scored there.
+    - ``book_prob`` / ``book_draw_prob``: the prices the games table prefers
+      (``market_moneyline`` and ``market_draw``: closing Pinnacle where it
+      has them), when they differ from the market arm's.
+    - ``market_margin``: the handicap line as an expected margin, where the
+      schema has one; ``market_over_prob`` as for two outcomes.
+    """
+    book = (schema.market_moneyline[0], schema.market_draw, schema.market_moneyline[1])
+    main = schema.market_average or book
+    margin = rows[schema.market_spread] if schema.market_spread else np.nan
+    out = pd.DataFrame({"market_margin": margin}, index=rows.index)
+    arms = {"market": main} | ({} if main == book else {"book": book})
+    for arm, columns in arms.items():
+        if all(c in rows for c in columns):
+            q = no_vig_probabilities(*(rows[c] for c in columns), method=schema.devig)
+            out[f"{arm}_prob"], out[f"{arm}_draw_prob"] = q[:, 0], q[:, 1]
+        else:
+            out[f"{arm}_prob"] = out[f"{arm}_draw_prob"] = np.nan
     odds = schema.market_total_odds
     if odds and all(col in rows for col in odds):
         out["market_over_prob"] = no_vig_probability(rows[odds[0]], rows[odds[1]])
@@ -392,6 +441,9 @@ def walk_forward(
     keep += [*(schema.market_moneyline or ()), *(schema.market_total_odds or ())]
     keep += ["pred_margin", "win_prob", "market_margin", "market_prob"]
     keep += ["cover_prob", "pred_total", "over_prob", "market_over_prob"]
+    # a sport with draws (columns the other sports' results do not have)
+    keep += [schema.market_draw, *(schema.market_average or ())]
+    keep += ["draw_prob", "market_draw_prob", "book_prob", "book_draw_prob"]
     return results[[c for c in dict.fromkeys(keep) if c and c in results]]
 
 
@@ -547,7 +599,11 @@ def summarize(results: pd.DataFrame, schema: GameSchema, early_dates: int = 4):
 
     With market columns, every metric is computed on the games that have a
     market line, so model and market are scored on the same games.
+
+    A sport with draws is scored by :func:`summarize_three_way`.
     """
+    if schema.draws and "draw_prob" in results:
+        return summarize_three_way(results, schema, early_dates)
     sources = {"model": ("pred_margin", "win_prob")}
     if "market_margin" in results:
         sources["market"] = ("market_margin", "market_prob")
@@ -579,8 +635,83 @@ def summarize(results: pd.DataFrame, schema: GameSchema, early_dates: int = 4):
     return summary
 
 
+def score_three_way(y, margin, win, draw) -> dict[str, float]:
+    """:func:`evaluate` for one arm of a sport with draws; an arm with no
+    margin (NaN) gets the probability scores alone."""
+    y, margin = np.asarray(y, dtype=float), np.asarray(margin, dtype=float)
+    if np.isfinite(margin).all():
+        return evaluate(y, margin, win, draw)
+    scores = three_way_scores(y, win, draw)
+    return {
+        "n": float(len(y)),
+        "accuracy3": float(scores["correct3"].mean()),
+        **{k: float(scores[k].mean()) for k in ("rps", "brier3", "log_loss3")},
+    }
+
+
+def summarize_three_way(
+    results: pd.DataFrame, schema: GameSchema, early_dates: int = 4
+) -> dict:
+    """:func:`summarize` for a sport with draws: every game is scored with
+    its win and draw probabilities (ranked probability score and multiclass
+    Brier / log loss), the model against the market arm and the preferred
+    bookmaker (``book``), and the paired difference in RPS to each. There are
+    no against-the-spread or moneyline records (a draw loses a side bet;
+    that is the 1X2 staking)."""
+    arms = {"model": ("pred_margin", "win_prob", "draw_prob")}
+    market = "market_draw_prob" in results
+    if market:
+        results = results.dropna(subset=["market_prob", "market_draw_prob"])
+        arms["market"] = ("market_margin", "market_prob", "market_draw_prob")
+        if results.get("book_prob", pd.Series(dtype=float)).notna().any():
+            arms["book"] = ("market_margin", "book_prob", "book_draw_prob")
+
+    def score(frame):
+        out = {}
+        for name, (margin, win, draw) in arms.items():
+            have = frame.dropna(subset=[win, draw])
+            margins = have[margin] if margin in have else np.full(len(have), np.nan)
+            out[name] = score_three_way(
+                have[schema.target], margins, have[win], have[draw]
+            )
+        return out
+
+    date_rank = results.groupby(schema.season)[schema.date].rank(method="dense")
+    phase = np.where(date_rank <= early_dates, f"first {early_dates} dates", "rest")
+    summary = {
+        "overall": score(results),
+        "by_season": {int(s): score(f) for s, f in results.groupby(schema.season)},
+        "by_phase": {p: score(f) for p, f in results.groupby(phase)},
+    }
+    if market:
+        y = results[schema.target]
+        own = three_way_scores(y, results["win_prob"], results["draw_prob"])
+        paired = {}
+        for arm in ("market", "book"):
+            if arm not in arms:
+                continue
+            _, win, draw = arms[arm]
+            have = results[win].notna() & results[draw].notna()
+            theirs = three_way_scores(
+                y[have], results.loc[have, win], results.loc[have, draw]
+            )
+            mean, half = paired_difference(own["rps"][have.to_numpy()] - theirs["rps"])
+            ll_mean, ll_half = paired_difference(
+                own["log_loss3"][have.to_numpy()] - theirs["log_loss3"]
+            )
+            paired[arm] = {"n": int(have.sum()), "d_rps": mean, "d_rps_ci95": half,
+                           "d_log_loss3": ll_mean, "d_log_loss3_ci95": ll_half}  # fmt: skip
+        summary["paired"] = paired
+        totals = totals_summary(results, schema)
+        if totals:
+            summary["totals"] = totals
+    return summary
+
+
 def format_summary(summary: dict) -> str:
     cols = ["n", "rmse", "mae", "accuracy", "brier", "log_loss"]
+    if "paired" in summary:
+        cols = ["n", "rmse", "mae", "accuracy3", "rps", "brier3", "log_loss3"]
 
     def table(scores: dict) -> pd.DataFrame:
         frame = pd.DataFrame(
@@ -595,6 +726,12 @@ def format_summary(summary: dict) -> str:
         "By season\n" + table(summary["by_season"]).to_string(**fmt),
         "By phase\n" + table(summary["by_phase"]).to_string(**fmt),
     ]
+    for arm, paired in summary.get("paired", {}).items():
+        parts.append(
+            f"Model minus {arm} on {paired['n']} games (negative: the model is better): "
+            f"RPS {paired['d_rps']:+.5f} ± {paired['d_rps_ci95']:.5f}, "
+            f"log loss {paired['d_log_loss3']:+.5f} ± {paired['d_log_loss3_ci95']:.5f} (95% CI)"
+        )
     if "ats" in summary:
         ats = pd.DataFrame(summary["ats"]).set_index("min_edge")
         parts.append(
@@ -709,7 +846,11 @@ def compare(
         Brier and, against the market, the paired Brier difference with its
         95% CI, ATS win rate and edge correlation; and the per-game table
         with every source's ``<source>_margin`` / ``<source>_prob``.
+
+    A sport with draws is compared by :func:`compare_three_way`.
     """
+    if schema.draws and all("draw_prob" in r for r in results.values()):
+        return compare_three_way(results, schema, early_dates)
     common = set.intersection(*(set(r[schema.game_id]) for r in results.values()))
     first = next(iter(results.values()))
     base_cols = [*schema.key_columns, schema.location, schema.target]
@@ -759,6 +900,58 @@ def compare(
                 row["edge_corr"] = edge_correlation(one, schema)["r"]
         rows.append(row)
     table = pd.DataFrame(rows).set_index("source").sort_values("brier")
+    table["n"] = table["n"].astype(int)
+    return table, games
+
+
+def compare_three_way(
+    results: dict[str, pd.DataFrame], schema: GameSchema, early_dates: int = 4
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """:func:`compare` for a sport with draws: one row per family and per
+    market arm (``market``, and ``book`` where the games table's preferred
+    bookmaker differs), scored by RPS and multiclass Brier / log loss on the
+    games all families predicted and the market priced, with each row's paired
+    RPS difference to the market (``rps_vs_market``) and its 95% CI; sorted by
+    RPS."""
+    common = set.intersection(*(set(r[schema.game_id]) for r in results.values()))
+    first = next(iter(results.values()))
+    base_cols = [*schema.key_columns, schema.location, schema.target]
+    base_cols += ["market_margin", "market_prob", "market_draw_prob"]
+    base_cols += ["book_prob", "book_draw_prob"]
+    games = first[first[schema.game_id].isin(common)]
+    games = games[[c for c in dict.fromkeys(base_cols) if c and c in games]]
+    games = games.dropna(subset=["market_prob", "market_draw_prob"])
+    games = games.set_index(schema.game_id)
+    arms = {}
+    for name, frame in results.items():
+        frame = frame.set_index(schema.game_id).reindex(games.index)
+        games[f"{name}_margin"] = frame["pred_margin"]
+        games[f"{name}_prob"], games[f"{name}_draw_prob"] = (
+            frame["win_prob"],
+            frame["draw_prob"],
+        )
+        arms[name] = (f"{name}_margin", f"{name}_prob", f"{name}_draw_prob")
+    arms["market"] = ("market_margin", "market_prob", "market_draw_prob")
+    if "book_prob" in games and games["book_prob"].notna().any():
+        arms["book"] = ("market_margin", "book_prob", "book_draw_prob")
+    games = games.reset_index()
+
+    y = games[schema.target].to_numpy(dtype=float)
+    date_rank = games.groupby(schema.season)[schema.date].rank(method="dense")
+    early = (date_rank <= early_dates).to_numpy()
+    market = three_way_scores(y, games["market_prob"], games["market_draw_prob"])
+    rows = []
+    for name, (margin, win, draw) in arms.items():
+        ok = games[[win, draw]].notna().all(axis=1).to_numpy()
+        margins = games[margin] if margin in games else np.full(len(games), np.nan)
+        row = {"source": name, **score_three_way(y[ok], margins.to_numpy()[ok], games.loc[ok, win], games.loc[ok, draw])}  # fmt: skip
+        scores = three_way_scores(y[ok], games.loc[ok, win], games.loc[ok, draw])
+        row["early_rps"] = float(scores["rps"][early[ok]].mean())
+        if name != "market":
+            mean, half = paired_difference(scores["rps"] - market["rps"][ok])
+            row |= {"rps_vs_market": mean, "rps_vs_market_ci95": half}
+        rows.append(row)
+    table = pd.DataFrame(rows).set_index("source").sort_values("rps")
     table["n"] = table["n"].astype(int)
     return table, games
 
@@ -826,8 +1019,23 @@ def benchmark(
             for c in ("brier_vs_market", "brier_vs_market_ci95", "ats_win_pct")
             if c in table
         ]
+        measure = "Brier"
+        if "rps" in table:  # a sport with draws
+            columns = [
+                "n",
+                "rmse",
+                "accuracy3",
+                "rps",
+                "brier3",
+                "log_loss3",
+                "early_rps",
+            ]
+            columns += [
+                c for c in ("rps_vs_market", "rps_vs_market_ci95") if c in table
+            ]
+            measure = "RPS"
         print(
-            f"\nSeasons {seasons}, {len(per_game)} common games, sorted by Brier\n"
+            f"\nSeasons {seasons}, {len(per_game)} common games, sorted by {measure}\n"
             + table[columns].to_string(float_format=lambda v: f"{v:.4f}")
         )
     return {"table": table, "games": per_game, "results": results}

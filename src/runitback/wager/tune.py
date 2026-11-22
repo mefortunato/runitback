@@ -23,6 +23,7 @@ import time
 import numpy as np
 
 from .core.io import read_table
+from .core.metrics import game_loss
 from .core.sport import get_sport
 
 
@@ -59,8 +60,13 @@ def merge(base: dict, extra: dict) -> dict:
 
 
 def season_brier(results, sport: str) -> float:
+    """The season's Brier score of the win probability (the mean ranked
+    probability score for a sport with draws)."""
     schema = get_sport(sport).schema
     y = results[schema.target].to_numpy(dtype=float)
+    if schema.draws:
+        loss, _ = game_loss(y, results["win_prob"], results["draw_prob"])
+        return float(np.mean(loss))
     decided = y != 0
     prob = results["win_prob"].to_numpy(dtype=float)[decided]
     return float(np.mean((prob - (y[decided] > 0)) ** 2))

@@ -72,6 +72,7 @@ SCHEMA = GameSchema(
     market_total_odds=("over_odds", "under_odds"),
     draws=True,
     market_draw="draw_moneyline",
+    market_average=("avg_moneyline", "avg_draw_moneyline", "opp_avg_moneyline"),
     # the market's margin is removed proportionally: power and Shin score a hair better on
     # 2006-2016 (RPS -0.00019 and -0.00016, inside noise) but worse on the 2020-2021 closing
     # averages the market arm uses (+0.00029, +0.00020); experiments/epl/README.md

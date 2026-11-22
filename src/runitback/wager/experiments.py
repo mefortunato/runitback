@@ -45,9 +45,9 @@ import time
 import numpy as np
 import pandas as pd
 
-from .backtest import ats_record, totals_record
+from .backtest import ats_record, score_three_way, totals_record
 from .core.io import Table, read_table
-from .core.metrics import evaluate
+from .core.metrics import evaluate, paired_difference, three_way_scores
 from .core.schema import GameSchema
 from .core.sport import get_sport
 
@@ -176,8 +176,9 @@ def common_games(
     predicted and the market priced; returns (base table, aligned results)."""
     ids = set.intersection(*(set(r[schema.game_id]) for r in results.values()))
     first = next(iter(results.values()))
+    priced = ["market_prob", "market_draw_prob"] if schema.draws else None
     base = first[first[schema.game_id].isin(ids)].dropna(
-        subset=["market_prob", "market_margin"]
+        subset=priced or ["market_prob", "market_margin"]
     )
     base = base.drop_duplicates(schema.game_id).set_index(schema.game_id)
     aligned = {
@@ -192,9 +193,13 @@ def common_games(
 def ablation_table(
     results: dict[str, pd.DataFrame], sport: str, baseline: str | None = None
 ) -> pd.DataFrame:
-    """Score each configuration on common games (see the module docstring)."""
+    """Score each configuration on common games (see the module docstring).
+
+    A sport with draws is scored by :func:`ablation_table_three_way`."""
     schema = get_sport(sport).schema
     baseline = baseline or next(iter(results))
+    if schema.draws:
+        return ablation_table_three_way(results, schema, baseline)
     base, aligned = common_games(results, schema)
     y = base[schema.target].to_numpy(dtype=float)
     decided = y != 0
@@ -241,14 +246,73 @@ def ablation_table(
     return pd.DataFrame(rows).set_index("config")
 
 
+def ablation_table_three_way(
+    results: dict[str, pd.DataFrame], schema: GameSchema, baseline: str
+) -> pd.DataFrame:
+    """:func:`ablation_table` for a sport with draws, on the games every
+    configuration predicted and the market arm priced: RPS, multiclass Brier
+    and log loss and RMSE; ``d_rps``, the paired per-game RPS difference to the
+    ``baseline`` with its 95% CI (negative is better), and ``vs_market``, the
+    same against the market arm. The market arm is the ``vegas`` row, and the
+    games table's preferred bookmaker a ``book`` row where it has prices."""
+    base, aligned = common_games(results, schema)
+    y = base[schema.target].to_numpy(dtype=float)
+    market = three_way_scores(y, base["market_prob"], base["market_draw_prob"])["rps"]
+    ref = three_way_scores(
+        y, aligned[baseline]["win_prob"], aligned[baseline]["draw_prob"]
+    )["rps"]
+    arms = {
+        name: (f["pred_margin"], f["win_prob"], f["draw_prob"])
+        for name, f in aligned.items()
+    }
+    arms[MARKET_ROW] = (
+        base["market_margin"],
+        base["market_prob"],
+        base["market_draw_prob"],
+    )
+    if "book_prob" in base and base["book_prob"].notna().any():
+        arms["book"] = (
+            base["market_margin"],
+            base["book_prob"],
+            base["book_draw_prob"],
+        )
+    rows = []
+    for name, (margin, win, draw) in arms.items():
+        ok = (win.notna() & draw.notna()).to_numpy()
+        m = score_three_way(y[ok], margin.to_numpy(dtype=float)[ok], win[ok], draw[ok])
+        row = {"config": name, "n": int(m["n"]), "rps": m["rps"], "brier3": m["brier3"],
+               "log_loss3": m["log_loss3"], "rmse": m.get("rmse", np.nan)}  # fmt: skip
+        if name in aligned:
+            rps = three_way_scores(y[ok], win[ok], draw[ok])["rps"]
+            row["d_rps"], row["d_rps_ci95"] = paired_difference(rps - ref[ok])
+            row["vs_market"], row["vs_market_ci95"] = paired_difference(
+                rps - market[ok]
+            )
+        rows.append(row)
+    return pd.DataFrame(rows).set_index("config")
+
+
 def season_table(
     results: dict[str, pd.DataFrame], sport: str, baseline: str | None = None
 ) -> pd.DataFrame:
-    """Each configuration's Brier difference to ``baseline`` by season."""
+    """Each configuration's Brier difference to ``baseline`` by season (RPS
+    for a sport with draws)."""
     schema = get_sport(sport).schema
     baseline = baseline or next(iter(results))
     base, aligned = common_games(results, schema)
     y = base[schema.target].to_numpy(dtype=float)
+    if schema.draws:
+        loss = {
+            name: three_way_scores(y, f["win_prob"], f["draw_prob"])["rps"]
+            for name, f in aligned.items()
+        }
+        season = base[schema.season].to_numpy()
+        return pd.DataFrame(
+            {
+                name: pd.Series(loss[name] - loss[baseline]).groupby(season).mean()
+                for name in aligned
+            }
+        )
     won = (y > 0).astype(float)
     decided = y != 0
     season = base[schema.season].to_numpy()
@@ -262,6 +326,8 @@ def season_table(
 
 def format_table(table: pd.DataFrame) -> str:
     """Markdown table of :func:`ablation_table`."""
+    if "rps" in table:
+        return format_table_three_way(table)
 
     def pm(value, half, digits=4):
         if pd.isna(value):
@@ -287,6 +353,24 @@ def format_table(table: pd.DataFrame) -> str:
             "" if pd.isna(r.get("ats_pct")) else f"{100 * r['ats_pct']:.1f}%",
             "" if pd.isna(r.get("ou_pct")) else f"{100 * r['ou_pct']:.1f}%",
         ]
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+def format_table_three_way(table: pd.DataFrame) -> str:
+    """Markdown table of :func:`ablation_table_three_way`."""
+
+    def pm(value, half):
+        return "" if pd.isna(value) else f"{value:+.5f} ± {half:.5f}"
+
+    lines = [
+        "| config | n | RPS | Brier (3-way) | log loss | RMSE | Δ RPS vs baseline | vs market |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for name, r in table.iterrows():
+        cells = [name, f"{r['n']}", f"{r['rps']:.5f}", f"{r['brier3']:.4f}", f"{r['log_loss3']:.4f}",
+                 "" if pd.isna(r["rmse"]) else f"{r['rmse']:.3f}",
+                 pm(r.get("d_rps"), r.get("d_rps_ci95")), pm(r.get("vs_market"), r.get("vs_market_ci95"))]  # fmt: skip
         lines.append("| " + " | ".join(cells) + " |")
     return "\n".join(lines)
 

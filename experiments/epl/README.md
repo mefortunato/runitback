@@ -23,3 +23,23 @@ the first test season (2022), so the choice leaks nothing.
 edge of its CI. The plan follows the closing-average period for the average-price market arm, and proportional
 is also what the other sports use. The schema records it (`GameSchema.devig`, set in
 `runitback/wager/epl/data/features.py`).
+
+## D3: the three-way backtest on real data (smoke run, 2026-11)
+
+`runitback-wager epl backtest --family elo` (test seasons 2022-2026, 1,853 games; each season fit on the earlier
+ones, replayed date by date). The market arm is the closing market average with the margin removed proportionally;
+`book` is the games table's preferred bookmaker (closing Pinnacle through 2025).
+
+| Source | RPS | Multiclass Brier | Log loss | 3-way accuracy |
+|---|---|---|---|---|
+| Elo (the NFL's settings) | 0.2036 | 0.5887 | 0.9875 | 52.9% |
+| Market (closing average) | 0.1941 | 0.5684 | 0.9575 | 55.9% |
+| Book (closing Pinnacle) | 0.1942 | 0.5685 | 0.9576 | 55.3% |
+
+Elo minus market: RPS +0.00948 ± 0.00276, log loss +0.02994 ± 0.00879 (95% CIs, paired per game). The market is
+better in every test season.
+
+**This is a pipeline check, not a result.** Elo runs with the NFL's FiveThirtyEight settings (`points_per_elo`
+1/25: a margin RMSE of 5.0 goals against the market's 1.67), draws never move its ratings, and a promoted club's
+first games are skipped; the plan's D5 (football Elo) and E2 (cold start) address those. The ordered probit
+absorbs the wrong scale into its spread, so its probabilities are still sensible.

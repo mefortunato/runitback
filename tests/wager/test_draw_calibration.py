@@ -18,26 +18,8 @@ from runitback.wager.core.splits import split_seasons
 from runitback.wager.core.sport import register_sport
 from runitback.wager.models.baselines import fit_elo, fit_home
 
-from .conftest import TOY_SCHEMA, make_games
-
-DRAWS_SCHEMA = dataclasses.replace(TOY_SCHEMA, draws=True)
-
-
-def football_games(seed: int = 3) -> pd.DataFrame:
-    """The toy league with Poisson goals (about a quarter of games drawn)."""
-    games = make_games(seed=seed, persistence=0.7, weeks=40)
-    rng = np.random.default_rng(seed)
-    game = games.groupby("game_id").ngroup().to_numpy()
-    first = games.groupby("game_id").cumcount().to_numpy() == 0
-    # one draw of goals per game, from the first row's side, mirrored onto the second
-    home = rng.poisson(1.45, game.max() + 1)[game]
-    away = rng.poisson(1.1, game.max() + 1)[game]
-    pts, opts = np.where(first, home, away), np.where(first, away, home)
-    unplayed = games["margin"].isna()
-    games["points"], games["opp_points"] = pts, opts
-    games["margin"], games["total"] = pts - opts, pts + opts
-    games.loc[unplayed, ["margin", "total", *TOY_SCHEMA.stats]] = np.nan
-    return games
+from .conftest import TOY_SCHEMA
+from .football import DRAWS_SCHEMA, football_games
 
 
 @pytest.fixture(scope="module")
