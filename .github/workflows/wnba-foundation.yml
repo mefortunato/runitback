@@ -16,6 +16,11 @@ name: WNBA foundation
 
 on:
   workflow_dispatch:
+    inputs:
+      epochs:
+        description: "Epoch counts to train every fold with (JSON list; 0 = the recipe's)"
+        type: string
+        default: "[0]"
   push:
     branches: ["claude/**"]
     paths:
@@ -38,6 +43,8 @@ jobs:
     uses: ./.github/workflows/wnba-experiment-inputs.yml
     with:
       seasons: "[2022, 2023, 2024, 2025, 2026, 2027]"
+      # a push carries no inputs: the epoch counts it trains (the recipe's, 0, and the alternatives tried)
+      epochs: ${{ inputs.epochs || '[0, 12, 20]' }}
 
   report:
     needs: inputs
@@ -55,20 +62,46 @@ jobs:
       - uses: actions/download-artifact@v4
         with: { name: wnba-data, path: data/wnba/processed }
       - uses: actions/download-artifact@v4
-        with: { pattern: "wnba-fold*", path: folds }
+        with: { pattern: "wnba-*fold*", path: folds }
       - name: Report
         run: |
-          mkdir -p runs/foundation out
-          for d in folds/wnba-fold*; do mv "$d" "runs/foundation/${d#folds/wnba-}"; done
-          ls runs/foundation
-          python scripts/nba_foundation_report.py runs/foundation --data data/wnba/processed \
-            --out out/report.md --json out/report.json
+          # wnba-fold<S> is the recipe's fold (runs/foundation), wnba-e<E>-fold<S> one trained for E epochs
+          # (runs/foundation-e<E>); one report per epoch count, then the comparison
+          mkdir -p out
+          for d in folds/wnba-*fold*; do
+            n=${d#folds/wnba-}; e=${n%fold*}; e=${e%-}
+            root=runs/foundation${e:+-$e}; mkdir -p "$root"; mv "$d" "$root/fold${n##*fold}"
+          done
+          ls runs/*
+          for root in runs/foundation*; do
+            tag=${root#runs/foundation}; tag=${tag#-}; tag=${tag:-recipe}
+            python scripts/nba_foundation_report.py "$root" --data data/wnba/processed \
+              --out "out/report_$tag.md" --json "out/report_$tag.json"
+          done
+          [ -f out/report_recipe.md ] && cp out/report_recipe.md out/report.md
+          python - <<'PY' | tee out/epochs.md
+          import json, glob
+          rows = {}
+          for f in sorted(glob.glob("out/report_*.json")):
+              tag = f[len("out/report_"):-len(".json")]
+              for r in json.load(open(f)):
+                  rows.setdefault(r["fold"], {})[tag] = r
+          tags = sorted({t for v in rows.values() for t in v}, key=lambda t: (t != "recipe", int(t[1:]) if t[1:].isdigit() else 0))
+          print("| fold | " + " | ".join(f"{t}: val loss / kept epoch / corr pbp32" for t in tags) + " |")
+          print("|---|" + "---|" * len(tags))
+          for s in sorted(rows):
+              cells = []
+              for t in tags:
+                  r = rows[s].get(t)
+                  cells.append("—" if r is None else f"{r['val_loss']:.4f} / {r['kept_epoch']} of {r['epochs']} / {r.get('corr_pbp32', float('nan')):.3f}")
+              print(f"| {s} | " + " | ".join(cells) + " |")
+          PY
           cp data/wnba/processed/replay.json out/replay.json
           python -c "import json; r = json.load(open('out/replay.json')); \
             print('engine replay agreement', r['agreement'], 'over', r['transitions'], 'transitions in', \
             r['games'], 'games')" | tee -a out/report.md
-          cat out/report.md >> "$GITHUB_STEP_SUMMARY"
+          cat out/report.md out/epochs.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with: { name: wnba-foundation-results, path: out, retention-days: 90 }
       - uses: actions/upload-artifact@v4
-        with: { name: wnba-foundation-models, path: runs/foundation, retention-days: 90 }
+        with: { name: wnba-foundation-models, path: runs, retention-days: 90 }

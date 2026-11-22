@@ -8,6 +8,7 @@
 #   wnba-data       data/wnba/processed: games, plays (engine events with team fouls), pre-game ratings and
 #                   replay.json (the engine's replay agreement against the real games)
 #   wnba-fold<S>    the generator that never sees season S (runitback wnba foundation): model.pt,
+#                   (wnba-e<E>-fold<S> when trained for E epochs instead of the recipe's; `epochs` input)
 #                   pca_32.npz and pbp_32.parquet (pooled per possession, PCA fit on games before S), plus
 #                   history.json (validation loss per epoch)                                [foundation]
 name: WNBA experiment inputs
@@ -31,6 +32,10 @@ on:
         description: "Train the foundation folds"
         type: boolean
         default: true
+      epochs:
+        description: "Epoch counts to train every fold with (JSON list; 0 = the recipe's, runitback.nba.foundation.TRAIN)"
+        type: string
+        default: "[0]"
 
 permissions:
   contents: read
@@ -82,6 +87,7 @@ jobs:
       fail-fast: false
       matrix:
         season: ${{ fromJSON(inputs.seasons) }}
+        epochs: ${{ fromJSON(inputs.epochs) }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -92,12 +98,12 @@ jobs:
           pip install -e ".[wager]"
       - uses: actions/download-artifact@v4
         with: { name: wnba-data, path: data/wnba/processed }
-      - name: Train fold ${{ matrix.season }} (never sees it) and embed every game (PCA on games before it)
+      - name: Train fold ${{ matrix.season }} (never sees it, epochs ${{ matrix.epochs }}) and embed every game (PCA on games before it)
         run: |
           S=${{ matrix.season }}
           # runitback.nba.foundation.TRAIN: validated on the last 40% of S-1, trained on every game before it
           runitback wnba foundation --root runs/foundation --season $S --data data/wnba/processed \
-            --threads $(nproc)
+            --epochs ${{ matrix.epochs }} --threads $(nproc)
           ls -la runs/foundation/fold$S
       - name: Keep the validation history
         run: |
@@ -107,6 +113,6 @@ jobs:
             'n_teams': len(ck['teams'])}, open('runs/foundation/fold$S/history.json', 'w'), indent=1)"
       - uses: actions/upload-artifact@v4
         with:
-          name: wnba-fold${{ matrix.season }}
+          name: wnba-${{ matrix.epochs != 0 && format('e{0}-', matrix.epochs) || '' }}fold${{ matrix.season }}
           path: runs/foundation/fold${{ matrix.season }}
           retention-days: 30
