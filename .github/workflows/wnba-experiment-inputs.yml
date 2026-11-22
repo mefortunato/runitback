@@ -1,0 +1,119 @@
+# Everything the WNBA foundation folds (W1) build on, rebuilt from the public sources in the calling run
+# (nothing comes from the repository or from an earlier run), as nba-experiment-inputs.yml does for the NBA.
+# Called by wnba-foundation.yml (and, in W2, by the WNBA wager experiments):
+#
+#   data ─► foundation (one fold per season, each in its own job)
+#
+# Artifacts, all in the calling run:
+#   wnba-data       data/wnba/processed: games, plays (engine events with team fouls), pre-game ratings and
+#                   replay.json (the engine's replay agreement against the real games)
+#   wnba-fold<S>    the generator that never sees season S (runitback wnba foundation): model.pt,
+#                   (wnba-e<E>-fold<S> when trained for E epochs instead of the recipe's; `epochs` input)
+#                   pca_32.npz and pbp_32.parquet (pooled per possession, PCA fit on games before S), plus
+#                   history.json (validation loss per epoch)                                [foundation]
+name: WNBA experiment inputs
+
+on:
+  workflow_call:
+    inputs:
+      seasons:
+        description: "Test seasons (JSON list, calendar years) for the folds"
+        type: string
+        default: "[2022, 2023, 2024, 2025, 2026, 2027]"
+      start-season:
+        description: "First season of play-by-play to download (ESPN's starts in 2006)"
+        type: string
+        default: "2006"
+      end-season:
+        description: "Last season of play-by-play to download (a season not yet published is skipped)"
+        type: string
+        default: "2027"
+      foundation:
+        description: "Train the foundation folds"
+        type: boolean
+        default: true
+      epochs:
+        description: "Epoch counts to train every fold with (JSON list; 0 = the recipe's, runitback.nba.foundation.TRAIN)"
+        type: string
+        default: "[0]"
+
+permissions:
+  contents: read
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      # ESPN play-by-play from sportsdataverse's releases; the engine replays every real game and keeps those
+      # it reproduces (>= 90%)
+      - name: Play-by-play, engine events and the replay check
+        run: |
+          runitback wnba download --start ${{ inputs.start-season }} --end ${{ inputs.end-season }}
+          runitback wnba preprocess --start ${{ inputs.start-season }} --end ${{ inputs.end-season }} \
+            --jobs $(nproc) | tee replay.log
+          python -c "import json; r = json.load(open('data/wnba/processed/replay.json')); \
+            print('engine replay agreement', r['agreement'], 'over', r['transitions'], 'transitions in', \
+            r['games'], 'games'); [print(s, v) for s, v in r['per_season'].items()]"
+          ls -la data/wnba/processed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wnba-data
+          path: |
+            data/wnba/processed/games.parquet
+            data/wnba/processed/plays.parquet
+            data/wnba/processed/ratings.parquet
+            data/wnba/processed/replay.json
+          if-no-files-found: error
+          retention-days: 7
+
+  foundation:
+    needs: data
+    if: ${{ inputs.foundation }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        season: ${{ fromJSON(inputs.seasons) }}
+        epochs: ${{ fromJSON(inputs.epochs) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: wnba-data, path: data/wnba/processed }
+      - name: Train fold ${{ matrix.season }} (never sees it, epochs ${{ matrix.epochs }}) and embed every game (PCA on games before it)
+        run: |
+          S=${{ matrix.season }}
+          # runitback.nba.foundation.TRAIN with WNBA_EPOCHS (or --epochs): validated on the last 40% of S-1, trained
+          # on every game before it
+          runitback wnba foundation --root runs/foundation --season $S --data data/wnba/processed \
+            --epochs ${{ matrix.epochs }} --threads $(nproc)
+          ls -la runs/foundation/fold$S
+      - name: Keep the validation history
+        run: |
+          S=${{ matrix.season }}
+          python -c "import json, torch; ck = torch.load('runs/foundation/fold$S/model.pt', weights_only=False); \
+            json.dump({'val_season': ck['val_season'], 'history': ck['history'], 'team_seasons': ck['team_seasons'], \
+            'n_teams': len(ck['teams'])}, open('runs/foundation/fold$S/history.json', 'w'), indent=1)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wnba-${{ matrix.epochs != 0 && format('e{0}-', matrix.epochs) || '' }}fold${{ matrix.season }}
+          path: runs/foundation/fold${{ matrix.season }}
+          retention-days: 30

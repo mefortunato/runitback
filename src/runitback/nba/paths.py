@@ -26,3 +26,8 @@ def default_checkpoint() -> Path:
 def checkpoint_path() -> Path:
     """Checkpoint the server loads (RUNITBACK_NBA_CKPT, default runs/nba/prod/model.pt)."""
     return Path(os.environ.get("RUNITBACK_NBA_CKPT", str(default_checkpoint())))
+
+
+def wnba_data_dir() -> Path:
+    """Root of the WNBA's downloaded and processed play-by-play (RUNITBACK_WNBA_DATA, default data/wnba)."""
+    return Path(os.environ.get("RUNITBACK_WNBA_DATA", "data/wnba"))

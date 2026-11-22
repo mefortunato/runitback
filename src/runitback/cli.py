@@ -1,8 +1,9 @@
 """Command-line interface: runitback serve, runitback <nfl|nba> download | preprocess | train |
 evaluate | calibrate | simulate | serve, runitback mlb download | process | lineups | player-values |
 probables, runitback nhl download | events | lineups, runitback cfb download | preprocess | train |
-foundation | players | player-values, and runitback college download | players | lineups | cbbd |
-player-values | pbp-download | pbp-preprocess | foundation."""
+foundation | players | player-values, runitback college download | players | lineups | cbbd |
+player-values | pbp-download | pbp-preprocess | foundation, and runitback wnba download | preprocess |
+foundation."""
 from __future__ import annotations
 
 import csv
@@ -31,12 +32,15 @@ app.add_typer(nhl, name="nhl")
 app.add_typer(cfb, name="cfb")
 college = typer.Typer(add_completion=False, help="College basketball (cbb / wcbb): player values and rotations")
 app.add_typer(college, name="college")
+wnba = typer.Typer(add_completion=False, help="WNBA: play-by-play, the WNBA rules engine and its generator folds")
+app.add_typer(wnba, name="wnba")
 DATA = data_dir()
 RUNS = runs_dir()
 DEFAULT_CKPT = default_checkpoint()
 NBA_DATA = nba_paths.data_dir()
 NBA_RUNS = nba_paths.runs_dir()
 NBA_CKPT = nba_paths.default_checkpoint()
+WNBA_DATA = nba_paths.wnba_data_dir()
 NHL_DATA = nhl_paths.data_dir()
 CFB_DATA = cfb_paths.data_dir()
 
@@ -1069,6 +1073,55 @@ def college_foundation(gender: str = GENDER_OPT,
     data = _college_dir(lg.name) / "processed"
     root = root or Path(f"foundation/{lg.name}")
     gen = BasketballGenerator(lg, epochs=epochs) if epochs else GENERATORS[lg.name]
+    if existing:
+        season = existing_folds(root)
+        train = False
+    elif not season:
+        season = default_seasons(gen, data)
+    for s, what in prepare(root, data, season, train=train, threads=threads or None, gen=gen).items():
+        typer.echo(f"fold{s}: {what}")
+
+
+# ---------------------------------------------------------------- WNBA (W1)
+
+@wnba.command("download")
+def wnba_download(start: int = typer.Option(2006, help="first season (calendar year; ESPN's play-by-play starts in 2006)"),
+                  end: int = 2027, force: bool = False):
+    """Download ESPN WNBA play-by-play (sportsdataverse releases) to data/wnba/raw."""
+    from .nba.data.wnba import download_season
+    _log()
+    for s in range(start, end + 1):
+        got = download_season(s, WNBA_DATA / "raw", force)
+        typer.echo(f"{s}: {got or 'not published'}")
+
+
+@wnba.command("preprocess")
+def wnba_preprocess(start: int = 2006, end: int = 2027,
+                    jobs: int = typer.Option(1, help="seasons to process in parallel")):
+    """Play-by-play to engine events (data/wnba/processed: games, plays, ratings) and the engine's replay
+    agreement against the real games (replay.json)."""
+    from .nba.data.wnba import preprocess
+    _log()
+    stats = preprocess(list(range(start, end + 1)), WNBA_DATA / "raw", WNBA_DATA / "processed", jobs=jobs)
+    typer.echo(json.dumps(stats, indent=1))
+
+
+@wnba.command("foundation")
+def wnba_foundation(root: Path = typer.Option(Path("foundation/wnba"), help="fold directory"),
+                    season: list[int] = typer.Option(None, help="fold (test season, a calendar year); repeat for "
+                                                                "several. Default: the last 5 complete and the current"),
+                    train: bool = typer.Option(True, help="train a fold that has no model"),
+                    existing: bool = typer.Option(False, help="only add new games to the folds already in --root "
+                                                              "(no training)"),
+                    epochs: int = typer.Option(0, help="override the fold recipe's epochs (0 = the WNBA recipe's: "
+                                                       "runitback.nba.foundation.WNBA_EPOCHS)"),
+                    data: Path = WNBA_DATA / "processed", threads: int = 0):
+    """Foundation folds (pbp32) for the WNBA wager model: train missing ones, embed new games."""
+    from .core.foundation import default_seasons, existing_folds
+    from .nba.foundation import WNBA_GENERATOR, BasketballGenerator, prepare
+    from .nba.league import WNBA
+    _log()
+    gen = BasketballGenerator(WNBA, epochs=epochs) if epochs else WNBA_GENERATOR
     if existing:
         season = existing_folds(root)
         train = False
