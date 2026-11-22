@@ -43,8 +43,9 @@ jobs:
     uses: ./.github/workflows/wnba-experiment-inputs.yml
     with:
       seasons: "[2022, 2023, 2024, 2025, 2026, 2027]"
-      # a push carries no inputs: the epoch counts it trains (the recipe's, 0, and the alternatives tried)
-      epochs: ${{ inputs.epochs || '[0, 12, 20]' }}
+      # a push carries no inputs: it trains the recipe (0). Run 45022405246 compared [0, 12, 20] with the 6-epoch
+      # recipe of the time; pass a list by hand (or here) to compare again
+      epochs: ${{ inputs.epochs || '[0]' }}
 
   report:
     needs: inputs

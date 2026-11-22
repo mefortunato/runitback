@@ -30,6 +30,7 @@ RAW = Path("data/wnba/raw")
 
 def test_wnba_league():
     assert get_league("wnba") is WNBA and LEAGUES["wnba"] is WNBA and GENERATORS["wnba"].league is WNBA
+    assert GENERATORS["wnba"].settings["epochs"] == 12 and GENERATORS["nba"].settings["epochs"] == 6
     assert (WNBA.period_seconds, WNBA.regulation_periods, WNBA.ot_seconds, WNBA.shot_clock) == (600, 4, 300, 24)
     assert (WNBA.n_qsec, WNBA.n_results, WNBA.n_fts, WNBA.n_fouls) == (41, 19, 4, 7)
     assert not WNBA.arrow and not WNBA.dynamic_teams and WNBA.train_seasons is None and WNBA.first_season == 2006

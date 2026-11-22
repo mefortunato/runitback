@@ -1113,7 +1113,8 @@ def wnba_foundation(root: Path = typer.Option(Path("foundation/wnba"), help="fol
                     train: bool = typer.Option(True, help="train a fold that has no model"),
                     existing: bool = typer.Option(False, help="only add new games to the folds already in --root "
                                                               "(no training)"),
-                    epochs: int = typer.Option(0, help="override the fold recipe's epochs (0 = the NBA recipe's)"),
+                    epochs: int = typer.Option(0, help="override the fold recipe's epochs (0 = the WNBA recipe's: "
+                                                       "runitback.nba.foundation.WNBA_EPOCHS)"),
                     data: Path = WNBA_DATA / "processed", threads: int = 0):
     """Foundation folds (pbp32) for the WNBA wager model: train missing ones, embed new games."""
     from .core.foundation import default_seasons, existing_folds

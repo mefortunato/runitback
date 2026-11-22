@@ -87,7 +87,11 @@ class NBAGenerator(BasketballGenerator):
 NBA = NBAGenerator()
 CBB_GENERATOR = BasketballGenerator(CBB)
 WCBB_GENERATOR = BasketballGenerator(WCBB)
-WNBA_GENERATOR = BasketballGenerator(WNBA)
+# The WNBA trains 12 epochs, not the NBA's 6: on every fold 2022-2027 the 6-epoch generator was still improving
+# at its last epoch, and 12 epochs lowered validation loss by 0.012-0.020 on all six (20 epochs added nothing:
+# its best epochs were 5-8). The embeddings' team-strength signal did not change (experiments/wnba/README.md).
+WNBA_EPOCHS = 12
+WNBA_GENERATOR = BasketballGenerator(WNBA, epochs=WNBA_EPOCHS)
 GENERATORS = {"nba": NBA, "cbb": CBB_GENERATOR, "wcbb": WCBB_GENERATOR, "wnba": WNBA_GENERATOR}
 
 

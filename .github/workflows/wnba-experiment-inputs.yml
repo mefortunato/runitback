@@ -101,7 +101,8 @@ jobs:
       - name: Train fold ${{ matrix.season }} (never sees it, epochs ${{ matrix.epochs }}) and embed every game (PCA on games before it)
         run: |
           S=${{ matrix.season }}
-          # runitback.nba.foundation.TRAIN: validated on the last 40% of S-1, trained on every game before it
+          # runitback.nba.foundation.TRAIN with WNBA_EPOCHS (or --epochs): validated on the last 40% of S-1, trained
+          # on every game before it
           runitback wnba foundation --root runs/foundation --season $S --data data/wnba/processed \
             --epochs ${{ matrix.epochs }} --threads $(nproc)
           ls -la runs/foundation/fold$S
