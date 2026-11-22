@@ -354,7 +354,8 @@ def test_sports_without_elo_settings_keep_the_nfl_elo_tokens(played_games, toy_s
     )
     # the built-in sports that never set Sport.elo get exactly the old tokens
     default = {name for name in BUILTIN_SPORTS if not get_sport(name).elo}
-    assert {"nfl", "cfb", "nba", "cbb", "wcbb", "epl"} <= default
+    assert {"nfl", "cfb", "nba", "cbb", "wcbb"} <= default
+    assert "epl" not in default  # it has its own (football) Elo
     assert all(EloParams(**get_sport(name).elo) == EloParams() for name in default)
 
 
