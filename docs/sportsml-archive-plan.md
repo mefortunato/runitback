@@ -1,15 +1,15 @@
 # Archiving sportsml and moving its traffic to Run It Back
 
 Runbook for the day `mefortunato/sportsml` is retired. Nothing here runs on its own: work through
-the phases in order and tick each box as you go. Where a step needs a value that isn't in either
-repo (the public runitback URL), it says `RUNITBACK_URL`. Fill that in first.
+the phases in order and tick each box as you go. runitback is deployed at
+**https://runitback.mfort.dev**.
 
 ## What we're working with
 
 | | sportsml (old) | runitback (new) |
 |---|---|---|
 | Hosting | GitHub Pages, static SvelteKit build (`web/`, `adapter-static`, `404.html` fallback for deep links) | Cloud Run (`deploy-cloud-run.yml`), React app served by `runitback.server` |
-| URL | `https://mefortunato.github.io/sportsml/...` (`BASE_PATH` from `actions/configure-pages`, no CNAME) | `RUNITBACK_URL` (the Cloud Run service URL or its custom domain) |
+| URL | `https://mefortunato.github.io/sportsml/...` (`BASE_PATH` from `actions/configure-pages`, no CNAME) | `https://runitback.mfort.dev` (Cloud Run, custom domain) |
 | Data refresh | `site.yml`, about 10 scheduled runs a week plus pushes to `web/**` | `refresh-predictions.yml` → predictions bucket |
 | Training | `train.yml` (manual) → `webdata` release | `train-predictions.yml` |
 
@@ -19,7 +19,7 @@ works out, because we want a notice and a countdown anyway rather than a silent 
 ### Redirect target
 
 The redirect is global: **every sportsml page, whatever its path or query string, sends readers to
-runitback's home page** (`RUNITBACK_URL/`). There's no per-page mapping, so nothing depends on the
+runitback's home page** (`https://runitback.mfort.dev/`). There's no per-page mapping, so nothing depends on the
 two sites' routes or game ids matching. Readers pick their sport from runitback's home page.
 
 ## Phase 0: go / no-go checks (runitback)
@@ -27,9 +27,10 @@ two sites' routes or game ids matching. Readers pick their sport from runitback'
 Don't start the cutover until every box is ticked.
 
 - [ ] **Every sport sportsml shows is published on runitback.** sportsml exports `nfl, cfb, nba,
-      cbb, wnba, wcbb, nhl, mlb`. At the time of writing, runitback's README lists `nhl` as not yet
-      ported to `runitback.wager`, and says site pages for the newly ported sports "come later". Check
-      `RUNITBACK_URL/api/.../sports` (whatever `api.sports()` calls) lists every sport. If one is still
+      cbb, wnba, wcbb, nhl, mlb`. Check that
+      `https://runitback.mfort.dev/data/sports.json` lists all eight. On 2026-11-22 it listed only
+      `nfl, cfb, nba, cbb, wcbb`: **`wnba`, `nhl` and `mlb` were still missing** (`nhl` isn't ported
+      to `runitback.wager` yet; `wnba` and `mlb` are ported but not published). For any sport still
       missing, decide whether to wait for it or cut over without it.
 - [ ] **runitback's home page links every sport**, since that's where every redirected reader
       lands.
@@ -39,7 +40,8 @@ Don't start the cutover until every box is ticked.
 - [ ] **runitback's data refresh is keeping up:** `refresh-predictions.yml` has run green for at
       least a week, and upcoming games on runitback match sportsml's.
 - [ ] **runitback is public:** the Cloud Run service allows unauthenticated access, and
-      `RUNITBACK_URL` loads in a private browser window.
+      `https://runitback.mfort.dev` loads in a private browser window. (It answered 200 on
+      2026-11-22.)
 - [ ] **Decide the countdown length.** This plan uses **10 seconds**.
 
 ## Phase 1: the moved notice (sportsml PR)
@@ -99,6 +101,7 @@ Not shown in the hash-routed artifact build (`npm run build:artifact`, `VITE_SPO
   ```ts
   // the home page: every sportsml page redirects here, whatever its path
   export const RUNITBACK_HOME = new URL('/', import.meta.env.VITE_RUNITBACK_URL).toString();
+  // VITE_RUNITBACK_URL=https://runitback.mfort.dev
   export const COUNTDOWN_SECONDS = 10;
   ```
 
@@ -111,8 +114,9 @@ Not shown in the hash-routed artifact build (`npm run build:artifact`, `VITE_SPO
 - `web/src/app.html`: add `<meta name="robots" content="noindex">` so search engines drop the old
   pages.
 - `.github/workflows/site.yml`: pass `VITE_RUNITBACK_URL` to the Build step, as a repository
-  variable (`vars.RUNITBACK_URL`) rather than a hard-coded host.
-- `README.md`: a line at the top: "SportsML has moved to [Run It Back](RUNITBACK_URL). This
+  variable (`vars.RUNITBACK_URL`, set to `https://runitback.mfort.dev`) rather than a hard-coded
+  host, so a later domain change doesn't need a code change.
+- `README.md`: a line at the top: "SportsML has moved to [Run It Back](https://runitback.mfort.dev). This
   repository is archived and will eventually be removed."
 
 ### Checks before merging
@@ -132,13 +136,13 @@ Not shown in the hash-routed artifact build (`npm run build:artifact`, `VITE_SPO
 
 1. [ ] **Freeze the data.** Run `site.yml` once by hand (`workflow_dispatch`) for a last full
        export, and write the date down as the freeze date (it goes in the notice).
-2. [ ] Set the repository variable `RUNITBACK_URL` on sportsml (Settings → Secrets and variables →
+2. [ ] Set the repository variable `RUNITBACK_URL` to `https://runitback.mfort.dev` on sportsml (Settings → Secrets and variables →
        Actions → Variables), and set the freeze date in the notice text.
 3. [ ] **Merge the Phase 1 PR.** `site.yml` redeploys on the push. As it's a `web/`-only change, it
        reuses the deployed data (the frozen export) instead of fetching new data.
 4. [ ] Check the live site: `https://mefortunato.github.io/sportsml/` and a deep link such as
        `.../sportsml/nfl/rankings` (served through the 404.html fallback) both show the notice and
-       land on `RUNITBACK_URL/`.
+       land on `https://runitback.mfort.dev/`.
 5. [ ] **Stop sportsml's schedules:** delete the `schedule:` block from `site.yml` and disable the
        Site and Train workflows (Actions → workflow → "Disable workflow"). This stops spending The
        Odds API quota (`ODDS_API_KEY`) on a site nobody's meant to use. If runitback needs that key,
