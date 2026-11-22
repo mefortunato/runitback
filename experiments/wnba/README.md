@@ -348,8 +348,7 @@ difference vs `prod_e4` (negative is better) ± 95% CI half-width:
 - **One seed agrees** (`single/`, vs `prod`): `pbp32_pvc` −0.0051 ± 0.0034 moneyline, −0.0056 ± 0.0038 spread,
   +0.0053 ± 0.0058 total; `pbp32` −0.0013 ± 0.0030 moneyline, +0.0071 ± 0.0062 total (fails).
 - **The noise floor is wider than the NBA's.** With 1,420 games (the NBA's backtest has 6,588), a CI of
-  ±0.0022 is about the size of the gain, so the moneyline pass is narrow; spread and moneyline agree in sign
-  in every season but one.
+  ±0.0022 is about the size of the gain, so the moneyline pass is narrow; every season moves the same way.
 
 **Swap test** (2026, `pbp32_pvc_e4` assembled from its four 2026 members, 351 games; `swap/swap_2026.md`). One
 change to the home team's projected rotation per position group:
