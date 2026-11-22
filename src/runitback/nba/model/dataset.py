@@ -105,7 +105,8 @@ def encode_games(plays: pd.DataFrame, games: pd.DataFrame, ts: TeamSeasonVocab, 
     rmask[is_ft & more, lg.rs["missed_def"]] = False
     rmask[is_ft & ~more, lg.rs["missed"]] = False
     if lg.bonus:  # a foul in the bonus always sends the shooter to the line
-        in_bonus = np.array([lg.bonus.level(int(f) + 1) > 0 for f in fouls_def])
+        ot = p.qtr.to_numpy() > lg.regulation_periods
+        in_bonus = np.array([lg.bonus.level(int(f) + 1, bool(o)) > 0 for f, o in zip(fouls_def, ot)])
         rmask[(t_idx == PT["foul"]) & in_bonus, lg.rs["fts_0"]] = False
     hi = np.minimum(np.maximum(qsec, 0), lg.max_elapsed)
     lo = np.where(t_idx == PT["run_out"], hi, 0)

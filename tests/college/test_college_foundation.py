@@ -64,7 +64,7 @@ def tiny(lg, **kw) -> BasketballGenerator:
 
 
 def test_generators_by_league():
-    assert set(GENERATORS) == {"nba", "cbb", "wcbb"}
+    assert set(GENERATORS) == {"nba", "cbb", "wcbb", "wnba"}
     assert isinstance(GENERATORS["cbb"], core.Generator) and GENERATORS["wcbb"].sport == "wcbb"
     assert GENERATORS["cbb"].settings["val_fraction"] == 0.4 and CBB.train_seasons == WCBB.train_seasons == 5
 

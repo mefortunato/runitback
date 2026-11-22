@@ -771,7 +771,7 @@ runitback cfb player-values --start 2012 --end 2026   # → player_values/cfb/{p
 
 `runitback.nba` is the basketball engine for every league: a `League` (`src/runitback/nba/league.py`) holds the
 rules and sizes, and the engine, features, model and fold code take it as a parameter (C2,
-`docs/multisport/PLAN.md`; the WNBA, W1, is the next value). `NBA` reproduces the original engine exactly
+`docs/multisport/PLAN.md`; the WNBA, W1, is another value: see [WNBA](#wnba)). `NBA` reproduces the original engine exactly
 (`tests/nba/test_league.py` pins digests of its games and tensors). `CBB` (men's) and `WCBB` (women's) add:
 
 - **Periods and clock.** Men play two 20-minute halves, women four 10-minute quarters, both with 5-minute
@@ -795,6 +795,35 @@ runitback college foundation --gender cbb --season 2025       # → foundation/c
 `.github/workflows/college-foundation.yml` (by hand from the Actions tab) rebuilds the data and trains one fold per
 test season and gender in matrix jobs. Each fold trains on the five seasons before its test season. Results and the
 replay check: `experiments/cbb/README.md`, "Engine and foundation folds (C2)".
+
+## WNBA
+
+The WNBA is another `League` value of the basketball engine (`WNBA` in `src/runitback/nba/league.py`; W1,
+`docs/multisport/PLAN.md`). It keeps the NBA's events and rules and adds what the WNBA does differently, as
+the play-by-play shows it (`experiments/wnba/README.md`):
+
+- **Periods and clock.** Four 10-minute quarters and 5-minute overtimes, a 24-second shot clock. Jump balls start
+  the game and each overtime; as in the NBA, the team that loses the opening tip starts the 2nd and 3rd quarters.
+- **Team fouls and the bonus.** Fouls are events, as in college (`fts_0` is a foul with no free throws). The 5th
+  team foul of a quarter and the 4th of an overtime are two shots; counts reset every period; inside a period's
+  last two minutes a team's 2nd foul is two shots too (the engine raises a late foul's count to one below the
+  limit, so no extra state is needed). Offensive fouls and technicals are not team fouls. Flagrant, clear-path,
+  take and away-from-play fouls give the shots *and* the ball.
+- **Timeouts.** The rules changed (full and 20-second timeouts to 2023, full ones from 2024); the engine allows 7
+  a game, 5 in the 4th quarter and 2 more per overtime, which keeps all but 10 of the 39,264 real timeouts.
+- **18 franchises**, keyed by ESPN team id as the franchise's latest abbreviation (Detroit, Tulsa and Dallas are
+  `DAL`; San Antonio and Las Vegas `LV`), as `runitback.wager.wnba` keys them. All-Star teams are dropped.
+
+```bash
+runitback wnba download --start 2006           # → data/wnba/raw/pbp_<season>.parquet (seasons are calendar years)
+runitback wnba preprocess --start 2006 --jobs 4  # → data/wnba/processed/{games,plays,ratings}.parquet, replay.json
+runitback wnba foundation --season 2026        # → foundation/wnba/fold2026/{model.pt,pca_32.npz,pbp_32.parquet}
+```
+
+**Engine replay check:** replaying every real 2006–2026 event through the engine reproduces the next real state
+(period, phase, possession, free throws left, score, team fouls) on **99.50%** of 1.20M transitions; 4,954 of the
+4,972 franchise games pass the 90% bar. `.github/workflows/wnba-foundation.yml` rebuilds the data and trains one
+fold per test season (2022–2027) in matrix jobs, each on every season before it.
 
 ## Quick start (pre-trained model)
 
@@ -1182,7 +1211,11 @@ empty nets, 3-on-3 and playoff overtime, penalty shots, the shootout, and random
 finishing a game), the play-by-play conversion, a replay of four real 2024-25 games
 (`tests/nhl/fixtures`), and a full-season replay when `data/nhl/raw` exists. The college football tests
 cover the name-to-id mapping, quarterback plays and starters, leak-free weekly quarterback values and
-the per-game starting-QB terms, on synthetic data.
+the per-game starting-QB terms, on synthetic data. The WNBA tests (`tests/wnba`) cover the bonus rules (the
+quarter and overtime limits, the last two minutes, the resets), quarter possession and overtime, the reader on
+synthetic rows (fouls with and without trips, kept balls, offensive fouls, jump balls), a replay of four real
+games from 2006 to 2026 (`tests/wnba/fixtures`), a full-season replay when `data/wnba/raw` exists, and a fold
+trained end to end.
 
 ## Limitations / next steps (NFL)
 

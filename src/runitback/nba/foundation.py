@@ -1,4 +1,4 @@
-"""Foundation folds for the basketball wager models (``runitback nba|cbb|wcbb foundation``): ``pbp32``.
+"""Foundation folds for the basketball wager models (``runitback nba|wnba|college foundation``): ``pbp32``.
 
 The NBA wager model's history tokens can carry each team-game's embedding from the event
 generator (docs/multisport/PLAN.md, layer A; work package N4). The fold layout, the walk-forward
@@ -16,10 +16,11 @@ uses fold S, and the model for upcoming games uses the current season's fold. A 
 once; afterwards ``prepare`` only adds the games played since, with the stored projection, so the
 numbers a wager model was fit on never change.
 
-The same generator code runs the college leagues (C2): :class:`BasketballGenerator` takes a
-:class:`~runitback.nba.league.League` (rules, vocabulary, team list) and the fold recipe. The college
-folds train on the five seasons before the test season (``League.train_seasons``): 360+ teams and
-five seasons of 5,000-plus games each is already as many events as the NBA's two decades.
+The same generator code runs the college leagues (C2) and the WNBA (W1): :class:`BasketballGenerator`
+takes a :class:`~runitback.nba.league.League` (rules, vocabulary, team list) and the fold recipe. The
+college folds train on the five seasons before the test season (``League.train_seasons``): 360+ teams and
+five seasons of 5,000-plus games each is already as many events as the NBA's two decades. The WNBA's train
+on every season since 2006, about 5,000 games (seasons are calendar years: fold 2026 never sees 2026).
 """
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ from pathlib import Path
 import pandas as pd
 
 from ..core import foundation as core
-from .league import CBB, NBA as NBA_LEAGUE, WCBB, League
+from .league import CBB, NBA as NBA_LEAGUE, WCBB, WNBA, League
 
 DIM = 32
 # The fold's training settings: the production NBA recipe (`runitback nba train`'s defaults, README
@@ -86,14 +87,8 @@ class NBAGenerator(BasketballGenerator):
 NBA = NBAGenerator()
 CBB_GENERATOR = BasketballGenerator(CBB)
 WCBB_GENERATOR = BasketballGenerator(WCBB)
-GENERATORS = {"nba": NBA, "cbb": CBB_GENERATOR, "wcbb": WCBB_GENERATOR}
-
-
-def current_season(self, data_dir: Path) -> int:
-        return int(_played(data_dir).season.max())
-
-
-NBA = NBAGenerator()
+WNBA_GENERATOR = BasketballGenerator(WNBA)
+GENERATORS = {"nba": NBA, "cbb": CBB_GENERATOR, "wcbb": WCBB_GENERATOR, "wnba": WNBA_GENERATOR}
 
 
 def current_season(data_dir: Path) -> int:

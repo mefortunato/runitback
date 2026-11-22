@@ -361,16 +361,20 @@ def outcome_from_row(row) -> Outcome:
     return Outcome(get("play_type"), get("result"), int(get("elapsed")))
 
 
-def process_game(g: pd.DataFrame, lg: League, keys: tuple[str, str, bool] | None = None
-                 ) -> tuple[dict, list[dict]] | None:
+def process_game(g: pd.DataFrame, lg: League, keys: tuple[str, str, bool] | None = None,
+                 events: list[dict] | None = None) -> tuple[dict, list[dict]] | None:
     """One game's meta and event rows, or None when it can't be used (a non-Division I pair, a
-    preseason game, too few events). `keys` = (home key, away key, neutral site)."""
+    preseason game, too few events). `keys` = (home key, away key, neutral site). `events` are the game's
+    events when another reader made them (the WNBA's, ``runitback.nba.data.wnba``), else this module's
+    from the college rows. Any league with a bonus works: the rows track team fouls with the league's
+    rules (``Bonus``) independently of the engine, which the replay check compares."""
     first = g.iloc[0]
     home, away, neutral = keys if keys is not None else (str(first.home_team_id), str(first.away_team_id), False)
     game_type = GAME_TYPES.get(int(first.season_type))
     if (home == NON_D1 and away == NON_D1) or game_type is None:
         return None
-    events = _events(_actions(g, lg), lg)
+    if events is None:
+        events = _events(_actions(g, lg), lg)
     if len(events) < lg.min_events or events[0]["kind"] != "jump":
         return None
     last = g.loc[g.period_number == g.period_number.max()]
@@ -399,8 +403,9 @@ def process_game(g: pd.DataFrame, lg: League, keys: tuple[str, str, bool] | None
             cur_q, qsec, trip_left, one_and_one = q, lg.period_length(q), 0, False
             if q > 1:
                 timeouts = timeouts_at_period_start(timeouts, q, lg)
-                if q in bonus.reset_periods:
+                if bonus.resets(q, lg.regulation_periods):
                     fouls = [0, 0]
+        ot = lg.is_overtime(q)
         prev_pos = eng.pos if eng is not None else HOME  # who the engine says has the ball
         nxt = _next_actor(events, i)
         k = e["kind"]
@@ -453,7 +458,7 @@ def process_game(g: pd.DataFrame, lg: League, keys: tuple[str, str, bool] | None
                 res = None
             elif n == 0:
                 res = "fts_0"
-            elif (bonus.level(counted) == 1 and ((n == 1 and not e["first_made"])
+            elif (bonus.level(counted, ot) == 1 and ((n == 1 and not e["first_made"])
                                                   or (n == 2 and e["first_made"]))):
                 res = "fts_2"  # a 1-and-1: the first shot made is followed by the second, a miss is not
                 e["oo"] = True
@@ -483,13 +488,13 @@ def process_game(g: pd.DataFrame, lg: League, keys: tuple[str, str, bool] | None
         if k == "timeout":
             timeouts[e["side"]] -= 1
         if k == "foul" and not e.get("control"):
-            fouls[e["fouler"]] += 1
+            fouls[e["fouler"]] = bonus.counted(fouls[e["fouler"]] + 1, e["clock"], ot)
             # the free throws that follow know whether they are a 1-and-1
             for later in events[i + 1:i + 1 + e["n"]]:
                 if later["kind"] == "ft":
                     later["oo"] = bool(e.get("oo"))
         elif k == "shot" and "fouled" in e:
-            fouls[1 - e["side"]] += 1
+            fouls[1 - e["side"]] = bonus.counted(fouls[1 - e["side"]] + 1, e["clock"], ot)
         if "post" in e:
             score = list(e["post"])
         if k == "shot" and "fouled" in e:

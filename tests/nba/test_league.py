@@ -80,9 +80,9 @@ def ts_checkpoint_roundtrip() -> TeamSeasonVocab:
 
 
 def test_league_registry_and_sizes():
-    assert set(LEAGUES) == {"nba", "cbb", "wcbb"} and get_league(None) is NBA and get_league("wcbb") is WCBB
+    assert set(LEAGUES) == {"nba", "cbb", "wcbb", "wnba"} and get_league(None) is NBA and get_league("wcbb") is WCBB
     with pytest.raises(ValueError):
-        get_league("wnba")
+        get_league("nhl")
     assert (NBA.period_seconds, NBA.regulation_periods, NBA.n_qsec, NBA.n_results, NBA.n_fts) == (720, 4, 49, 18, 4)
     assert (CBB.period_seconds, CBB.regulation_periods, CBB.n_qsec, CBB.n_results, CBB.n_fts) == (1200, 2, 81, 19, 5)
     assert (WCBB.period_seconds, WCBB.regulation_periods, WCBB.n_qsec, WCBB.n_fouls, WCBB.n_fts) == (600, 4, 41, 7, 4)

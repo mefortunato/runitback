@@ -89,8 +89,9 @@ def period_length(qtr: int, league: League = NBA) -> int:
 def foul_results(s: GameState) -> list[str]:
     """What a foul on the defense can end in. With a bonus, a foul in the bonus always sends the
     shooter to the line, so "no free throws" is legal only before it."""
-    res = list(s.league.results_for_type["foul"])
-    if s.league.bonus and s.league.bonus.level(s.fouls[1 - s.pos] + 1) > 0:
+    lg = s.league
+    res = list(lg.results_for_type["foul"])
+    if lg.bonus and lg.bonus.level(s.fouls[1 - s.pos] + 1, lg.is_overtime(s.qtr)) > 0:
         res.remove("fts_0")
     return res
 
@@ -142,6 +143,8 @@ def apply_outcome(s: GameState, o: Outcome) -> GameState:
     n = s.copy()
     off, dfn = s.pos, 1 - s.pos
     t, r = o.play_type, o.result
+    bonus, ot = s.league.bonus, s.league.is_overtime(s.qtr)
+    fouler = None  # the team charged with a team foul on this event
 
     if t == "timeout":
         n.timeouts[off if r == "timeout_offense" else dfn] -= 1
@@ -163,8 +166,9 @@ def apply_outcome(s: GameState, o: Outcome) -> GameState:
             _start_trip(n, 1)
         elif r == "missed_fouled":
             _start_trip(n, pts)
-        if s.league.bonus and r in ("made_fouled", "missed_fouled"):
+        if bonus and r in ("made_fouled", "missed_fouled"):
             n.fouls[dfn] += 1
+            fouler = dfn
     elif t == "free_throw":
         if r == "made":
             n.score[off] += 1
@@ -181,11 +185,12 @@ def apply_outcome(s: GameState, o: Outcome) -> GameState:
         n.pos = dfn
     elif t == "foul":
         k = int(r[-1])
-        n.fouls[dfn] += 1 if s.league.bonus else 0
+        if bonus:
+            n.fouls[dfn] += 1
+            fouler = dfn
         if k:
             _start_trip(n, k)
-            n.one_and_one = bool(
-                s.league.bonus and k == 2 and s.league.bonus.level(n.fouls[dfn]) == 1)
+            n.one_and_one = bool(bonus and k == 2 and bonus.level(n.fouls[dfn], ot) == 1)
     elif t == "technical":
         if r == "tech_offense":
             n.score[off] += 1
@@ -193,6 +198,8 @@ def apply_outcome(s: GameState, o: Outcome) -> GameState:
             n.score[dfn] += 1
 
     n.qsec = 0 if t == "run_out" else max(0, s.qsec - max(0, int(o.elapsed)))
+    if fouler is not None:  # the "last two minutes" penalty rule (WNBA), at the clock the foul came
+        n.fouls[fouler] = bonus.counted(n.fouls[fouler], n.qsec, ot)
     if n.qsec <= 0 and n.phase != FREE_THROW:
         _end_period(n)
     return n
@@ -232,7 +239,7 @@ def _end_period(n: GameState) -> None:
             # The team that lost the opening tip starts the 2nd and 3rd quarters; the winner the 4th.
             n.pos = tip if n.qtr == 4 else 1 - tip
         n.timeouts = timeouts_at_period_start(n.timeouts, n.qtr, lg)
-        if lg.bonus and n.qtr in lg.bonus.reset_periods:
+        if lg.bonus and lg.bonus.resets(n.qtr, lg.regulation_periods):
             n.fouls = [0, 0]
     elif diff != 0:
         n.over = True
@@ -242,5 +249,7 @@ def _end_period(n: GameState) -> None:
         n.phase = TIP
         n.pos = _arrow_start(n) if lg.arrow else HOME
         n.timeouts = timeouts_at_period_start(n.timeouts, n.qtr, lg)
+        if lg.bonus and lg.bonus.resets(n.qtr, lg.regulation_periods):
+            n.fouls = [0, 0]
     n.fts_left = n.fts_total = 0
     n.one_and_one = False
