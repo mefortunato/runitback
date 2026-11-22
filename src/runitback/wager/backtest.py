@@ -497,7 +497,11 @@ def moneyline_record(
 
     ``units`` / ``roi`` are profit at the posted odds (1 unit per bet); a
     tie returns the stake. Games without both moneylines are skipped.
+
+    A sport with draws is bet on all three outcomes: :func:`one_x_two_record`.
     """
+    if schema.draws:
+        return one_x_two_record(results, schema, thresholds)
     team_col, opp_col = schema.market_moneyline
     lined = results.dropna(subset=[team_col, opp_col, "market_prob"])
     edge = (lined["win_prob"] - lined["market_prob"]).to_numpy()
@@ -508,6 +512,72 @@ def moneyline_record(
         bet = np.abs(edge) > t
         outcome = np.sign(edge[bet]) * np.sign(margin[bet])
         profit = np.where(outcome > 0, payout(odds[bet]), np.where(outcome < 0, -1, 0))
+        _record(rows, t, bet, outcome, profit)
+    return pd.DataFrame(rows)
+
+
+def one_x_two_picks(results: pd.DataFrame, schema: GameSchema) -> pd.DataFrame:
+    """The best 1X2 bet of every game of a sport with draws.
+
+    Each game's three outcomes (home win, draw, away win) are priced by the
+    games table's preferred bookmaker (``market_moneyline`` and
+    ``market_draw``); the pick is the one with the highest expected value at
+    its posted odds, ``p * (1 + payout) - 1`` for the model's probability
+    ``p``. A draw loses both side bets, and there is no push.
+
+    Returns one row per game, indexed like ``results``: ``pick`` (``home`` /
+    ``draw`` / ``away``), ``edge`` (the pick's expected value per unit staked;
+    below 0 when no outcome is worth betting), ``prob_edge`` (the model's
+    probability minus the market's, margin removed), ``prob`` (the model's
+    probability of the pick), ``odds`` and ``outcome`` (+1 it won, -1 it lost).
+    """
+    home, away = schema.market_moneyline
+    prices = [home, schema.market_draw, away]
+    frame = results.dropna(subset=["win_prob", "draw_prob", *prices, schema.target])
+    p = np.column_stack(
+        [
+            frame["win_prob"],
+            frame["draw_prob"],
+            1 - frame["win_prob"] - frame["draw_prob"],
+        ]
+    )
+    odds = frame[prices].to_numpy(dtype=float)
+    value = p * (1 + payout(odds)) - 1
+    pick = value.argmax(axis=1)
+    rows = np.arange(len(frame))
+    market = no_vig_probabilities(*odds.T, method=schema.devig)
+    margin = frame[schema.target].to_numpy(dtype=float)
+    actual = np.where(margin > 0, 0, np.where(margin == 0, 1, 2))
+    return pd.DataFrame(
+        {
+            "pick": np.array(["home", "draw", "away"])[pick],
+            "edge": value[rows, pick],
+            "prob_edge": (p - market)[rows, pick],
+            "prob": p[rows, pick],
+            "odds": odds[rows, pick],
+            "outcome": np.where(pick == actual, 1.0, -1.0),
+        },
+        index=frame.index,
+    )
+
+
+def one_x_two_record(
+    results: pd.DataFrame, schema: GameSchema, thresholds=(0, 0.02, 0.05, 0.1)
+) -> pd.DataFrame:
+    """Bet each game's best 1X2 outcome (:func:`one_x_two_picks`) when its
+    expected value beats ``t`` per unit staked, at the posted odds.
+
+    ``units`` / ``roi`` are profit at those odds (1 unit per bet). A game that
+    ends level loses the home and away bets and wins the draw bets; nothing
+    is pushed.
+    """
+    picks = one_x_two_picks(results, schema)
+    rows = []
+    for t in thresholds:
+        bet = (picks["edge"] > t).to_numpy()
+        outcome = picks["outcome"].to_numpy()[bet]
+        odds = picks["odds"].to_numpy()[bet]
+        profit = np.where(outcome > 0, payout(odds), -1.0)
         _record(rows, t, bet, outcome, profit)
     return pd.DataFrame(rows)
 
@@ -656,8 +726,8 @@ def summarize_three_way(
     its win and draw probabilities (ranked probability score and multiclass
     Brier / log loss), the model against the market arm and the preferred
     bookmaker (``book``), and the paired difference in RPS to each. There are
-    no against-the-spread or moneyline records (a draw loses a side bet;
-    that is the 1X2 staking)."""
+    no against-the-spread or moneyline records: the bets are the 1X2 ones
+    (:func:`one_x_two_record`; a draw loses a side bet)."""
     arms = {"model": ("pred_margin", "win_prob", "draw_prob")}
     market = "market_draw_prob" in results
     if market:
@@ -702,6 +772,13 @@ def summarize_three_way(
             paired[arm] = {"n": int(have.sum()), "d_rps": mean, "d_rps_ci95": half,
                            "d_log_loss3": ll_mean, "d_log_loss3_ci95": ll_half}  # fmt: skip
         summary["paired"] = paired
+        prices = [
+            schema.market_moneyline[0],
+            schema.market_draw,
+            schema.market_moneyline[1],
+        ]
+        if set(prices) <= set(results):
+            summary["one_x_two"] = one_x_two_record(results, schema).to_dict("records")
         totals = totals_summary(results, schema)
         if totals:
             summary["totals"] = totals
@@ -743,6 +820,13 @@ def format_summary(summary: dict) -> str:
             "Edge vs cover correlation: "
             f"{corr['r']:+.4f} (95% CI {corr['ci95_low']:+.4f} to "
             f"{corr['ci95_high']:+.4f})"
+        )
+    if "one_x_two" in summary:
+        bets = pd.DataFrame(summary["one_x_two"]).set_index("min_edge")
+        parts.append(
+            "1X2 (the outcome with the best expected value at the preferred bookmaker's odds, "
+            "bet when it beats min_edge per unit; a draw loses the side bets)\n"
+            + bets.to_string(**fmt)
         )
     if "moneyline" in summary:
         ml = pd.DataFrame(summary["moneyline"]).set_index("min_edge")

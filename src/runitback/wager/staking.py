@@ -27,13 +27,25 @@ import sklearn.linear_model
 import sklearn.pipeline
 import sklearn.preprocessing
 
-from .backtest import payout
+from .backtest import one_x_two_picks, payout
 from .core.io import Table, read_table
 from .core.schema import GameSchema
 from .core.sport import get_sport
 
-Market = Literal["spread", "moneyline", "total"]
+Market = Literal["spread", "moneyline", "total", "1x2"]
 MARKETS: tuple[str, ...] = ("spread", "moneyline", "total")
+# a sport with draws bets the three outcomes ("1x2"), not a side or a handicap
+MARKETS_WITH_DRAWS: tuple[str, ...] = ("1x2", "total")
+
+
+def default_markets(schema: GameSchema, results: pd.DataFrame) -> list[str]:
+    """The markets a results table can be staked on."""
+    if schema.draws:
+        return ["1x2"] + (["total"] if "pred_total" in results else [])
+    markets = (["spread"] if schema.market_spread else []) + ["moneyline"]
+    return markets + (["total"] if "pred_total" in results else [])
+
+
 SPREAD_ODDS = -110.0
 
 
@@ -49,9 +61,38 @@ def market_bets(results: pd.DataFrame, schema: GameSchema, market: Market):
     ``prob``: the model's probability that the pick wins, a push left out
     (from ``cover_prob`` / ``win_prob`` / ``over_prob``; NaN where the
     results lack it).
+
+    A sport with draws (``schema.draws``) bets ``"1x2"`` and ``"total"``: its
+    1X2 pick is each game's outcome of best expected value at the posted odds
+    (:func:`~runitback.wager.backtest.one_x_two_picks`), where ``edge`` is that
+    expected value per unit staked, only picks worth betting (edge > 0) are
+    returned and a draw loses a home or away pick (no push). ``pick``
+    (``home`` / ``draw`` / ``away``) and ``prob_edge`` (the model's
+    probability minus the market's) come with them.
     """
     s = schema
     prob = None
+    if market == "1x2":
+        if not s.draws:
+            raise ValueError(
+                "the 1x2 market needs a sport with draws (GameSchema.draws)"
+            )
+        picks = one_x_two_picks(results, s)
+        picks = picks[picks["edge"] > 0]
+        frame = results.loc[picks.index]
+        return pd.DataFrame(
+            {
+                "season": frame[s.season].to_numpy(),
+                "date": frame[s.date].to_numpy(),
+                "game_id": frame[s.game_id].to_numpy(),
+                **{c: picks[c].to_numpy() for c in ("edge", "odds", "outcome", "prob", "pick", "prob_edge")},
+            }
+        )  # fmt: skip
+    if s.draws and market in ("spread", "moneyline"):
+        raise ValueError(
+            f"a sport with draws has no {market!r} market (a draw is a third outcome): "
+            f"choose from {MARKETS_WITH_DRAWS}"
+        )
     if market == "spread":
         frame = results.dropna(subset=["pred_margin", "market_margin", s.target])
         signed = frame["pred_margin"] - frame["market_margin"]
@@ -291,7 +332,7 @@ class ModelKelly(Policy):
 def default_policies(market: Market, with_prob: bool = False) -> list[Policy]:
     """Flat, a few edge thresholds, proportional, learned (Kelly) and, for
     results with the model's probabilities, the model's own Kelly."""
-    cuts = (0.03, 0.06) if market == "moneyline" else (2.0, 4.0)
+    cuts = (0.03, 0.06) if market in ("moneyline", "1x2") else (2.0, 4.0)
     policies = [Flat(), *(Threshold(c) for c in cuts), Proportional(), LearnedKelly()]
     return policies + ([ModelKelly()] if with_prob else [])
 
@@ -437,8 +478,7 @@ def staking(
     results = read_table(results)
     schema = get_sport(sport).schema
     if markets is None:
-        markets = (["spread"] if schema.market_spread else []) + ["moneyline"]
-        markets += ["total"] if "pred_total" in results else []
+        markets = default_markets(schema, results)
     report = {}
     for market in markets:
         bets = market_bets(results, schema, market)
@@ -515,8 +555,7 @@ def performance_staking(
     the page can show how the stake grows with the edge. Markets with too
     few seasons of bets are left out; ``{}`` if none has enough.
     """
-    markets = (["spread"] if schema.market_spread else []) + ["moneyline"]
-    markets += ["total"] if "pred_total" in results else []
+    markets = default_markets(schema, results)
     out = {}
     for market in markets:
         try:
