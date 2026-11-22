@@ -14,7 +14,7 @@ TODAY = datetime.datetime(2025, 4, 2, 12, tzinfo=datetime.timezone.utc)
 
 HEADER = ("Div,Date,Time,HomeTeam,AwayTeam,FTHG,FTAG,FTR,HTHG,HTAG,HTR,Referee,"
           "HS,AS,HST,AST,HF,AF,HC,AC,HY,AY,HR,AR,B365H,B365D,B365A,PSCH,PSCD,PSCA,"
-          "B365>2.5,B365<2.5,AHh,AHCh")  # fmt: skip
+          "B365>2.5,B365<2.5,AHh,AHCh,AvgCH,AvgCD,AvgCA,AvgC>2.5,AvgC<2.5")  # fmt: skip
 
 
 def csv_bytes(*rows, header=HEADER, encoding="utf-8-sig"):
@@ -24,7 +24,7 @@ def csv_bytes(*rows, header=HEADER, encoding="utf-8-sig"):
 # played; closing Pinnacle prices; four-digit year; handicap -0.5 -> closing -0.75
 ARS_CHE = (
     "E0,10/08/2024,17:30,Arsenal,Chelsea,2,2,D,1,0,H,M Oliver,"
-    "14,9,6,3,10,12,7,4,1,2,0,0,2.0,3.5,4.0,1.9,3.6,4.4,1.8,2.0,-0.5,-0.75"
+    "14,9,6,3,10,12,7,4,1,2,0,0,2.0,3.5,4.0,1.9,3.6,4.4,1.8,2.0,-0.5,-0.75,1.95,3.55,4.2,1.85,1.95"
 )
 # played; no closing prices (bet365), two-digit year, a Man City accent-free name
 CHE_MCI = (
@@ -110,11 +110,20 @@ def test_odds_prefer_closing_prices_and_convert_to_american(games):
     assert ars.odds_source == "pinnacle_close"
     assert (ars.moneyline, ars.draw_moneyline, ars.opp_moneyline) == (-111, 260, 340)
     assert (che.moneyline, che.opp_moneyline) == (340, -111)  # mirrored
-    assert (ars.total_line, ars.over_odds, ars.under_odds) == (2.5, -125, 100)
+    assert (ars.total_line, ars.over_odds, ars.under_odds) == (2.5, -118, -105)  # the closing average
     assert ars.spread_line == 0.75 and che.spread_line == -0.75  # closing handicap
+    # the closing market average has its own columns, whatever the 1X2 source
+    assert (ars.avg_moneyline, ars.avg_draw_moneyline, ars.opp_avg_moneyline) == (
+        -105,
+        255,
+        320,
+    )
+    assert (che.avg_moneyline, che.opp_avg_moneyline) == (320, -105)
+    assert (ars.avg_over_odds, ars.avg_under_odds) == (-118, -105)
     opening = row(games, 2025, "CHE_MCI", "CHE")
     assert opening.odds_source == "bet365" and opening.moneyline == 400
     assert np.isnan(opening.total_line) and np.isnan(opening.spread_line)
+    assert np.isnan(opening.avg_moneyline) and np.isnan(opening.avg_draw_moneyline)
     back = mirror(games[games.index == ars.name], SCHEMA).iloc[0]
     assert (back.team, back.moneyline, back.spread_line) == ("CHE", 340, -0.75)
 

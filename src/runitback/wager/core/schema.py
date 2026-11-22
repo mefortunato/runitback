@@ -42,6 +42,16 @@ class GameSchema:
             models that predict it can be scored against ``market_total``.
         market_total: The market's over/under line.
         market_total_odds: ``(over, under)`` American odds on the total.
+        draws: The sport has three outcomes (win, draw, loss), as football
+            does: models and the backtest also produce and score a draw
+            probability (``draw_prob``), and the market's three prices
+            (``market_moneyline`` and ``market_draw``) give its win and draw
+            probabilities. False (the default) leaves every two-outcome
+            computation as it is.
+        market_draw: American price of the draw (``draws`` only).
+        devig: How the bookmaker margin is removed from the three prices
+            (``"proportional"``, ``"power"`` or ``"shin"``; see
+            :func:`runitback.wager.backtest.no_vig_probabilities`).
     """
 
     season: str
@@ -64,6 +74,9 @@ class GameSchema:
     total: str | None = None
     market_total: str | None = None
     market_total_odds: tuple[str, str] | None = None
+    draws: bool = False
+    market_draw: str | None = None
+    devig: str = "proportional"
 
     @property
     def pre_game_columns(self) -> list[str]:

@@ -76,6 +76,10 @@ BOOKS_1X2 = [
     ("interwetten", "IWH", "IWD", "IWA"),
     ("ladbrokes", "LBH", "LBD", "LBA"),
 ]
+# The closing market average: its own columns (from 2019-20), whatever bookmaker the
+# prices above come from, so one baseline can score every test season.
+AVERAGE_1X2 = ("AvgCH", "AvgCD", "AvgCA")
+AVERAGE_TOTAL = ("AvgC>2.5", "AvgC<2.5")
 # (label, over, under) of the 2.5-goal line.
 BOOKS_TOTAL = [
     ("pinnacle_close", "PC>2.5", "PC<2.5"),
@@ -219,6 +223,13 @@ def build_games(
     totals, _ = pick(raw, BOOKS_TOTAL)
     games["over_odds"], games["under_odds"] = american(totals[0]), american(totals[1])
     games["total_line"] = np.where(totals[0].notna(), TOTAL_LINE, np.nan)
+    average, _ = pick(raw, [("average_close", *AVERAGE_1X2)])
+    games["home_avg_moneyline"] = american(average[0])
+    games["avg_draw_moneyline"] = american(average[1])
+    games["away_avg_moneyline"] = american(average[2])
+    average_total, _ = pick(raw, [("average_close", *AVERAGE_TOTAL)])
+    games["avg_over_odds"] = american(average_total[0])
+    games["avg_under_odds"] = american(average_total[1])
     handicap = raw.reindex(columns=HANDICAPS).apply(pd.to_numeric, errors="coerce")
     games["spread_line"] = -handicap.bfill(axis=1).iloc[:, 0]
     games["referee"] = raw.get("Referee")

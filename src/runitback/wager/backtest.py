@@ -181,16 +181,78 @@ def family_fitter(
     raise ValueError(f"unknown model family {family!r}; choose from {FAMILIES}")
 
 
+def implied_probability(line) -> np.ndarray:
+    """The probability an American price implies, bookmaker margin included."""
+    line = np.asarray(line, dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(line > 0, 100 / (line + 100), -line / (100 - line))
+
+
+DEVIG_METHODS = ("proportional", "power", "shin")
+
+
+def no_vig_probabilities(*prices, method: str = "proportional") -> np.ndarray:
+    """The probabilities of ``k`` exclusive outcomes implied by their American
+    prices with the bookmaker margin removed: ``[..., k]``, summing to 1 (NaN
+    where a price is missing).
+
+    - ``proportional``: each implied probability over their sum.
+    - ``power``: each implied probability to the power ``kappa`` that makes
+      them sum to 1.
+    - ``shin``: Shin's method, which assumes the margin protects the bookmaker
+      from insiders and takes more off the longshots.
+
+    The last two correct the favourite-longshot bias that football's draw
+    price shows. With two prices and ``proportional`` it is the two-way no-vig
+    probability, bit for bit.
+    """
+    if len(prices) < 2:
+        raise ValueError("no-vig probabilities need at least two prices")
+    if method not in DEVIG_METHODS:
+        raise ValueError(f"unknown method {method!r}; choose from {DEVIG_METHODS}")
+    implied = np.broadcast_arrays(*(implied_probability(x) for x in prices))
+    p = np.stack(implied, axis=-1)
+    total = implied[0]
+    for other in implied[1:]:
+        total = total + other
+    proportional = p / total[..., None]
+    if method == "proportional":
+        return proportional
+
+    flat = p.reshape(-1, p.shape[-1])
+    total = total.reshape(-1)
+    # rows without a margin to remove (or without all prices) stay proportional
+    todo = np.isfinite(flat).all(axis=1) & (total > 1)
+    out = proportional.reshape(flat.shape).copy()
+    if todo.any():
+        q, t = flat[todo], total[todo]
+        lo, hi = np.zeros(len(q)), np.ones(len(q))
+        if method == "power":
+            lo, hi = np.ones(len(q)), np.full(len(q), 64.0)  # sum(p ** kappa) falls with kappa
+        else:
+            hi = np.full(len(q), 0.999)  # the insider share z
+        for _ in range(80):
+            mid = (lo + hi) / 2
+            if method == "power":
+                fair = q ** mid[:, None]
+            else:
+                root = np.sqrt(mid[:, None] ** 2 + 4 * (1 - mid[:, None]) * q**2 / t[:, None])
+                fair = (root - mid[:, None]) / (2 * (1 - mid[:, None]))
+            high = fair.sum(axis=1) > 1  # still too much probability: go further
+            lo, hi = np.where(high, mid, lo), np.where(high, hi, mid)
+        mid = (lo + hi) / 2
+        if method == "power":
+            out[todo] = q ** mid[:, None]
+        else:
+            root = np.sqrt(mid[:, None] ** 2 + 4 * (1 - mid[:, None]) * q**2 / t[:, None])
+            out[todo] = (root - mid[:, None]) / (2 * (1 - mid[:, None]))
+        out[todo] /= out[todo].sum(axis=1, keepdims=True)  # the bisection's last bit
+    return out.reshape(p.shape)
+
+
 def no_vig_probability(moneyline, opp_moneyline) -> np.ndarray:
     """P(team wins) implied by American moneylines, bookmaker margin removed."""
-
-    def implied(line):
-        line = np.asarray(line, dtype=float)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            return np.where(line > 0, 100 / (line + 100), -line / (100 - line))
-
-    team, opp = implied(moneyline), implied(opp_moneyline)
-    return team / (team + opp)
+    return no_vig_probabilities(moneyline, opp_moneyline)[..., 0]
 
 
 def payout(odds) -> np.ndarray:

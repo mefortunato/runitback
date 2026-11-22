@@ -19,7 +19,9 @@ OPP_STATS_COLUMNS = [f"opp_{col}" for col in STATS_COLUMNS]
 # draw's, all American; a win probability needs all three (a draw is a quarter
 # of the games), so the two-way moneyline columns alone overstate it. The
 # total is always the 2.5-goal line. ``spread_line`` is the Asian handicap
-# turned into the team's expected margin (positive: favored).
+# turned into the team's expected margin (positive: favored). The ``avg_*``
+# columns are the closing market average (from 2019-20), the same bookmaker in
+# every season whatever ``odds_source`` is.
 MARKET_COLUMNS = [
     "moneyline",
     "opp_moneyline",
@@ -28,6 +30,11 @@ MARKET_COLUMNS = [
     "over_odds",
     "under_odds",
     "spread_line",
+    "avg_moneyline",
+    "opp_avg_moneyline",
+    "avg_draw_moneyline",
+    "avg_over_odds",
+    "avg_under_odds",
 ]
 
 SCHEMA = GameSchema(
@@ -45,6 +52,7 @@ SCHEMA = GameSchema(
         ("goals", "opp_goals"),
         ("rest", "opp_rest"),
         ("moneyline", "opp_moneyline"),
+        ("avg_moneyline", "opp_avg_moneyline"),
     ),
     negated=("spread_line",),
     team_name="team_name",
@@ -62,4 +70,10 @@ SCHEMA = GameSchema(
     total="total",
     market_total="total_line",
     market_total_odds=("over_odds", "under_odds"),
+    draws=True,
+    market_draw="draw_moneyline",
+    # the market's margin is removed proportionally: power and Shin score a hair better on
+    # 2006-2016 (RPS -0.00019 and -0.00016, inside noise) but worse on the 2020-2021 closing
+    # averages the market arm uses (+0.00029, +0.00020); experiments/epl/README.md
+    devig="proportional",
 )
