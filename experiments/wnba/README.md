@@ -164,9 +164,18 @@ NBA's N5.
   holds in that sense; a larger penalty (5,000 to 80,000) predicted the next season's possessions worse.
 - **The box-score prior is not done** (optional in the plan): rookies and players under 75 minutes sit at
   replacement level, as in the NBA.
-- **Wager performance and the swap test: pending the first run of `WNBA wager experiment`**
-  (`.github/workflows/wnba-wager-experiment.yml`). The tables below are filled from its `wnba-wager-results`
-  artifact.
+- **`prod_pvc_e4` passes the bar: the box-score production model plus the player-value lineup terms.**
+  Against `prod_e4` (paired Brier, 95% CI, negative is better): moneyline **−0.0035 ± 0.0022**, spread
+  **−0.0042 ± 0.0024**, total +0.0004 ± 0.0017. It is better than production in every season (moneyline −0.0023
+  to −0.0049).
+- **`pbp32_pvc_e4`, the plan's arm, does not pass:** moneyline −0.0027 ± 0.0024 and spread −0.0038 ± 0.0028 are
+  better, but the total is **+0.0083 ± 0.0055**. `pbp32` alone is neutral on moneyline and spread and worse on the
+  total by the same +0.0083 ± 0.0053. That is the NBA's result (N5): the foundation embeddings add nothing, and
+  the player values carry the whole gain.
+- **The swap test passes.** Changing one home starter to the best regular / worst regular / replacement / out
+  moves the predicted margin and win probability the right way in 100% of 2026 games at G, F and C.
+- **Still behind the market:** `prod_pvc_e4` trails the closing moneyline by +0.0054 ± 0.0048 Brier (production:
+  +0.0089 ± 0.0055).
 
 ### Reproducing
 
@@ -309,9 +318,61 @@ Over 2008–2026 (4,483 games) the correlation with the margin is 0.41. The home
   top-ranked G, F or C replaced by the group's best / worst regular (at least 800 minutes on court in the window),
   by a replacement-level player, or ruled out.
 
-**Wager performance:** paired Brier difference (negative is better) ± 95% CI half-width. Pending.
+**Wager performance** (run 45066455350 of `wnba-wager-experiment.yml`, artifact `wnba-wager-results`). Paired Brier
+difference vs `prod_e4` (negative is better) ± 95% CI half-width:
 
-**Swap test:** pending.
+| config (4 seeds) | n | Brier (moneyline) | Δ moneyline | Δ spread | Δ total | margin RMSE |
+|---|---|---|---|---|---|---|
+| prod_e4 (baseline) | 1,420 | 0.2096 | | | | 12.62 |
+| pbp32_e4 | 1,420 | 0.2106 | +0.0009 ± 0.0017 | +0.0000 ± 0.0020 | **+0.0083 ± 0.0053 (fails)** | 12.67 |
+| pbp32_pvc_e4 | 1,420 | 0.2069 | −0.0027 ± 0.0024 | −0.0038 ± 0.0028 | **+0.0083 ± 0.0055 (fails)** | 12.48 |
+| **prod_pvc_e4** | 1,420 | **0.2062** | **−0.0035 ± 0.0022** | **−0.0042 ± 0.0024** | +0.0004 ± 0.0017 | **12.45** |
+| Vegas | 1,423 | 0.2008 | | | | 12.25 |
+
+Δ Brier by season, moneyline:
+
+| season | pbp32_e4 | pbp32_pvc_e4 | prod_pvc_e4 |
+|---|---|---|---|
+| 2022 | +0.0033 | −0.0013 | −0.0030 |
+| 2023 | +0.0024 | −0.0013 | −0.0023 |
+| 2024 | −0.0045 | −0.0060 | −0.0049 |
+| 2025 | +0.0010 | −0.0019 | −0.0026 |
+| 2026 | +0.0021 | −0.0034 | −0.0046 |
+
+- **Against `pbp32_e4`** (the foundation's own baseline), `pbp32_pvc_e4` gains −0.0037 ± 0.0022 moneyline and
+  −0.0038 ± 0.0024 spread, with the total unchanged (−0.0000 ± 0.0014): the values add to the foundation
+  model as much as to production, and the total's loss is the foundation's.
+- **Where the gain is.** `prod_pvc_e4`, on the 478 games whose projected rotation differs from the team's recent
+  ones: moneyline −0.0044 ± 0.0053, spread −0.0072 ± 0.0057; on the 598 steady games −0.0025 ± 0.0022 and
+  −0.0023 ± 0.0025. The split is the NBA's direction, less sharp, with a seventh of the games.
+- **One seed agrees** (`single/`, vs `prod`): `pbp32_pvc` −0.0051 ± 0.0034 moneyline, −0.0056 ± 0.0038 spread,
+  +0.0053 ± 0.0058 total; `pbp32` −0.0013 ± 0.0030 moneyline, +0.0071 ± 0.0062 total (fails).
+- **The noise floor is wider than the NBA's.** With 1,420 games (the NBA's backtest has 6,588), a CI of
+  ±0.0022 is about the size of the gain, so the moneyline pass is narrow; spread and moneyline agree in sign
+  in every season but one.
+
+**Swap test** (2026, `pbp32_pvc_e4` assembled from its four 2026 members, 351 games; `swap/swap_2026.md`). One
+change to the home team's projected rotation per position group:
+
+| group | best regular (Δ margin) | worst regular | replacement | out |
+|---|---|---|---|---|
+| G | +0.96 (Chelsea Gray) | −1.96 (Jacy Sheldon) | −2.46 | −1.24 |
+| F | +1.51 (Breanna Stewart) | −2.35 (Diamond Miller) | −1.91 | −0.88 |
+| C | +1.57 (A'ja Wilson) | −1.01 (Kalani Brown) | −0.86 | −0.12 |
+
+Each is ± 0.08–0.12 (95% CI), and right-way in 100% of the games where the value moved, for the margin and the
+win probability (a regular-to-replacement swing is 1 to 2.5 points of margin, 2–7% of win probability). The
+predicted total moves by at most 0.17 points. A C ruled out barely moves the margin (−0.12): the WNBA's backup
+centers are close to its starters in value (C replacement −1.42 value points against G's −4.06).
+
+**Why the foundation does not help.** As for the NBA: `pbp32` carries team strength and little beyond Elo (W1),
+which the wager model already has from the box-score and market tokens, so the embeddings add noise, most of it
+on the total.
+
+**Next:** (1) promoting `prod_pvc_e4` (`RUNITBACK_WNBA_PLAYER_VALUES` and a values step in Train predictions, as the
+NBA's) is a production change for the owner to decide; (2) the box-score prior for rookies and low-minute
+players; (3) live projected lineups (ESPN `/injuries`, posted starters) for upcoming WNBA games, which
+`runitback.nba.data.lineups.live_lineups` only does for the NBA so far.
 
 **Reproducing:** run `WNBA wager experiment` from the Actions tab, or push a change to
 `experiments/wnba/wager.yaml` or the workflow on a `claude/**` branch. It rebuilds the games with lines and the
