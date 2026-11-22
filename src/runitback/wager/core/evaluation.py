@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -8,8 +9,10 @@ import pandas as pd
 from .metrics import (
     antisymmetrize,
     evaluate,
+    fit_outcome_calibration,
     fit_sigma,
     format_metrics,
+    outcome_probabilities,
     symmetrize,
     win_probability,
 )
@@ -20,21 +23,32 @@ from .splits import SeasonSplit
 logger = logging.getLogger(__name__)
 
 
-def calibrate_and_evaluate(
+class Calibration(NamedTuple):
+    """What :func:`calibrate` fits: the win-probability spread ``sigma``, the
+    draw half-width ``draw_cut`` (``None`` for a two-outcome sport), every
+    split's ``metrics`` and the antisymmetrized predictions ``pred``."""
+
+    sigma: float
+    metrics: dict[str, dict[str, float]]
+    pred: np.ndarray
+    draw_cut: float | None = None
+
+
+def calibrate(
     rows: pd.DataFrame, raw_pred, schema: GameSchema, split: SeasonSplit
-) -> tuple[float, dict[str, dict[str, float]], np.ndarray]:
+) -> Calibration:
     """Shared post-fit step for every model family.
 
     Antisymmetrizes per-row predictions of played games, fits the win
     probability spread ``sigma`` on the validation seasons (falling back to
-    test, then train) and scores every split.
+    test, then train) and scores every split. A sport with draws
+    (``schema.draws``) fits an ordered probit instead (``sigma`` and the draw
+    cut together, by maximum likelihood) and scores every game with its win
+    and draw probabilities.
 
     Args:
         rows: Played rows (both perspectives of each game) that were predicted.
         raw_pred: Raw margin predictions aligned with ``rows``.
-
-    Returns:
-        ``(sigma, metrics_by_split, antisymmetric_predictions)``
     """
     pred = antisymmetrize(rows, raw_pred, schema.game_id)
     y = rows[schema.target].to_numpy(dtype=float)
@@ -49,6 +63,16 @@ def calibrate_and_evaluate(
         raise ValueError("no predictions to calibrate on")
     if source == "train":
         logger.warning("no val/test seasons: win probabilities fit in-sample")
+    if schema.draws:
+        sigma, cut = fit_outcome_calibration(y[masks[source]], pred[masks[source]])
+        metrics = {
+            name: evaluate(
+                y[mask], pred[mask], *outcome_probabilities(pred[mask], sigma, cut)
+            )
+            for name, mask in masks.items()
+            if mask.any()
+        }
+        return Calibration(sigma, metrics, pred, cut)
     sigma = fit_sigma(y[masks[source]], pred[masks[source]])
 
     metrics = {
@@ -56,6 +80,18 @@ def calibrate_and_evaluate(
         for name, mask in masks.items()
         if mask.any()
     }
+    return Calibration(sigma, metrics, pred)
+
+
+def calibrate_and_evaluate(
+    rows: pd.DataFrame, raw_pred, schema: GameSchema, split: SeasonSplit
+) -> tuple[float, dict[str, dict[str, float]], np.ndarray]:
+    """:func:`calibrate` as ``(sigma, metrics_by_split, antisymmetric_predictions)``,
+    for a sport with two outcomes (a sport with draws needs the draw cut
+    too: use :func:`calibrate`)."""
+    if schema.draws:
+        raise ValueError("a sport with draws also has a draw cut: use calibrate()")
+    sigma, metrics, pred, _ = calibrate(rows, raw_pred, schema, split)
     return sigma, metrics, pred
 
 
@@ -102,7 +138,7 @@ def finish_fit(
     Returns:
         ``{"predictor", "metrics", "split"}``
     """
-    sigma, metrics, _ = calibrate_and_evaluate(rows, raw_pred, model.schema, split)
+    sigma, metrics, _, draw_cut = calibrate(rows, raw_pred, model.schema, split)
     total_sigma = None
     if raw_total is not None:
         total_sigma = calibrate_total(rows, raw_total, model.schema, split, metrics)
@@ -110,7 +146,12 @@ def finish_fit(
         print(format_metrics(metrics))
     model.update_state(games)
     predictor = Predictor(
-        model, sigma=sigma, sport=sport, metrics=metrics, total_sigma=total_sigma
+        model,
+        sigma=sigma,
+        sport=sport,
+        metrics=metrics,
+        total_sigma=total_sigma,
+        draw_cut=draw_cut,
     )
     if save_dir is not None:
         save_predictor(predictor, save_dir)

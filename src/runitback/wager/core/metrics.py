@@ -10,6 +10,45 @@ def win_probability(margin, sigma: float) -> np.ndarray:
     return scipy.stats.norm.cdf(np.asarray(margin, dtype=float) / sigma)
 
 
+def outcome_probabilities(margin, sigma: float, cut=None) -> tuple[np.ndarray, np.ndarray]:
+    """``(P(win), P(draw))`` for a predicted margin, as an ordered probit.
+
+    The realized margin's latent value is Normal(margin, sigma); the game is a
+    win above ``cut``, a loss below ``-cut`` and a draw between. With no cut
+    (or 0) there are no draws and P(win) is :func:`win_probability`, exactly.
+    """
+    margin = np.asarray(margin, dtype=float)
+    if not cut:
+        return win_probability(margin, sigma), np.zeros_like(margin)
+    p_win = scipy.stats.norm.cdf((margin - cut) / sigma)
+    p_loss = scipy.stats.norm.cdf((-margin - cut) / sigma)
+    return p_win, np.clip(1 - p_win - p_loss, 0.0, 1.0)
+
+
+def fit_outcome_calibration(y, margin) -> tuple[float, float]:
+    """``(sigma, cut)`` of the ordered probit (:func:`outcome_probabilities`)
+    by maximum likelihood over games with margin ``y`` and prediction
+    ``margin``."""
+    import scipy.optimize
+
+    y, margin = np.asarray(y, dtype=float), np.asarray(margin, dtype=float)
+    actual = outcome_class(y)
+    sigma0 = max(fit_sigma(y, margin), 0.1)
+    rate = float(np.clip(np.mean(actual == 1), 1e-3, 0.9))
+    cut0 = sigma0 * scipy.stats.norm.ppf((1 + rate) / 2)
+
+    def nll(theta):
+        sigma, cut = theta
+        p_win, p_draw = outcome_probabilities(margin, sigma, max(cut, 1e-9))
+        p = np.stack([1 - p_win - p_draw, p_draw, p_win], axis=-1)
+        return -np.log(np.clip(p[np.arange(len(actual)), actual], 1e-9, 1.0)).sum()
+
+    fit = scipy.optimize.minimize(
+        nll, [sigma0, cut0], method="L-BFGS-B", bounds=[(0.05, 50.0), (0.0, 20.0)]
+    )
+    return float(fit.x[0]), float(fit.x[1])
+
+
 def over_probability(total, line, sigma: float) -> np.ndarray:
     """P(combined points > line) assuming the total ~ Normal(total, sigma)."""
     total, line = np.asarray(total, dtype=float), np.asarray(line, dtype=float)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import sklearn.base
 import sklearn.ensemble
 
-from ...core.evaluation import calibrate_and_evaluate
+from ...core.evaluation import calibrate
 from ...core.io import Table, read_table
 from ...core.metrics import format_metrics
 from ...core.predictor import Predictor, prepare_save_dir, save_predictor
@@ -78,7 +78,7 @@ def fit_sklearn(
 
     pipeline = make_pipeline(model, schema, list(X.columns))
     pipeline.fit(X[in_train], y[in_train])
-    sigma, metrics, _ = calibrate_and_evaluate(rows, pipeline.predict(X), schema, split)
+    sigma, metrics, _, draw_cut = calibrate(rows, pipeline.predict(X), schema, split)
     if print_metrics:
         print(format_metrics(metrics))
 
@@ -87,7 +87,9 @@ def fit_sklearn(
 
     matchup_model = SklearnMatchupModel(schema, pipeline, windows)
     matchup_model.update_state(games)
-    predictor = Predictor(matchup_model, sigma=sigma, sport=sport, metrics=metrics)
+    predictor = Predictor(
+        matchup_model, sigma=sigma, sport=sport, metrics=metrics, draw_cut=draw_cut
+    )
     if save_dir is not None:
         save_predictor(predictor, save_dir)
     return {"predictor": predictor, "metrics": metrics, "split": split}

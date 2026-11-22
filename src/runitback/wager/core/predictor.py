@@ -17,7 +17,7 @@ import mlflow.pyfunc
 import numpy as np
 import pandas as pd
 
-from .metrics import over_probability, win_probability
+from .metrics import outcome_probabilities, over_probability, win_probability
 from .schema import GameSchema, mirror
 
 
@@ -70,7 +70,9 @@ class Predictor(mlflow.pyfunc.PythonModel):
 
     ``predict`` takes a DataFrame with the schema's ``team`` and ``opp``
     columns plus any pre-game columns (location, context, categorical) and
-    returns it with ``pred_margin`` and ``win_prob`` appended. A model that
+    returns it with ``pred_margin`` and ``win_prob`` appended (and, for a sport
+    with draws, ``draw_prob``: then ``win_prob`` is the unconditional
+    probability of a win, and there is no ``cover_prob``). A model that
     predicts the total also gets ``pred_total`` and, where the matchup
     carries the market's total line, ``over_prob``; where it carries the
     market's spread, ``cover_prob`` (P(team covers)). Probabilities of
@@ -86,9 +88,13 @@ class Predictor(mlflow.pyfunc.PythonModel):
         sport: str,
         metrics: dict[str, dict[str, float]] | None = None,
         total_sigma: float | None = None,
+        draw_cut: float | None = None,
     ):
         self.model = model
         self.sigma = float(sigma)
+        # a sport with draws: the ordered probit's draw half-width (see
+        # outcome_probabilities); None means no draws, as for old saved models
+        self.draw_cut = None if draw_cut is None else float(draw_cut)
         self.sport = sport
         self.metrics = metrics or {}
         self.total_sigma = None if total_sigma is None else float(total_sigma)
@@ -118,10 +124,16 @@ class Predictor(mlflow.pyfunc.PythonModel):
         if "margin_pmf" in forward:
             return self._from_distributions(matchups, forward, backward)
         margin = (np.asarray(forward["margin"]) - np.asarray(backward["margin"])) / 2
-        out = matchups.assign(
-            pred_margin=margin, win_prob=win_probability(margin, self.sigma)
-        )
-        if schema.market_spread and schema.market_spread in out:
+        if schema.draws:
+            win, draw = outcome_probabilities(
+                margin, self.sigma, getattr(self, "draw_cut", None)
+            )
+            out = matchups.assign(pred_margin=margin, win_prob=win, draw_prob=draw)
+        else:
+            out = matchups.assign(
+                pred_margin=margin, win_prob=win_probability(margin, self.sigma)
+            )
+        if schema.market_spread and schema.market_spread in out and not schema.draws:
             line = out[schema.market_spread].to_numpy(dtype=float)
             out["cover_prob"] = win_probability(margin - line, self.sigma)
         if "total" in forward:
@@ -142,10 +154,18 @@ class Predictor(mlflow.pyfunc.PythonModel):
             raise ValueError("margin values must be symmetric around 0")
         # the opponent's margin distribution, mirrored onto this team's side
         pmf = (forward["margin_pmf"] + backward["margin_pmf"][:, ::-1]) / 2
-        out = matchups.assign(
-            pred_margin=pmf @ values, win_prob=beyond(pmf, values, 0.0)
-        )
-        if schema.market_spread and schema.market_spread in out:
+        if schema.draws:
+            # unconditional: a draw is the mass at 0, not left out of the win probability
+            out = matchups.assign(
+                pred_margin=pmf @ values,
+                win_prob=pmf[:, values > 0].sum(axis=1),
+                draw_prob=pmf[:, values == 0].sum(axis=1),
+            )
+        else:
+            out = matchups.assign(
+                pred_margin=pmf @ values, win_prob=beyond(pmf, values, 0.0)
+            )
+        if schema.market_spread and schema.market_spread in out and not schema.draws:
             line = out[schema.market_spread].to_numpy(dtype=float)
             out["cover_prob"] = beyond(pmf, values, line)
         if "total_pmf" in forward:

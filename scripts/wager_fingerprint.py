@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from runitback.wager import backtest as bt
 from runitback.wager import experiments, staking, tune
-from runitback.wager.core.sport import Sport, register_sport
+from runitback.wager.core.sport import Sport, _registry, register_sport
 from tests.wager.conftest import TOY_SCHEMA, make_games
 
 DECIMALS = 6
@@ -53,15 +53,26 @@ def digest(value) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+SPORT = "toy_fingerprint"
+
+
 def fingerprints() -> dict[str, str]:
+    """The hashes; the sport they are computed on is registered only while they are."""
     register_sport(
-        Sport(name="toy", schema=TOY_SCHEMA, download=lambda output_file=None: None)
+        Sport(name=SPORT, schema=TOY_SCHEMA, download=lambda output_file=None: None)
     )
+    try:
+        return _fingerprints()
+    finally:
+        _registry.pop(SPORT, None)
+
+
+def _fingerprints() -> dict[str, str]:
     games = make_games(persistence=0.7)
     schema = TOY_SCHEMA
     seasons = [2023]
     results = {
-        name: bt.walk_forward(games, "toy", bt.baseline_fitter("toy", name), seasons)
+        name: bt.walk_forward(games, SPORT, bt.baseline_fitter(SPORT, name), seasons)
         for name in ("home", "point_diff", "elo")
     }
     out = {f"walk_forward/{name}": digest(frame) for name, frame in results.items()}
@@ -69,10 +80,10 @@ def fingerprints() -> dict[str, str]:
         out[f"summarize/{name}"] = digest(bt.summarize(frame, schema))
     table, per_game = bt.compare(results, schema)
     out["compare/table"], out["compare/games"] = digest(table), digest(per_game)
-    out["ablation_table"] = digest(experiments.ablation_table(results, "toy", "home"))
-    out["season_table"] = digest(experiments.season_table(results, "toy", "home"))
+    out["ablation_table"] = digest(experiments.ablation_table(results, SPORT, "home"))
+    out["season_table"] = digest(experiments.season_table(results, SPORT, "home"))
     out["tune/season_brier"] = digest(
-        {name: tune.season_brier(frame, "toy") for name, frame in results.items()}
+        {name: tune.season_brier(frame, SPORT) for name, frame in results.items()}
     )
     elo = results["elo"]
     for market in staking.MARKETS:

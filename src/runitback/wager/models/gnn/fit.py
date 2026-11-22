@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import lightning.pytorch as pl
 
-from ...core.evaluation import calibrate_and_evaluate, calibrate_total
+from ...core.evaluation import calibrate, calibrate_total
 from ...core.io import Table, read_table
 from ...core.metrics import format_metrics
 from ...core.predictor import Predictor, prepare_save_dir, save_predictor
@@ -143,7 +143,7 @@ def fit_gnn(
     best = best_model(trainer, model)
     rows, raw = data.predict_targets(best)
     raw = raw.reshape(len(rows), -1)
-    sigma, metrics, _ = calibrate_and_evaluate(rows, raw[:, 0], schema, split)
+    sigma, metrics, _, draw_cut = calibrate(rows, raw[:, 0], schema, split)
     total_sigma = None
     if schema.total and schema.total in extra:
         total = raw[:, 1 + extra.index(schema.total)]
@@ -163,6 +163,7 @@ def fit_gnn(
         sport=sport,
         metrics=metrics,
         total_sigma=total_sigma,
+        draw_cut=draw_cut,
     )
     if save_dir is not None:
         save_predictor(predictor, save_dir)
