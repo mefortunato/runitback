@@ -839,6 +839,20 @@ runitback wnba foundation --season 2026        # → foundation/wnba/fold2026/{m
 4,972 franchise games pass the 90% bar. `.github/workflows/wnba-foundation.yml` rebuilds the data and trains one
 fold per test season (2022–2027) in matrix jobs, each on every season before it.
 
+**Player values and projected lineups (W2).** The NBA's pipelines (N1–N3) with the WNBA's settings: on-court fives
+from the box-score starters and substitutions (both sides have five on court for 99.87% of 1.93M events,
+2006–2026), the box-score roster minus injury did-not-play reasons as the projected rotation (200 team minutes),
+and weekly possession-level adjusted plus-minus (`runitback.nba.player_values.WNBA_VALUES`: ridge penalty 2,000,
+75 minutes for a player's own coefficient, tuned on 2017–2021). Teams are keyed as `runitback.wager.wnba` keys
+them, so `pv.parquet` joins the wager model's rows directly. The wager experiments (`experiments/wnba/wager.yaml`,
+`.github/workflows/wnba-wager-experiment.yml`) are written up in `experiments/wnba/README.md`.
+
+```bash
+runitback wnba players --start 2006            # downloads the player box scores; → on_court, player_games, players
+runitback wnba lineups                         # → data/wnba/processed/projected_lineups.parquet
+runitback wnba player-values --lineups data/wnba/processed/projected_lineups.parquet   # → player_values/wnba/pv.parquet
+```
+
 ## Quick start (pre-trained model)
 
 You need Python 3.10+ and Node 18+. This takes about 5 minutes and needs no data download or training.

@@ -1,12 +1,13 @@
 # Everything the WNBA foundation folds (W1) build on, rebuilt from the public sources in the calling run
 # (nothing comes from the repository or from an earlier run), as nba-experiment-inputs.yml does for the NBA.
-# Called by wnba-foundation.yml (and, in W2, by the WNBA wager experiments):
+# Called by wnba-foundation.yml and wnba-wager-experiment.yml (W2):
 #
 #   data ─► foundation (one fold per season, each in its own job)
 #
 # Artifacts, all in the calling run:
 #   wnba-data       data/wnba/processed: games, plays (engine events with team fouls), pre-game ratings and
 #                   replay.json (the engine's replay agreement against the real games)
+#   wnba-games      with `lines`: data/wnba/games.csv, the wager model's games with lines (runitback.wager.wnba)
 #   wnba-fold<S>    the generator that never sees season S (runitback wnba foundation): model.pt,
 #                   (wnba-e<E>-fold<S> when trained for E epochs instead of the recipe's; `epochs` input)
 #                   pca_32.npz and pbp_32.parquet (pooled per possession, PCA fit on games before S), plus
@@ -36,6 +37,10 @@ on:
         description: "Epoch counts to train every fold with (JSON list; 0 = the recipe's, runitback.nba.foundation.TRAIN)"
         type: string
         default: "[0]"
+      lines:
+        description: "Also build the wager model's games table with lines (data/wnba/games.csv)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -60,12 +65,21 @@ jobs:
       # it reproduces (>= 90%)
       - name: Play-by-play, engine events and the replay check
         run: |
+          if [ "${{ inputs.lines }}" = true ]; then
+            runitback-wager wnba download --output_file data/wnba/raw.csv & games=$!
+          fi
           runitback wnba download --start ${{ inputs.start-season }} --end ${{ inputs.end-season }}
           runitback wnba preprocess --start ${{ inputs.start-season }} --end ${{ inputs.end-season }} \
             --jobs $(nproc) | tee replay.log
           python -c "import json; r = json.load(open('data/wnba/processed/replay.json')); \
             print('engine replay agreement', r['agreement'], 'over', r['transitions'], 'transitions in', \
             r['games'], 'games'); [print(s, v) for s, v in r['per_season'].items()]"
+          if [ "${{ inputs.lines }}" = true ]; then
+            wait $games
+            runitback-wager wnba process --games data/wnba/raw.csv --output_file data/wnba/games.csv
+            python -c "import pandas as pd; g = pd.read_csv('data/wnba/games.csv', low_memory=False); \
+              print(g.groupby('season').size().to_string())"
+          fi
           ls -la data/wnba/processed
       - uses: actions/upload-artifact@v4
         with:
@@ -77,6 +91,9 @@ jobs:
             data/wnba/processed/replay.json
           if-no-files-found: error
           retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.lines }}
+        with: { name: wnba-games, path: data/wnba/games.csv, if-no-files-found: error, retention-days: 7 }
 
   foundation:
     needs: data

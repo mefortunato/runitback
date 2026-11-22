@@ -142,7 +142,179 @@ So the WNBA folds train 12 epochs (`runitback.nba.foundation.WNBA_EPOCHS`): a be
 time, and embeddings at least as good. `runitback wnba foundation --epochs N` and the workflows' `epochs` input
 (a list, 0 = the recipe) train other counts.
 
-**Not done / next:** W2 (`docs/multisport/PLAN.md`): WNBA player values and projected lineups, and the
-`prod` / `pbp32` / `pbp32_pvc` arms (4 seeds), built with the per-member, per-season jobs of
-`wager-sport.yml`. W2 joins `pbp_32.parquet` on `(game_id, team)`: the teams are already keyed as
-`runitback.wager.wnba` keys them.
+**Next:** W2, below: WNBA player values and projected lineups, and the `prod` / `pbp32` / `pbp32_pvc` arms.
+
+## Player values, projected lineups and the wager model on them (W2)
+
+Work package W2 (`docs/multisport/PLAN.md`): layers B and C of the NFL player model for the WNBA, with the
+NBA's pipelines (N1 on-court fives, N3 projected rotations, N2 possession-level values) and the WNBA's
+settings. The wager model is then tested on the foundation (`pbp32`, W1) and the player values (`pvc`), as the
+NBA's N5.
+
+**Short answer**
+- **The values look right, and they carry most of what the market knows.** The projected rotations' value
+  difference alone, with no team history, correlates **0.88 with the market spread** and **0.45 with the
+  final margin** (the market: 0.48) over 2018–2026. One point of value is worth **1.03 points of margin**. That
+  is the NBA's pattern (0.83 / 0.40 / 0.99), a little stronger. The top of the latest fit: Burton, A'ja Wilson,
+  Stewart, Young, Fiebich, Reese.
+- **Less shrinkage than the NBA's penalty, which is still stronger shrinkage.** On 2017–2021 (the seasons
+  before the backtest) the best ridge penalty is **2,000** (NBA: 5,000) with **75 minutes** for a player's own
+  coefficient. The penalty works on summed squares, and a WNBA season has about 37,000 possessions (a seventh of
+  the NBA's), so per possession it shrinks about **2.8× harder** than the NBA's. The plan's "stronger shrinkage"
+  holds in that sense; a larger penalty (5,000 to 80,000) predicted the next season's possessions worse.
+- **The box-score prior is not done** (optional in the plan): rookies and players under 75 minutes sit at
+  replacement level, as in the NBA.
+- **Wager performance and the swap test: pending the first run of `WNBA wager experiment`**
+  (`.github/workflows/wnba-wager-experiment.yml`). The tables below are filled from its `wnba-wager-results`
+  artifact.
+
+### Reproducing
+
+Only the code and this write-up are in git. Everything is rebuilt from the public SportsDataverse releases
+(ESPN WNBA play-by-play and player box scores, 2006 on):
+
+```bash
+runitback wnba download --start 2006                 # play-by-play (W1)
+runitback wnba players --start 2006                  # player box scores; on_court / player_games / players
+runitback wnba lineups                               # projected_lineups.parquet
+runitback wnba player-values --lineups data/wnba/processed/projected_lineups.parquet   # player_values/wnba/
+python scripts/nba_player_values.py --league wnba tune --seasons 2017 2018 2019 2020 2021
+python scripts/nba_player_values.py --league wnba report
+```
+
+`players` takes about a minute and `player-values` (373 weekly fits, 2008–2026) about a minute on 4 cores.
+
+### Setup
+
+What is the NBA's, and what differs (`runitback.nba.data.players.WNBA_PLAYERS`,
+`runitback.nba.player_values.WNBA_VALUES`):
+
+- **On-court fives** (N1's reconstruction, unchanged): box-score starters, both ids of every substitution,
+  period starts inferred from who appears first, look-ahead repairs of dropped substitutions. The WNBA feed also
+  has lowercase `ejection` rows and the 20-second / reset timeouts, which are not evidence that a player is on the
+  floor.
+- **Teams are keyed by ESPN team id**, as the franchise's latest abbreviation (`WNBA_TEAM_IDS`), which is how
+  `runitback.wager.wnba` keys them: `pv.parquet` joins the wager model's rows on `(game_id, team)` with no
+  re-keying (100% of the games from 2009 on; 97–99% in 2008, 2010, 2012, 2016 and 2018, where single games have no
+  player box score). All-Star and exhibition teams have no key, so their games are dropped.
+- **Projected rotation** (N3's rule): the game's box-score roster minus players with an injury did-not-play
+  reason, ranked by recency-weighted minutes over their last 10 available games, scaled to **200 team minutes**
+  (40-minute games; no player over 38). **The documented leak is the NBA's:** there is no history of WNBA injury
+  reports, so a player ruled out after the line was set counts as known at tip-off. ESPN's did-not-play reasons
+  start in 2012–2013, so earlier seasons have no players ruled out (the backtest's are 2022–2026).
+- **Possessions and the fit** (N2's, unchanged): points per possession on the five offensive and five defensive
+  players, controls for home offense, how the possession started and season; seasons weighted 0.7 per season back
+  over four seasons plus the current one; points clipped at 4. Groups G / F / C from the ESPN position (202
+  players with no position, all retired by 2011, go to F). The usage per rotation slot is the previous season's.
+- **The WNBA's settings:** penalty 2,000 (NBA 5,000), own coefficient from 75 minutes on court in the window
+  (NBA 250), 2.0 possessions per side per minute (NBA 100/48). `pv.parquet` rows start in 2008.
+- **Leak-free and weekly**, as the NBA's: every Monday is fit on the possessions before it, and each game uses its
+  week's fit.
+
+### Checks
+
+**On-court fives** (2006–2026, 1.93M events): both sides have exactly five on the floor for **99.87%** of events
+(every season ≥ 99.28%; the lowest are 2018–2019, whose substitutions are sometimes logged in halves, as in the
+NBA). Reconstructed minutes are within 1 of the box score for 92.2% of player-games (MAE 0.52), and the on-court
+plus-minus matches the box score's exactly for 82.1%.
+
+**Possessions** (790,000): 76.5–81.9 per team-game and 0.93–1.08 points each, rising over the years as the
+league's offense did. Summed per team-game, possession points match the box score exactly in 71.9% of team-games
+and within 3 points in 98.7% (MAE 0.45).
+
+**Projected rotations vs what happened** (`runitback.nba.data.lineups.evaluate`), mean of 2022–2026:
+
+| | projection | the previous game as played |
+|---|---|---|
+| starters right | 91.8% | 91.6% |
+| all five starters right | 64.3% | 68.2% |
+| minutes MAE (per player-game) | **4.53** | 5.73 |
+| regulars who missed the game and were not counted on | **84.7%** | — |
+
+Unlike the NBA's, the projection's starters are no better than the previous game's (the NBA's beat them every
+season). Its minutes are, by 1.2 per player, and it rules out 85% of the regulars who then missed the game.
+
+**Tuning** (fit on everything before a season, predict that season's possessions from the ten players' values;
+out-of-sample squared-error reduction per possession vs a constant, × 1e-4; window 4, decay 0.7):
+
+| penalty | own coefficient from | 2017 | 2018 | 2019 | 2020 | 2021 | mean |
+|---|---|---|---|---|---|---|---|
+| 1,000 | 75 min | 32.2 | 11.5 | 17.2 | 41.7 | 18.4 | 24.2 |
+| **2,000** | **75 min** | **33.4** | **19.3** | **22.3** | **40.0** | **21.9** | **27.4** |
+| 2,000 | 150 min | 33.2 | 10.1 | 20.9 | 36.5 | 20.7 | 24.3 |
+| 2,000 | 400 min | 35.6 | 10.1 | 21.2 | 38.4 | 22.7 | 25.6 |
+| 5,000 | 75 min | 26.1 | 17.8 | 19.4 | 28.7 | 18.4 | 22.1 |
+| 10,000 | 75 min | 19.0 | 13.5 | 14.6 | 19.7 | 13.5 | 16.0 |
+| 40,000 | 150 min | 8.0 | 5.5 | 6.3 | 8.1 | 5.3 | 6.7 |
+
+Also tried, at penalty 1,000–2,000: windows of 2, 3, 5 and 6 seasons (within 0.9 of 4), decay 0.5 and 0.85
+(both worse), 50 minutes (27.4, as 75). The tuning seasons are before the backtest on purpose, so the backtest
+did not pick the settings. As for the NBA, a single possession is mostly noise (the prediction correlates
+0.03–0.06 with its points), so the comparison is between settings.
+
+**Top and bottom of the latest fit** (before 2027; points per game over replacement as a starter, who plays
+67 possessions a side):
+
+| player | group | offense | defense | total |
+|---|---|---|---|---|
+| Veronica Burton | G | +4.1 | +3.1 | +7.2 |
+| A'ja Wilson | C | +4.6 | +2.5 | +7.1 |
+| Breanna Stewart | F | +4.8 | +1.4 | +6.2 |
+| Jackie Young | G | +4.7 | +1.3 | +5.9 |
+| Leonie Fiebich | F | +2.8 | +3.0 | +5.7 |
+| Angel Reese | F | +2.9 | +2.5 | +5.4 |
+| Kayla McBride | G | +4.5 | +0.9 | +5.4 |
+| Chelsea Gray | G | +4.4 | +0.9 | +5.3 |
+| Alyssa Thomas | F | +3.4 | +1.9 | +5.3 |
+| … Kia Nurse | G | +1.1 | −2.0 | −0.9 |
+| Dorka Juhasz (last) | F | −0.3 | −0.7 | −0.9 |
+
+**Lineup value vs the game** (each game's projected-rotation value difference, home − away, summed over the six
+level columns; the market spread is the wager table's closing line, from 2018):
+
+| season | games | corr with margin | corr with market spread | market vs margin | margin pts per value pt |
+|---|---|---|---|---|---|
+| 2018 | 220 | 0.390 | 0.905 | 0.413 | 0.93 |
+| 2019 | 220 | 0.344 | 0.820 | 0.382 | 0.89 |
+| 2020 | 147 | 0.591 | 0.902 | 0.556 | 1.22 |
+| 2021 | 209 | 0.426 | 0.846 | 0.470 | 1.09 |
+| 2022 | 240 | 0.482 | 0.845 | 0.499 | 1.21 |
+| 2023 | 261 | 0.485 | 0.925 | 0.526 | 1.25 |
+| 2024 | 262 | 0.504 | 0.904 | 0.540 | 1.04 |
+| 2025 | 310 | 0.439 | 0.902 | 0.467 | 0.85 |
+| 2026 | 352 | 0.469 | 0.911 | 0.493 | 1.05 |
+| **2018–2026** | **2,221** | **0.454** | **0.884** | **0.484** | **1.03** |
+
+Over 2008–2026 (4,483 games) the correlation with the margin is 0.41. The home edge is not in the difference
+(+0.01 points on average; the margin's is +2.5).
+
+### The wager model on the foundation and the player values
+
+**Setup** (as the NBA's N5):
+
+- **Walk-forward, 2022–2026** (5 folds, 240–352 games each). For each test season S the wager model, the
+  foundation fold and its PCA see only games before S; the player values are refit weekly on possessions before
+  each game's Monday.
+- **Arms** (`experiments/wnba/wager.yaml`): `prod` (the S4a box-score production model, the baseline), `pbp32`
+  (+ fold S's frozen 32-dim game embeddings, 12-epoch folds from W1), `pbp32_pvc` (+ each position group's change
+  in projected-rotation value vs the team's last 10 rotations, through sign-constrained additive terms on margin
+  and total), `prod_pvc` (the values without the foundation: the NBA's promoted arm), and `_e4` versions (4 seeds
+  averaged). Promotion compares `_e4` with `_e4`.
+- **Ensembles in parallel jobs.** Each `_e4` cell trains its four members in four jobs
+  (`scripts/wager_arm.py --member i`, `runitback.wager.web.split.arm_member`) and a fifth assembles them and
+  replays the season (`--members`). That gives the same CSV as training the four in one job
+  (`tests/wager/test_split.py`), as Train predictions' per-member jobs do (`wager-sport.yml`).
+- **Swap test** (`scripts/nba_lineup_swap.py --sport wnba`): `pbp32_pvc_e4` fit on the seasons before 2026 (its
+  2026 members), then every 2026 game re-predicted with one change to the home team's projected rotation: the
+  top-ranked G, F or C replaced by the group's best / worst regular (at least 800 minutes on court in the window),
+  by a replacement-level player, or ruled out.
+
+**Wager performance:** paired Brier difference (negative is better) ± 95% CI half-width. Pending.
+
+**Swap test:** pending.
+
+**Reproducing:** run `WNBA wager experiment` from the Actions tab, or push a change to
+`experiments/wnba/wager.yaml` or the workflow on a `claude/**` branch. It rebuilds the games with lines and the
+foundation folds (`wnba-experiment-inputs.yml` with `lines: true`), and in its `values` job the players, lineups
+and weekly values. One cell locally: `python scripts/wager_arm.py pbp32_pvc_e4 2025 --sport wnba --experiment
+experiments/wnba/wager.yaml` (with `runs/foundation/fold2025/` and `player_values/wnba/pv.parquet` in place).

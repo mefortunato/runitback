@@ -1,0 +1,286 @@
+# W2 (docs/multisport/PLAN.md): the WNBA wager model on the foundation (pbp32, W1) and the player values
+# (pvc), walk-forward over 2022-2026 (experiments/wnba/wager.yaml), as the NBA's N5
+# (nba-wager-experiment.yml), with each 4-seed ensemble's members trained in jobs of their own (as Train
+# predictions does, wager-sport.yml; runitback.wager.web.split.arm_member / arm_season):
+#
+#   inputs (games with lines, foundation folds) ─┐
+#   values (players, projected lineups, weekly values) ─┴─► arms (1 seed: config × season) ───────────┐
+#                                                       └─► members (config × season × member) ─► assemble ─┴─► report
+#                                                                                    └─► swap (2026)
+#
+# Every input is rebuilt from the public sources in the run (wnba-experiment-inputs.yml for the games and
+# folds; the values job downloads the ESPN play-by-play and player box scores, builds the on-court fives,
+# the projected lineups and the weekly values on them). A member job trains one seed of one cell and keeps
+# its best checkpoint; assemble builds the cell's ensemble from them and replays the season (the same CSV as
+# the one-job cell, tests/wager/test_split.py). The swap test assembles the 2026 pbp32_pvc_e4 members. The
+# report scores every arm against prod (1 seed) and the 4-seed ensembles against each other, on all games
+# and on the games where the projected rotation moved, and adds the swap test; it is uploaded as the
+# wnba-wager-results artifact. Nothing is committed.
+#
+# Runs when this file or experiments/wnba/wager.yaml changes on a claude/ branch, or by hand.
+name: WNBA wager experiment
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - .github/workflows/wnba-wager-experiment.yml
+      - experiments/wnba/wager.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wnba-wager-experiment-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  inputs:
+    uses: ./.github/workflows/wnba-experiment-inputs.yml
+    with:
+      seasons: "[2022, 2023, 2024, 2025, 2026]"
+      lines: true
+
+  values:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - name: Play-by-play and player box scores, on-court fives, projected lineups, weekly values
+        run: |
+          runitback wnba download --start 2006 --end 2027
+          runitback wnba players --start 2006 --end 2027
+          runitback wnba lineups
+          runitback wnba player-values --start 2006 --end 2027 --jobs $(nproc) \
+            --lineups data/wnba/processed/projected_lineups.parquet --out player_values/wnba
+          python - <<'PY'
+          import pandas as pd
+          pv = pd.read_parquet("player_values/wnba/pv.parquet")
+          pl = pd.read_parquet("data/wnba/processed/projected_lineups.parquet")
+          print(len(pv), "team-games;", pv.game_id.nunique(), "games;", pl.source.value_counts().to_dict())
+          print(pv.describe().T[["mean", "std", "min", "max"]].round(2).to_string())
+          PY
+          python scripts/nba_player_values.py --league wnba report --top 20 | tee -a "$GITHUB_STEP_SUMMARY"
+          mkdir -p swapdata
+          cp data/wnba/processed/{possessions,player_games,players,projected_lineups}.parquet swapdata/
+      - uses: actions/upload-artifact@v4
+        with: { name: wnba-playervalues, path: player_values/wnba, retention-days: 30 }
+      - uses: actions/upload-artifact@v4
+        with: { name: wnba-swapdata, path: swapdata, retention-days: 7 }
+
+  # the single-seed arms: one job per (config, season)
+  arms:
+    needs: [inputs, values]
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [prod, pbp32, pbp32_pvc]
+        season: [2022, 2023, 2024, 2025, 2026]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: wnba-games, path: data/wnba }
+      - uses: actions/download-artifact@v4
+        with: { name: "wnba-fold${{ matrix.season }}", path: "runs/foundation/fold${{ matrix.season }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: wnba-playervalues, path: player_values/wnba }
+      - name: Backtest ${{ matrix.config }} on ${{ matrix.season }}
+        run: |
+          python scripts/wager_arm.py ${{ matrix.config }} ${{ matrix.season }} --sport wnba \
+            --experiment experiments/wnba/wager.yaml --output-dir runs/wager --threads $(nproc)
+          mkdir -p out/${{ matrix.config }}
+          cp runs/wager/${{ matrix.config }}/${{ matrix.season }}.csv out/${{ matrix.config }}/
+      - uses: actions/upload-artifact@v4
+        with: { name: "arm-${{ matrix.config }}-${{ matrix.season }}", path: out, retention-days: 30 }
+
+  # the 4-seed ensembles: one job per (config, season, member), each training one seed of the cell's fit
+  members:
+    needs: [inputs, values]
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [pbp32_pvc_e4, pbp32_e4, prod_e4, prod_pvc_e4]
+        season: [2022, 2023, 2024, 2025, 2026]
+        member: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: wnba-games, path: data/wnba }
+      - uses: actions/download-artifact@v4
+        with: { name: "wnba-fold${{ matrix.season }}", path: "runs/foundation/fold${{ matrix.season }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: wnba-playervalues, path: player_values/wnba }
+      - name: Train member ${{ matrix.member }} of ${{ matrix.config }} for ${{ matrix.season }}
+        run: |
+          n=$(python scripts/wager_arm.py ${{ matrix.config }} ${{ matrix.season }} --sport wnba \
+            --experiment experiments/wnba/wager.yaml --size | tail -1)
+          [ "$n" = 4 ] || { echo "::error::${{ matrix.config }} has $n members, the matrix trains 4"; exit 1; }
+          python scripts/wager_arm.py ${{ matrix.config }} ${{ matrix.season }} --sport wnba \
+            --experiment experiments/wnba/wager.yaml --member ${{ matrix.member }} --members-dir members \
+            --threads $(nproc)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: "members-${{ matrix.config }}-${{ matrix.season }}-${{ matrix.member }}"
+          path: members/member${{ matrix.member }}.ckpt
+          if-no-files-found: error
+          retention-days: 7
+
+  assemble:
+    needs: [inputs, values, members]
+    if: ${{ !cancelled() && needs.values.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [pbp32_pvc_e4, pbp32_e4, prod_e4, prod_pvc_e4]
+        season: [2022, 2023, 2024, 2025, 2026]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: wnba-games, path: data/wnba }
+      - uses: actions/download-artifact@v4
+        with: { name: "wnba-fold${{ matrix.season }}", path: "runs/foundation/fold${{ matrix.season }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: wnba-playervalues, path: player_values/wnba }
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "members-${{ matrix.config }}-${{ matrix.season }}-*"
+          path: members
+          merge-multiple: true
+      - name: Assemble ${{ matrix.config }} for ${{ matrix.season }} and backtest the season
+        run: |
+          ls -la members
+          python scripts/wager_arm.py ${{ matrix.config }} ${{ matrix.season }} --sport wnba \
+            --experiment experiments/wnba/wager.yaml --members members --output-dir runs/wager --threads $(nproc)
+          mkdir -p out/${{ matrix.config }}
+          cp runs/wager/${{ matrix.config }}/${{ matrix.season }}.csv out/${{ matrix.config }}/
+      - uses: actions/upload-artifact@v4
+        with: { name: "arm-${{ matrix.config }}-${{ matrix.season }}", path: out, retention-days: 30 }
+
+  swap:
+    needs: [inputs, values, members]
+    if: ${{ !cancelled() && needs.values.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: wnba-games, path: data/wnba }
+      - uses: actions/download-artifact@v4
+        with: { name: wnba-fold2026, path: runs/foundation/fold2026 }
+      - uses: actions/download-artifact@v4
+        with: { name: wnba-playervalues, path: player_values/wnba }
+      - uses: actions/download-artifact@v4
+        with: { name: wnba-swapdata, path: data/wnba/processed }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "members-pbp32_pvc_e4-2026-*", path: members, merge-multiple: true }
+      - name: Swap test (2026, pbp32_pvc_e4 fit on the seasons before)
+        run: |
+          mkdir -p out
+          python scripts/nba_lineup_swap.py --sport wnba --season 2026 --config pbp32_pvc_e4 --members members \
+            --out out/swap_2026.csv --threads $(nproc)
+          cat out/swap_2026.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: wnba-swap, path: out, retention-days: 30 }
+
+  report:
+    needs: [inputs, values, arms, assemble, swap]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: wnba-games, path: data/wnba }
+      - uses: actions/download-artifact@v4
+        with: { name: wnba-playervalues, path: player_values/wnba }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "arm-*", path: experiments/wnba/wager, merge-multiple: true }
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: { name: wnba-swap, path: experiments/wnba/wager/swap }
+      - name: Score
+        run: |
+          R=experiments/wnba/wager
+          S="2022, 2023, 2024, 2025, 2026"
+          ls $R
+          # single seeds against prod
+          O=$R/single; mkdir -p $O
+          for c in prod pbp32 pbp32_pvc; do [ -d $R/$c ] && cp -r $R/$c $O/; done
+          # the 4-seed ensembles against each other
+          E=$R/e4; mkdir -p $E
+          for c in prod_e4 pbp32_e4 pbp32_pvc_e4 prod_pvc_e4; do [ -d $R/$c ] && cp -r $R/$c $E/; done
+          python - <<PY
+          import pathlib
+          from runitback.wager.experiments import ablate
+          seasons = [$S]
+          for d, base in (("$O", "prod"), ("$E", "prod_e4")):
+              have = {p.name: {} for p in sorted(pathlib.Path(d).iterdir())
+                      if p.is_dir() and all((p / f"{s}.csv").exists() for s in seasons)}
+              print(d, "complete:", list(have))
+              if base in have:
+                  ablate("data/wnba/games.csv", "wnba", {base: {}} | have, seasons, d, base, 1, 1)
+          PY
+          python scripts/foundation_report.py $O --baseline prod --out $O/report.md
+          python scripts/foundation_report.py $E --baseline prod_e4 --out $E/report.md
+          python scripts/foundation_report.py $E --baseline pbp32_e4 --out $E/report_vs_pbp32.md
+          python scripts/lineup_report.py $E --baseline prod_e4 --pv player_values/wnba/pv.parquet --sport wnba \
+            --out $E/subsets.md
+          python scripts/lineup_report.py $E --baseline pbp32_e4 --pv player_values/wnba/pv.parquet --sport wnba \
+            --out $E/subsets_vs_pbp32.md
+          {
+            echo "## WNBA wager experiment"
+            echo "### 1 seed vs prod"; cat $O/ablation.md; echo; cat $O/report.md; echo
+            echo "### 4 seeds vs prod_e4"; cat $E/ablation.md; echo; cat $E/report.md; echo
+            echo "### 4 seeds vs pbp32_e4"; cat $E/report_vs_pbp32.md; echo
+            echo "### Rotation-moved subsets (vs prod_e4)"; cat $E/subsets.md; echo
+            echo "### Swap test"; cat $R/swap/swap_2026.md 2>/dev/null || echo "(no swap results)"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: { name: wnba-wager-results, path: experiments/wnba/wager, retention-days: 90 }

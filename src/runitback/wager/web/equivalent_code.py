@@ -15,6 +15,13 @@ change leaves that sport's walk-forward results identical.
 from __future__ import annotations
 
 EQUIVALENT_CODE: dict[str, tuple[str, ...]] = {
+    # W2: the WNBA's player-value lineup layout on its Sport (read only by a model with lineup
+    # features) and the RUNITBACK_WNBA_PLAYER_VALUES switch, off unless set: the production WNBA
+    # model trains and predicts as before. The WNBA code before W2.
+    # wnba
+    "fdf3a5be37bfa86633cf0416146905ea4264eea00a92f1a8ffc1db5770ae6fdd": (
+        "08fc830245c03bdd9d5af9c7e9ebbb2724516675ef5179503db2d9893d53a16d",
+    ),
     # Weekly power rankings for college basketball (``ranking_every``),
     # and the main model backtesting the season it validated on (under keys
     # of its own): every other sport's seasons from a backtest model are

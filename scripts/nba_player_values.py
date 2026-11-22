@@ -1,10 +1,12 @@
-"""NBA player values (work package N2): tuning and sanity checks for `runitback.nba.player_values`.
+"""NBA and WNBA player values (work packages N2, W2): tuning and sanity checks for
+`runitback.nba.player_values`.
 
     python scripts/nba_player_values.py tune      # ridge penalty / window on the next season's possessions
     python scripts/nba_player_values.py report    # possession checks, top players, pv vs margin and spread
+    python scripts/nba_player_values.py --league wnba tune --seasons 2017 2018 2019 2021
 
-Reads data/nba/processed (`runitback nba players`, then `runitback nba player-values` builds
-possessions.parquet) and data/nba/raw. Prints markdown; writes nothing to the repository.
+Reads data/<league>/processed (`runitback <league> players`, then `runitback <league> player-values`
+builds possessions.parquet) and data/<league>/raw. Prints markdown; writes nothing to the repository.
 """
 from __future__ import annotations
 
@@ -19,12 +21,13 @@ import pandas as pd
 from runitback.nba import player_values as pv
 
 DATA = Path(os.environ.get("RUNITBACK_NBA_DATA", "data/nba"))
+SETTINGS = pv.NBA_VALUES
 
 
 def load():
     proc = DATA / "processed"
     poss, pg = pv.franchise_only(pd.read_parquet(proc / "possessions.parquet"),
-                                 pd.read_parquet(proc / "player_games.parquet"))
+                                 pd.read_parquet(proc / "player_games.parquet"), SETTINGS.teams)
     return poss, pg, pd.read_parquet(proc / "players.parquet")
 
 
@@ -37,8 +40,7 @@ def tune(args):
     for lam in args.lam:
         for window in args.window:
             for mm in args.min_minutes:
-                cfg = pv.apm_config(lam=lam, window=window, decay=args.decay,
-                                    min_poss=int(round(mm * pv.POSS_PER_MIN)))
+                cfg = SETTINGS.config(lam=lam, window=window, decay=args.decay, min_minutes=mm)
                 res = [pv.holdout_score(ev, s, cfg) for s in args.seasons]
                 cells = " | ".join(f"{1e4 * r['mse_gain']:.1f} / {r['corr']:.4f}" for r in res)
                 mean = np.mean([r["mse_gain"] for r in res])
@@ -61,7 +63,8 @@ def report(args):
     print(f"\nPossession points vs box-score team points: exact {100 * (err == 0).mean():.1f}%, "
           f"within 3 {100 * (err <= 3).mean():.1f}%, MAE {err.mean():.2f} ({len(j)} team-games)")
 
-    gv = pv.game_table(poss, pg, players, args.first_season, args.jobs)
+    gv = pv.game_table(poss, pg, players, args.first_season or SETTINGS.first_season, args.jobs,
+                       cfg=SETTINGS.config())
     latest = gv.latest.assign(name=lambda d: d.player_id.map(players.set_index("player_id").name))
     starter = gv.slots[max(gv.slots)][0]
     tot = latest.pivot_table(index=["player_id", "name", "group"], columns="side", values="value_poss").fillna(0)
@@ -99,20 +102,29 @@ def report(args):
 
 
 def main():
+    global DATA, SETTINGS
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     ap = argparse.ArgumentParser()
+    ap.add_argument("--league", choices=sorted(pv.VALUE_SETTINGS), default="nba")
     sub = ap.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("tune")
     t.add_argument("--seasons", type=int, nargs="+", default=[2023, 2024, 2025, 2026])
     t.add_argument("--lam", type=float, nargs="+", default=[1000, 3000, 10000, 30000])
-    t.add_argument("--window", type=int, nargs="+", default=[pv.WINDOW])
-    t.add_argument("--min-minutes", type=int, nargs="+", default=[pv.MIN_MINUTES])
-    t.add_argument("--decay", type=float, default=pv.DECAY)
+    t.add_argument("--window", type=int, nargs="+", default=None)
+    t.add_argument("--min-minutes", type=int, nargs="+", default=None)
+    t.add_argument("--decay", type=float, default=None)
     r = sub.add_parser("report")
-    r.add_argument("--first-season", type=int, default=2016)
+    r.add_argument("--first-season", type=int, default=0, help="default: the league's")
     r.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     r.add_argument("--top", type=int, default=15)
     args = ap.parse_args()
+    SETTINGS = pv.VALUE_SETTINGS[args.league]
+    if args.league != "nba":
+        DATA = Path(os.environ.get(f"RUNITBACK_{args.league.upper()}_DATA", f"data/{args.league}"))
+    if args.cmd == "tune":
+        args.window = args.window or [SETTINGS.window]
+        args.min_minutes = args.min_minutes or [SETTINGS.min_minutes]
+        args.decay = SETTINGS.decay if args.decay is None else args.decay
     {"tune": tune, "report": report}[args.cmd](args)
 
 

@@ -42,6 +42,7 @@ Outputs in the processed directory:
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -58,7 +59,8 @@ PBP_COLUMNS = ["game_id", "id", "game_play_number", "sequence_number", "period_n
                "start_quarter_seconds_remaining", "type_text", "text", "team_id", "athlete_id_1", "athlete_id_2",
                "athlete_id_3", "home_team_id", "away_team_id", "home_score", "away_score"]
 BOX_COLUMNS = ["game_id", "season", "season_type", "game_date", "athlete_id", "athlete_display_name",
-               "athlete_short_name", "team_id", "team_abbreviation", "opponent_team_abbreviation", "home_away",
+               "athlete_short_name", "team_id", "team_abbreviation", "opponent_team_id",
+               "opponent_team_abbreviation", "home_away",
                "minutes", "plus_minus", "points", "starter", "did_not_play", "reason", "ejected",
                "athlete_position_abbreviation"]
 # rows whose players need not be on the court
@@ -70,6 +72,51 @@ GROUP = {"G": "G", "PG": "G", "SG": "G", "F": "F", "SF": "F", "PF": "F", "C": "C
 ON_COURT = 5
 HOME, AWAY = 0, 1
 LINEUP_COLS = [f"home_{i}" for i in range(1, 6)] + [f"away_{i}" for i in range(1, 6)]
+
+
+@dataclass(frozen=True)
+class PlayerLeague:
+    """What the player tables (N1), projected lineups (N3) and player values (N2) need to know about a
+    league whose ESPN feeds have the NBA's format: where its player box scores are, how a box-score row's
+    team becomes the team key, which teams are franchises (All-Star and exhibition teams are not) and the
+    minutes of a regulation game. The NBA's (``NBA_PLAYERS``) is every function's default; the WNBA's
+    (``WNBA_PLAYERS``, W2) keys teams by ESPN id as ``runitback.wager.wnba`` does."""
+
+    name: str
+    box_url: str
+    teams: frozenset
+    team_minutes: float     # 5 players x regulation minutes
+    max_minutes: float      # a projected player's cap
+    by_id: dict | None = None   # ESPN team id -> team key (else the abbreviation, canonicalized)
+    not_evidence: frozenset = frozenset()   # more row types (besides NOT_EVIDENCE) that are no evidence
+
+    def team_key(self, team_id, abbreviation) -> str | None:
+        """A box-score row's team key: by ESPN id (unknown ids, All-Star teams: None) or abbreviation."""
+        if self.by_id is not None:
+            if team_id is None or pd.isna(team_id):
+                return None
+            return self.by_id.get(int(team_id))
+        return canon_team(str(abbreviation))
+
+
+def _nba_players() -> PlayerLeague:
+    from ..vocab import TEAMS
+    return PlayerLeague("nba", BOX_URL, frozenset(TEAMS), 240.0, 42.0)
+
+
+def _wnba_players() -> PlayerLeague:
+    from ..league import WNBA_TEAM_IDS
+    return PlayerLeague("wnba", WNBA_BOX_URL, frozenset(WNBA_TEAM_IDS.values()), 200.0, 38.0,
+                        by_id=dict(WNBA_TEAM_IDS),
+                        not_evidence=frozenset({"ejection", "Official Timeout", "ShortTimeOut", "Short Timeout",
+                                                "Reset Timeout", "RegularTimeOut"}))
+
+
+WNBA_BOX_URL = ("https://github.com/sportsdataverse/sportsdataverse-data/releases/download/"
+                "espn_wnba_player_boxscores/player_box_{season}.parquet")
+NBA_PLAYERS = _nba_players()
+WNBA_PLAYERS = _wnba_players()
+PLAYER_LEAGUES = {lg.name: lg for lg in (NBA_PLAYERS, WNBA_PLAYERS)}
 
 
 def position_group(pos) -> str | None:
@@ -96,14 +143,16 @@ def dnp_kind(reason) -> str | None:
 
 # --------------------------------------------------------------------------------------- download
 
-def download_box(season: int, raw_dir: Path, force: bool = False) -> Path | None:
+def download_box(season: int, raw_dir: Path, force: bool = False, league: PlayerLeague | None = None
+                 ) -> Path | None:
     """Download one season's ESPN player box scores to raw_dir/player_box_<season>.parquet."""
+    url = (league or NBA_PLAYERS).box_url
     raw_dir.mkdir(parents=True, exist_ok=True)
     path = raw_dir / f"player_box_{season}.parquet"
     if path.exists() and not force:
         return path
     try:
-        df = pd.read_parquet(BOX_URL.format(season=season))
+        df = pd.read_parquet(url.format(season=season))
     except Exception as e:  # not published (e.g. a season that hasn't started)
         log.warning("could not download the %d player box scores (%s)", season, e)
         return None
@@ -231,7 +280,8 @@ def _period_starters(side: _Side, fallback: list[int], minutes: dict[int, float]
     return start
 
 
-def game_on_court(g: pd.DataFrame, box: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+def game_on_court(g: pd.DataFrame, box: pd.DataFrame, not_evidence: frozenset | set = frozenset()
+                  ) -> tuple[pd.DataFrame, dict]:
     """On-court fives for one game's play-by-play rows `g`, given that game's box score rows.
 
     Returns the per-row lineup table and repair counts for logging."""
@@ -287,7 +337,7 @@ def game_on_court(g: pd.DataFrame, box: pd.DataFrame) -> tuple[pd.DataFrame, dic
                 subs.append((s, pin, pout))
                 continue
             subs.append(None)
-            if tt in NOT_EVIDENCE:
+            if tt in NOT_EVIDENCE or tt in not_evidence:
                 continue
             for a in (r.athlete_id_1, r.athlete_id_2, r.athlete_id_3):
                 p = _id(a)
@@ -385,7 +435,8 @@ def on_court_totals(oc: pd.DataFrame) -> pd.DataFrame:
     return t.groupby(["game_id", "player_id"], as_index=False)[["sec", "pm"]].sum().astype({"player_id": "int64"})
 
 
-def build_on_court(pbp: pd.DataFrame, box: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+def build_on_court(pbp: pd.DataFrame, box: pd.DataFrame, not_evidence: frozenset | set = frozenset()
+                   ) -> tuple[pd.DataFrame, dict]:
     """On-court lineups for every game in `pbp` that has box-score rows."""
     box_by_game = {k: v for k, v in box.groupby(box.game_id.astype(str), sort=False)}
     frames, stats = [], dict(games=0, skipped=0, added=0, removed=0, filled=0)
@@ -394,7 +445,7 @@ def build_on_court(pbp: pd.DataFrame, box: pd.DataFrame) -> tuple[pd.DataFrame, 
         if b is None or len(b) == 0:
             stats["skipped"] += 1
             continue
-        df, st = game_on_court(g, b)
+        df, st = game_on_court(g, b, not_evidence)
         frames.append(df)
         stats["games"] += 1
         for k, v in st.items():
@@ -411,14 +462,22 @@ def five_share(oc: pd.DataFrame) -> float:
 
 # --------------------------------------------------------------------------------- player tables
 
-def build_player_games(box: pd.DataFrame, totals: pd.DataFrame | None = None) -> pd.DataFrame:
+def build_player_games(box: pd.DataFrame, totals: pd.DataFrame | None = None,
+                       league: PlayerLeague | None = None) -> pd.DataFrame:
+    lg = league or NBA_PLAYERS
     b = box.copy()
     b = b[b.athlete_id.notna()]
+    if lg.by_id is None:
+        team = b.team_abbreviation.map(lambda x: canon_team(str(x)))
+        opponent = b.opponent_team_abbreviation.map(lambda x: canon_team(str(x)))
+    else:  # by ESPN id; All-Star and exhibition teams have none (franchise_games drops their games)
+        team = pd.Series([lg.team_key(i, a) for i, a in zip(b.team_id, b.team_abbreviation)], index=b.index)
+        opponent = pd.Series([lg.team_key(i, a) for i, a in zip(b.opponent_team_id, b.opponent_team_abbreviation)],
+                             index=b.index)
     pg = pd.DataFrame({
         "game_id": b.game_id.astype(str), "season": b.season.astype(int),
         "game_type": b.season_type.map(GAME_TYPES), "game_date": b.game_date.astype(str).str[:10],
-        "team": b.team_abbreviation.map(lambda x: canon_team(str(x))),
-        "opponent": b.opponent_team_abbreviation.map(lambda x: canon_team(str(x))),
+        "team": team, "opponent": opponent,
         "home": b.home_away.eq("home"),
         "player_id": b.athlete_id.astype("int64"), "name": b.athlete_display_name,
         "position": b.athlete_position_abbreviation,
@@ -469,7 +528,7 @@ def build_player_directory(pg: pd.DataFrame) -> pd.DataFrame:
 
 # ------------------------------------------------------------------------------------------ build
 
-def build_players(seasons: list[int], raw_dir: Path, out_dir: Path) -> dict:
+def build_players(seasons: list[int], raw_dir: Path, out_dir: Path, league: PlayerLeague | None = None) -> dict:
     """Write on_court.parquet, player_games.parquet and players.parquet for the seasons whose
     play-by-play and box scores are in raw_dir. Returns the validation summary per season."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -484,7 +543,7 @@ def build_players(seasons: list[int], raw_dir: Path, out_dir: Path) -> dict:
         box = box[box.season_type.isin(GAME_TYPES)]
         pbp = _read(pbp_path, PBP_COLUMNS)
         pbp = pbp[pbp.game_id.astype(str).isin(set(box.game_id.astype(str)))]
-        oc, st = build_on_court(pbp, box)
+        oc, st = build_on_court(pbp, box, (league or NBA_PLAYERS).not_evidence)
         share = five_share(oc)
         summary[season] = dict(st, events=len(oc), five_share=round(share, 5))
         log.info("season %d: %d games, %d events, both sides five on court %.4f (repairs: %d added, "
@@ -498,7 +557,7 @@ def build_players(seasons: list[int], raw_dir: Path, out_dir: Path) -> dict:
     oc = pd.concat(oc_parts, ignore_index=True)
     del oc_parts
     oc.to_parquet(out_dir / "on_court.parquet")
-    pg = build_player_games(pd.concat(boxes, ignore_index=True), pd.concat(totals, ignore_index=True))
+    pg = build_player_games(pd.concat(boxes, ignore_index=True), pd.concat(totals, ignore_index=True), league)
     pg.to_parquet(out_dir / "player_games.parquet")
     build_player_directory(pg).to_parquet(out_dir / "players.parquet")
     played = pg[~pg.dnp & (pg.minutes > 0) & pg.oncourt_min.notna()]

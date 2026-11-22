@@ -45,7 +45,7 @@ import numpy as np
 import pandas as pd
 
 from ..vocab import canon_team
-from .players import position_group
+from .players import NBA_PLAYERS, PlayerLeague, position_group
 
 log = logging.getLogger(__name__)
 
@@ -145,7 +145,8 @@ def _scale_groups(exp: np.ndarray, key: np.ndarray, total: float = TEAM_MINUTES,
     return m
 
 
-def _finish(cands: pd.DataFrame, hist: pd.DataFrame, posted: dict | None = None) -> pd.DataFrame:
+def _finish(cands: pd.DataFrame, hist: pd.DataFrame, posted: dict | None = None, total: float = TEAM_MINUTES,
+            cap: float = MAX_MINUTES) -> pd.DataFrame:
     """Candidates (`game_id, team, player_id, game_date, status, ...`) -> projected minutes, starters
     (`posted`: (game_id, team) -> the posted five, which replace the projection) and rotation rank."""
     if cands.empty:
@@ -153,7 +154,7 @@ def _finish(cands: pd.DataFrame, hist: pd.DataFrame, posted: dict | None = None)
     d = history_before(hist, cands.reset_index(drop=True))
     av = d.status.eq("available").to_numpy()
     key = pd.factorize(pd.Series(list(zip(d.game_id, d.team))))[0]
-    d["proj_minutes"] = np.where(av, _scale_groups(np.where(av, d.exp_minutes, 0.0), key), 0.0)
+    d["proj_minutes"] = np.where(av, _scale_groups(np.where(av, d.exp_minutes, 0.0), key, total, cap), 0.0)
     d["_k"], d["_av"] = key, av
     s = d.sort_values(["_k", "_av", "start_share", "exp_minutes"], ascending=[True, False, False, False],
                       kind="stable")
@@ -175,12 +176,14 @@ def _finish(cands: pd.DataFrame, hist: pd.DataFrame, posted: dict | None = None)
 
 
 def projected_lineups(pg: pd.DataFrame, roster: bool = True, out_kinds: tuple[str, ...] = OUT_KINDS,
-                      games: set[str] | None = None) -> pd.DataFrame:
+                      games: set[str] | None = None, league: PlayerLeague | None = None) -> pd.DataFrame:
     """Projected lineups of every (game, team) in `pg` (player_games.parquet), or of `games` only.
 
     See the module docstring: candidates are the game's box-score roster (`roster=True`) or the
     team's last `TEAM_GAMES` games' rotation; players with a DNP `reason` of a kind in `out_kinds`
-    are ruled out; minutes and starters come only from games before the game's date."""
+    are ruled out; minutes and starters come only from games before the game's date. ``league``
+    (default the NBA's): the team's minutes to share out (WNBA: 200) and a player's cap."""
+    lg = league or NBA_PLAYERS
     pg = pg.assign(game_id=pg.game_id.astype(str))
     hist = player_history(pg)
     target = pg if games is None else pg[pg.game_id.isin(set(map(str, games)))]
@@ -211,7 +214,7 @@ def projected_lineups(pg: pd.DataFrame, roster: bool = True, out_kinds: tuple[st
     c["status"] = np.where(c.out_reason.notna(), "out", "available")
     c["group"] = c.player_id.map(group_of)
     c["source"] = source
-    return _finish(c, hist)
+    return _finish(c, hist, total=lg.team_minutes, cap=lg.max_minutes)
 
 
 # ------------------------------------------------------------------------------------- evaluation
@@ -387,11 +390,15 @@ def project_live(pg: pd.DataFrame, games: pd.DataFrame, rosters: dict, injuries:
 
 # ------------------------------------------------------------------------------------------ build
 
-def build_lineups(processed: Path, roster: bool = True, live: bool = False) -> dict:
+def build_lineups(processed: Path, roster: bool = True, live: bool = False,
+                  league: PlayerLeague | None = None) -> dict:
     """Write `projected_lineups.parquet` (every game in player_games.parquet) and, with `live`,
-    `projected_lineups_upcoming.parquet`; returns `evaluate`'s summary per season."""
+    `projected_lineups_upcoming.parquet`; returns `evaluate`'s summary per season. `live` is the
+    NBA's only (ESPN's NBA scoreboard, rosters and injuries)."""
+    if live and league is not None and league.name != "nba":
+        raise NotImplementedError(f"live lineups are the NBA's only, not {league.name}'s")
     pg = pd.read_parquet(processed / "player_games.parquet")
-    proj = projected_lineups(pg, roster=roster)
+    proj = projected_lineups(pg, roster=roster, league=league)
     proj.to_parquet(processed / "projected_lineups.parquet")
     ev = evaluate(proj, pg)
     log.info("projected lineups: %d rows, %d team-games\n%s", len(proj),
