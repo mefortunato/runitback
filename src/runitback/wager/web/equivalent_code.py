@@ -52,4 +52,42 @@ EQUIVALENT_CODE: dict[str, tuple[str, ...]] = {
         "f297abba0effffa148a4e535957011d0747e2d1b34e55127f705e8045dd3e028",
         "d51c92ffb1132c3abdc0a5ece6a07f8f881b88a35ae694c7b4ff5b1e73246922",
     ),
+    # The transformer's Elo tokens use Sport.elo (models/transformer/data.py ``strength``), the
+    # ``epl`` sport and its efficiency function (core/sport.py, core/efficiency.py). The only
+    # production transformers that read the Elo tokens are cfb, cbb and wcbb (``opponent_strength``),
+    # and none of them sets Sport.elo; nhl, mlb and wnba set it but do not use those tokens. So no
+    # built-in sport's walk-forward results changed. The code of main after #110 and #111, #110,
+    # and before; regenerate with scripts/equivalent_code.py after any later change to hashed code.
+    # nfl
+    "995b30ece4c99e95d520afccb0081854338f06ce5da289dcfe8c6fabc576f0e3": (
+        "85e0396c4305482d5f903225c2d6c9e9ce03cfaea557ead52466581c2113b300",
+    ),
+    # cfb
+    "9cce146df497466830bccb499cd980c9dbdb5299fcede2b81e1b6327b2154b3f": (
+        "0df622ddd4b4f59d2c71f8e843dcabee2c1b0abd7fb9390eeacbad591df6ae6e",
+    ),
+    # nba
+    "6b96f1b8f209ec9ac375a8e99e33f374d22a693bffecd0b8037fccd343e2633c": (
+        "f7a55e00c54bbfadb186faac858a3adfdf892fdec2e92dec284b544aaaa76693",
+    ),
+    # cbb
+    "39c742a810c9b8a21792426f84ccc8c6a87ab12941be15a1396dda1141a42058": (
+        "95fe4dd6de56ca91ffcda43e97a9cb45e016c8e89107f47bc14e35dcf8d73272",
+    ),
+    # wcbb
+    "812a5e1a94e733f6689173949e5442f63d2cf9ef778ddfe6c61a2ebe88974355": (
+        "f1edc337306155a719f9b63f0191da27d1b8d5090140e70c01101103ed76303a",
+    ),
+    # wnba
+    "feb7df20a42274ec562a76b1b9e42b83bf6ede1f80d787d0fbaf11267b5b6201": (
+        "08fc830245c03bdd9d5af9c7e9ebbb2724516675ef5179503db2d9893d53a16d",
+    ),
+    # nhl
+    "2d3ce555d105e978678ed555d40ba08daa971e32362f5db1f8c9353ab46b960e": (
+        "8af32119569361b8600b0a8c304720903bea243105051a92fe364cb2f1417ae7",
+    ),
+    # mlb
+    "0ab3c5f7c1413834c1fe50d97ee11833b239aba3b6f1baf643ac1d9aa8254303": (
+        "5bbf73ec765cd9d807dadb298084807a66db70646526d7a1dd4086840ff45e99",
+    ),
 }
