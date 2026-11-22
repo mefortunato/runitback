@@ -171,6 +171,6 @@ e.g. a season):
 ## Optional: welcome on runitback
 
 A small runitback change, not needed for the cutover: the redirect appends `?from=sportsml`, and
-runitback shows a one-time "Welcome from SportsML: same pages, new home' note on its home page and strips the
+runitback shows a one-time "Welcome from SportsML: same pages, new home" note on its home page and strips the
 parameter with `history.replaceState`. It's a frontend-only change (`web/`), so it doesn't touch any
 production settings, but it does deploy on merge to `main` through `deploy-cloud-run.yml`.
