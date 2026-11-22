@@ -149,13 +149,35 @@ def fit_point_diff(
 
 @dataclasses.dataclass(frozen=True)
 class EloParams:
-    """FiveThirtyEight's NFL Elo settings."""
+    """FiveThirtyEight's NFL Elo settings.
+
+    ``mov`` is how a result's margin scales the update: ``"nfl"``
+    (FiveThirtyEight's: ``log(margin + 1)``, damped when the favorite wins by a
+    lot, which makes a tie move nothing) or ``"football"`` (World Football
+    Elo's goal-difference multiplier, 1 for a margin of 0 or 1, 1.5 for 2 and
+    ``(11 + margin) / 8`` above, so a draw moves ratings by ``K * (0.5 -
+    expected)``). ``new_team`` is the rating a team starts at the first time
+    it appears (default: ``mean``).
+    """
 
     k: float = 20.0
     home: float = 65.0  # Elo points of home-field advantage
     regress: float = 1 / 3  # toward the mean between seasons
     mean: float = 1505.0
     points_per_elo: float = 1 / 25
+    mov: str = "nfl"
+    new_team: float | None = None
+
+    def __post_init__(self):
+        if self.mov not in ("nfl", "football"):
+            raise ValueError(
+                f"unknown Elo margin rule {self.mov!r}; choose nfl or football"
+            )
+
+    @property
+    def start(self) -> float:
+        """The rating of a team seen for the first time."""
+        return self.mean if self.new_team is None else self.new_team
 
 
 class EloModel(MatchupModel):
@@ -186,14 +208,22 @@ class EloModel(MatchupModel):
             if game_season != season:
                 ratings = {t: self._regress(r) for t, r in ratings.items()}
                 season = game_season
-            team_elo, opp_elo = ratings.get(team, p.mean), ratings.get(opp, p.mean)
+            team_elo, opp_elo = ratings.get(team, p.start), ratings.get(opp, p.start)
             diff = team_elo - opp_elo + p.home * loc
             diffs[game] = diff
             before[game] = (team_elo, opp_elo)
             expected = 1 / (1 + 10 ** (-diff / 400))
             actual = 1.0 if margin > 0 else 0.5 if margin == 0 else 0.0
-            winner_diff = diff if margin > 0 else -diff
-            multiplier = math.log(abs(margin) + 1) * 2.2 / (winner_diff * 0.001 + 2.2)
+            if p.mov == "football":
+                goals = abs(margin)
+                multiplier = (
+                    1.0 if goals <= 1 else 1.5 if goals == 2 else (11 + goals) / 8
+                )
+            else:
+                winner_diff = diff if margin > 0 else -diff
+                multiplier = (
+                    math.log(abs(margin) + 1) * 2.2 / (winner_diff * 0.001 + 2.2)
+                )
             shift = p.k * multiplier * (actual - expected)
             ratings[team], ratings[opp] = team_elo + shift, opp_elo - shift
         self.ratings, self.season = ratings, season
@@ -248,7 +278,7 @@ class EloModel(MatchupModel):
         )
 
         def elo(keys):
-            raw = np.array([self.ratings.get(k, p.mean) for k in keys])
+            raw = np.array([self.ratings.get(k, p.start) for k in keys])
             return np.where(new_season, self._regress(raw), raw)
 
         diff = elo(matchups[s.team]) - elo(matchups[s.opp])
