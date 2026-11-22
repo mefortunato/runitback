@@ -38,6 +38,23 @@ MARKET_TOKEN_COLUMNS = [
 ]
 
 
+# The same for a sport with draws (``schema.draws``): the market's three prices give the win
+# minus loss probability and the draw's, a result is scored in points (3 a win, 1 a draw), and
+# the over/under is always the same line, so its price (the over's probability) is the token.
+# ``_mkt_closing`` is 1 where those prices are closing ones (the others are opening prices).
+MARKET_TOKEN_COLUMNS_DRAWS = [
+    "_mkt_spread",
+    "_mkt_cover",
+    "_mkt_win_minus_loss",  # the no-vig win probability minus the loss probability
+    "_mkt_draw_prob",
+    "_mkt_points_surprise",  # points won (3 / 1 / 0) minus the points the prices expected
+    "_mkt_over_z",  # probit of the no-vig probability of the over
+    "_mkt_total_resid",
+    "_mkt_has_line",
+    "_mkt_closing",
+]
+
+
 # The market's running rating of each token game's two teams (market_rating):
 # ratings fit to every earlier closing line, so ``rating - opp_rating + home``
 # reproduces the spread; each game's own line is in (it was set before the
@@ -196,6 +213,14 @@ def efficiency_columns(sport: str | None) -> list[str]:
     return [] if fn is None else list(fn(pd.DataFrame()).columns)
 
 
+def eff2_columns(sport: str | None) -> list[str]:
+    """The ``_eff_*`` columns of ``sport``'s second set of efficiency columns (``eff2``)."""
+    from ...core.efficiency import EXTRA_EFFICIENCY
+
+    fn = EXTRA_EFFICIENCY.get(sport)
+    return [] if fn is None else list(fn(pd.DataFrame()).columns)
+
+
 def extra_columns(
     opponent_strength: bool,
     elo_margin: bool,
@@ -205,12 +230,16 @@ def extra_columns(
     market_rating: bool = False,
     pbp_dim: int = 0,
     pbp_only: bool = False,
+    eff2: bool = False,
+    draws: bool = False,
 ) -> list[str]:
+    market = MARKET_TOKEN_COLUMNS_DRAWS if draws else MARKET_TOKEN_COLUMNS
     return (
         (STRENGTH_COLUMNS if opponent_strength else [])
         + (ELO_MARGIN_COLUMNS if elo_margin else [])
-        + (MARKET_TOKEN_COLUMNS if market_tokens else [])
+        + (market if market_tokens else [])
         + (efficiency_columns(sport) if efficiency and not pbp_only else [])
+        + (eff2_columns(sport) if eff2 and not pbp_only else [])
         + (MARKET_RATING_COLUMNS if market_rating else [])
         + pbp_columns(pbp_dim)
     )
@@ -303,10 +332,15 @@ def market_ratings(
 
 
 def market_features(games: pd.DataFrame, schema: GameSchema) -> pd.DataFrame:
-    """Each played row's :data:`MARKET_TOKEN_COLUMNS` (NaN without lines)."""
+    """Each played row's :data:`MARKET_TOKEN_COLUMNS` (NaN without lines); a
+    sport with draws gets :data:`MARKET_TOKEN_COLUMNS_DRAWS`
+    (:func:`market_features_with_draws`)."""
     import scipy.stats
 
     from ...backtest import no_vig_probability
+
+    if schema.draws:
+        return market_features_with_draws(games, schema)
 
     def column(name):
         if name and name in games:
@@ -333,6 +367,54 @@ def market_features(games: pd.DataFrame, schema: GameSchema) -> pd.DataFrame:
             "_mkt_total": line,
             "_mkt_total_resid": column(schema.total) - line,
             "_mkt_has_line": (spread.notna() | prob.notna()).astype(float),
+        },
+        index=games.index,
+    )
+
+
+def market_features_with_draws(games: pd.DataFrame, schema: GameSchema) -> pd.DataFrame:
+    """Each played row's :data:`MARKET_TOKEN_COLUMNS_DRAWS` for a sport with draws (NaN
+    where the prices are missing).
+
+    The prices are the games table's own for that game (``market_moneyline`` and
+    ``market_draw``), set before it was played; ``schema.market_closing`` says which are
+    closing prices. Nothing here depends on a later game.
+    """
+    import scipy.stats
+
+    from ...backtest import no_vig_probabilities, no_vig_probability
+
+    def column(name):
+        if name and name in games:
+            return pd.to_numeric(games[name], errors="coerce").astype(float)
+        return pd.Series(np.nan, index=games.index)
+
+    y = column(schema.target)
+    spread = column(schema.market_spread)
+    home, away = schema.market_moneyline
+    q = no_vig_probabilities(
+        column(home), column(schema.market_draw), column(away), method=schema.devig
+    )
+    win, draw, loss = (pd.Series(q[:, i], index=games.index) for i in range(3))
+    points = 3.0 * (y > 0) + 1.0 * (y == 0)
+    if schema.market_total_odds:
+        over = pd.Series(
+            no_vig_probability(*(column(c) for c in schema.market_total_odds)),
+            index=games.index,
+        )
+    else:
+        over = pd.Series(np.nan, index=games.index)
+    return pd.DataFrame(
+        {
+            "_mkt_spread": spread,
+            "_mkt_cover": y - spread,
+            "_mkt_win_minus_loss": win - loss,
+            "_mkt_draw_prob": draw,
+            "_mkt_points_surprise": points - (3 * win + draw),
+            "_mkt_over_z": scipy.stats.norm.ppf(over.clip(0.005, 0.995)),
+            "_mkt_total_resid": column(schema.total) - column(schema.market_total),
+            "_mkt_has_line": (spread.notna() | win.notna()).astype(float),
+            "_mkt_closing": column(schema.market_closing),
         },
         index=games.index,
     )
@@ -404,6 +486,10 @@ class SequenceFeatures:
     # the Elo tokens use ``Sport.elo``; False for features saved before that,
     # whose standardization was fit on the NFL's default Elo
     sport_elo: bool = False
+    eff2: bool = False  # a sport's second set of efficiency columns
+    # games more than this many seasons older than the one being predicted are not
+    # in a team's history (None: no limit); the same in training and in serving
+    drop_older_than: int | None = None
 
     @classmethod
     def fit(
@@ -422,6 +508,8 @@ class SequenceFeatures:
         pbp_only: bool = False,
         lineup: str | None = None,
         lineup_set: str | None = None,
+        eff2: bool = False,
+        drop_older_than: int | None = None,
     ) -> SequenceFeatures:
         location = [schema.location] if schema.location else []
         tokens = base_token_columns(schema, pbp_only)
@@ -444,10 +532,12 @@ class SequenceFeatures:
             lineup=lineup if lineup_set else None,
             lineup_set=lineup_set if lineup else None,
             sport_elo=sport is not None,
+            eff2=eff2,
+            drop_older_than=drop_older_than,
         )
         extra = extra_columns(
             opponent_strength, elo_margin, market_tokens, efficiency, sport,
-            market_rating, features.pbp_dim, pbp_only,
+            market_rating, features.pbp_dim, pbp_only, eff2, schema.draws,
         )  # fmt: skip
         if extra:
             tokens += extra
@@ -491,6 +581,11 @@ class SequenceFeatures:
             fn = get_sport(self.sport).efficiency
             if fn is not None:
                 parts.append(fn(games))
+        if getattr(self, "eff2", False) and not getattr(self, "pbp_only", False):
+            from ...core.efficiency import EXTRA_EFFICIENCY
+
+            if self.sport in EXTRA_EFFICIENCY:
+                parts.append(EXTRA_EFFICIENCY[self.sport](games))
         for part in parts:
             games = games.join(part.reindex(games.index))
         return games
@@ -556,17 +651,24 @@ def opponent_rows(games: pd.DataFrame, schema: GameSchema) -> np.ndarray:
     return position.reindex(opp).fillna(-1).astype(np.int64).to_numpy()
 
 
-def sequence(tokens, seasons, index, season) -> dict[str, torch.Tensor]:
+def sequence(
+    tokens, seasons, index, season, drop_older_than: int | None = None
+) -> dict[str, torch.Tensor]:
     """Gather token sequences; ``index`` -1 entries are padding.
 
     Args:
         tokens: ``[N, F]`` token table; seasons: ``[N]`` their seasons.
         index: ``[B, K]`` rows of ``tokens`` per sequence.
         season: ``[B]`` season being predicted (for ``seasons_ago``).
+        drop_older_than: Games more than this many seasons before ``season``
+            are padding too (None: keep them).
     """
     pad = index < 0
     safe = index.clamp(min=0)
-    seasons_ago = (season[:, None] - seasons[safe]).masked_fill(pad, 0)
+    seasons_ago = season[:, None] - seasons[safe]
+    if drop_older_than is not None:
+        pad = pad | (seasons_ago > drop_older_than)
+    seasons_ago = seasons_ago.masked_fill(pad, 0)
     return {
         "tokens": tokens[safe].masked_fill(pad[..., None], 0.0),
         "seasons_ago": seasons_ago.float(),
@@ -591,6 +693,7 @@ class SequenceData(torch.utils.data.Dataset):
     ):
         self.tokens = torch.from_numpy(features.tokens(games))
         self.seasons = torch.tensor(games[schema.season].to_numpy(dtype=np.float32))
+        self.drop_older_than = getattr(features, "drop_older_than", None)
         self.history = torch.from_numpy(histories(games, schema, features.history))
         opp = torch.from_numpy(opponent_rows(games, schema))
         self.opp_history = torch.where(
@@ -618,8 +721,12 @@ class SequenceData(torch.utils.data.Dataset):
         rows = self.rows[torch.as_tensor(positions)]
         season = self.seasons[rows]
         return {
-            "team": sequence(self.tokens, self.seasons, self.history[rows], season),
-            "opp": sequence(self.tokens, self.seasons, self.opp_history[rows], season),
+            "team": sequence(
+                self.tokens, self.seasons, self.history[rows], season, self.drop_older_than
+            ),
+            "opp": sequence(
+                self.tokens, self.seasons, self.opp_history[rows], season, self.drop_older_than
+            ),
             "context": self.context[rows],
             "opp_context": self.opp_context[rows],
             "y": self.y[rows],

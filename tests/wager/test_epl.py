@@ -155,3 +155,28 @@ def test_seasons():
     assert epl.season_of(datetime.date(2025, 5, 25)) == 2025
     assert epl.season_code(2026) == "2526" and epl.season_code(2001) == "0001"
     assert epl.season_complete(2024, TODAY) and not epl.season_complete(2025, TODAY)
+
+
+LEI_ARS = (
+    "E0,17/08/2025,15:00,Leicester,Arsenal,0,2,A,0,1,A,M Dean,"
+    "8,12,2,6,10,9,4,6,2,1,0,0,3.8,3.5,1.9,,,,,,,"
+)
+
+
+def test_promoted_clubs_are_those_not_in_the_previous_seasons_league(raw):
+    second = epl.read_csv(csv_bytes(CHE_ARS, LEI_ARS)).assign(season=2026)
+    games = epl.build_games(pd.concat([raw[raw.season == 2025], second], ignore_index=True), today=TODAY)
+    # Leicester were not in 2025: promoted; Arsenal and Chelsea were
+    leicester, arsenal = row(games, 2026, "LEI_ARS", "LEI"), row(games, 2026, "LEI_ARS", "ARS")
+    assert (leicester.promoted, leicester.opp_promoted) == (1, 0)
+    assert (arsenal.promoted, arsenal.opp_promoted) == (0, 1)
+    chelsea = row(games, 2026, "CHE_ARS", "CHE")
+    assert (chelsea.promoted, chelsea.opp_promoted) == (0, 0)
+    # the first season has no previous one to compare with: nobody is promoted
+    assert (games[games.season == 2025][["promoted", "opp_promoted"]] == 0).all().all()
+
+
+def test_odds_closing_says_which_prices_are_closing_prices(games):
+    assert row(games, 2025, "ARS_CHE", "ARS").odds_closing == 1  # closing Pinnacle
+    assert row(games, 2025, "CHE_MCI", "CHE").odds_closing == 0  # bet365's opening prices
+    assert row(games, 2025, "CHE_MCI", "MCI").odds_closing == 0  # both sides of the game

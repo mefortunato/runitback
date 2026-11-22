@@ -10,12 +10,17 @@ from .data.features import SCHEMA
 # points_per_elo is the least-squares slope (1/202). The surface is flat: k 15 and regress 0.05 /
 # 0.1 are within 0.0001 of each other, and so is a new team's start 50-150 below the mean (100 is
 # used). The best home edge is 80 on 2006-2016, 2006-2021 and 2006-2021 without 2020-21
-# (experiments/epl/README.md). No GNN or transformer settings yet.
+# (experiments/epl/README.md). A club the model has no state for (promoted, or back after years away)
+# is predicted from an empty history (``cold_start``), the transformer is trained on such games
+# (``min_history`` 0) and a team's history stops two seasons back (``drop_older_than``), as the
+# state it is served from does. No other GNN or transformer settings yet.
 SPORT = Sport(
     name="epl",
     schema=SCHEMA,
     download=download,
     efficiency=epl_efficiency,
+    cold_start=True,
+    transformer={"min_history": 0, "drop_older_than": 2},
     elo={
         "k": 15.0,
         "home": 80.0,

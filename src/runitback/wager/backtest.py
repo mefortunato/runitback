@@ -418,6 +418,10 @@ def walk_forward(
             day = one_row_per_game(current[current[schema.date] == date], schema)
             teams = set(predictor.model.teams)
             has_state = day[schema.team].isin(teams) & day[schema.opp].isin(teams)
+            if getattr(predictor.model, "cold_start", False):
+                has_state[:] = (
+                    True  # a team without state is predicted from an empty history
+                )
             if has_state.any():
                 season_preds.append(predictor.predict(day[has_state]))
         season_preds = pd.concat(season_preds, ignore_index=True)

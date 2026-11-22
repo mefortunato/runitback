@@ -31,6 +31,10 @@ class MatchupModel(abc.ABC):
     """
 
     schema: GameSchema
+    # whether the model can predict a team it has no state for (from an empty history),
+    # and, if so, whether it is asked to (``Sport.cold_start``, set when it is fit)
+    supports_cold_start: bool = False
+    cold_start: bool = False
 
     @abc.abstractmethod
     def update_state(self, games: pd.DataFrame) -> None:
@@ -114,7 +118,8 @@ class Predictor(mlflow.pyfunc.PythonModel):
             raise ValueError(f"matchups need columns {missing}")
         unknown = set(matchups[schema.team]) | set(matchups[schema.opp])
         unknown -= set(self.model.teams)
-        if unknown:
+        # saved before cold start existed: no such attribute
+        if unknown and not getattr(self.model, "cold_start", False):
             raise ValueError(f"no state for teams: {sorted(unknown, key=str)}")
         if schema.location and schema.location not in matchups:
             matchups[schema.location] = 0

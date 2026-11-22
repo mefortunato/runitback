@@ -262,6 +262,8 @@ class TransformerModel(MarginModule):
         extra_weights: tuple[float, ...] = (),
         distribution: bool = False,
         token_features: dict | None = None,
+        margin_range: tuple[int, int] = (-70, 70),
+        total_range: tuple[int, int] = (0, 130),
     ):
         super().__init__(
             lr,
@@ -271,6 +273,8 @@ class TransformerModel(MarginModule):
             extra_targets,
             extra_weights,
             distribution,
+            margin_range,
+            total_range,
         )
         self.encoder = encoder
         self.head = head
@@ -364,7 +368,13 @@ class TransformerMatchupModel(MatchupModel):
     embeddings are computed per request, with ``seasons_ago`` relative to the
     matchup's season (so a season opener sees last season's games as one
     season old, exactly as in training).
+
+    With ``cold_start`` (set when it is fit, from ``Sport.cold_start``) a team
+    without state is predicted from an empty history, the same as a team's
+    first game in training, instead of being refused.
     """
+
+    supports_cold_start = True
 
     def __init__(
         self, schema: GameSchema, module: TransformerModel, features: SequenceFeatures
@@ -394,6 +404,8 @@ class TransformerMatchupModel(MatchupModel):
             rows = position[games[s.team] == team].to_numpy()[::-1][:k]
             index.append(np.pad(rows, (0, k - len(rows)), constant_values=-1))
         self.team_index = {team: i for i, team in enumerate(teams)}
+        # the last row is a history of padding only: a team without state (cold start)
+        index.append(np.full(k, -1))
         self.history = torch.from_numpy(np.array(index, dtype=np.int64).reshape(-1, k))
         self.tokens = torch.from_numpy(tokens)
         self.seasons = torch.from_numpy(seasons)
@@ -402,14 +414,20 @@ class TransformerMatchupModel(MatchupModel):
     def teams(self) -> list:
         return list(self.team_index)
 
+    def _drop_older_than(self) -> int | None:
+        return getattr(self.features, "drop_older_than", None)
+
     @torch.no_grad()
     def team_embeddings(self) -> pd.DataFrame | None:
         """Each team's encoded history as of the state's season (an
         ensemble's members side by side: their spaces differ)."""
         if not self.team_index:
             return None
-        season = torch.full((len(self.history),), float(self.state_season))
-        batch = sequence(self.tokens, self.seasons, self.history, season)
+        history = self.history[: len(self.team_index)]
+        season = torch.full((len(history),), float(self.state_season))
+        batch = sequence(
+            self.tokens, self.seasons, history, season, self._drop_older_than()
+        )
         members = getattr(self.module, "members", [self.module])
         parts = [member.encoder(**batch).numpy() for member in members]
         return pd.DataFrame(np.concatenate(parts, axis=1), index=self.teams)
@@ -427,9 +445,14 @@ class TransformerMatchupModel(MatchupModel):
         )
         season = torch.from_numpy(season)
 
+        # saved before cold start: no empty row, and no such attribute
+        empty = len(self.team_index) if getattr(self, "cold_start", False) else None
+
         def side(keys):
-            index = self.history[[self.team_index[k] for k in keys]]
-            return sequence(self.tokens, self.seasons, index, season)
+            rows = [self.team_index.get(k, empty) if empty is not None else self.team_index[k] for k in keys]
+            return sequence(
+                self.tokens, self.seasons, self.history[rows], season, self._drop_older_than()
+            )
 
         batch = {
             "team": side(matchups[s.team]),

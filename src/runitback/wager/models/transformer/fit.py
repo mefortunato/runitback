@@ -45,7 +45,7 @@ ENCODER_KEYS = (
 # Token options: which derived columns each history token carries.
 TOKEN_KEYS = (
     "opponent_strength", "elo_margin", "market_tokens", "efficiency",
-    "market_rating",
+    "market_rating", "eff2",
 )  # fmt: skip
 # Play-by-play embedding options (not booleans): ``pbp`` is the embedding table's path with a
 # ``{season}`` placeholder for the walk-forward fold (the test season), ``pbp_dim`` its width and
@@ -53,7 +53,7 @@ TOKEN_KEYS = (
 PBP_KEYS = ("pbp", "pbp_dim", "pbp_only", "lineup", "lineup_set")
 PBP_DEFAULTS = {"pbp": None, "pbp_dim": 32, "pbp_only": False, "lineup": None, "lineup_set": "lu"}
 # Settings that are not model init args.
-FIT_KEYS = ("ensemble", "batch_size", "patience", "max_epochs")
+FIT_KEYS = ("ensemble", "batch_size", "patience", "max_epochs", "min_history", "drop_older_than")
 
 
 def transformer_dims(
@@ -69,13 +69,14 @@ def transformer_dims(
     pbp_only: bool = False,
     lineup: str | None = None,
     lineup_set: str | None = None,
+    eff2: bool = False,
 ) -> dict[str, int]:
     """Token / context feature counts a TransformerModel needs for ``schema``."""
     location = [schema.location] if schema.location else []
     tokens = base_token_columns(schema, pbp_only)
     tokens += extra_columns(
         opponent_strength, elo_margin, market_tokens, efficiency, sport, market_rating,
-        pbp_dim if pbp else 0, pbp_only,
+        pbp_dim if pbp else 0, pbp_only, eff2, schema.draws,
     )
     return {
         "token_dim": len(tokens),
@@ -276,12 +277,14 @@ def fit_transformer(
     train_seasons: list[int] | None = None,
     val_seasons: list[int] | None = None,
     test_seasons: list[int] | None = None,
-    min_history: int = 1,
+    min_history: int | None = None,
+    drop_older_than: int | None = None,
     opponent_strength: bool | None = None,
     elo_margin: bool | None = None,
     market_tokens: bool | None = None,
     efficiency: bool | None = None,
     market_rating: bool | None = None,
+    eff2: bool | None = None,
     total_weight: float | None = None,
     stats_weight: float | None = None,
     ensemble: int | None = None,
@@ -355,7 +358,11 @@ def fit_transformer(
         market_tokens=market_tokens,
         efficiency=efficiency,
         market_rating=market_rating,
+        eff2=eff2,
     )
+    min_history = int(settings.get("min_history", 1) if min_history is None else min_history)
+    if drop_older_than is None:
+        drop_older_than = settings.get("drop_older_than")
     schema = get_sport(sport).schema.with_features(context, categorical=[])
     games = played(read_table(games), schema).reset_index(drop=True)
     split = split_seasons(
@@ -380,7 +387,12 @@ def fit_transformer(
     if tokens.get("lineup"):
         tokens = tokens | {"lineup": pbp_fold_path(tokens["lineup"], fold)}
     features = SequenceFeatures.fit(
-        train_games, schema, model.encoder.history, **tokens, sport=sport
+        train_games,
+        schema,
+        model.encoder.history,
+        **tokens,
+        sport=sport,
+        drop_older_than=drop_older_than,
     )
     _check_dims(model, features)
     extra = tuple(model.extra_targets)

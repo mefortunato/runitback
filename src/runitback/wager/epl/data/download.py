@@ -233,6 +233,9 @@ def build_games(
     handicap = raw.reindex(columns=HANDICAPS).apply(pd.to_numeric, errors="coerce")
     games["spread_line"] = -handicap.bfill(axis=1).iloc[:, 0]
     games["referee"] = raw.get("Referee")
+    # 1 where the 1X2 prices are closing prices (a token of the market features)
+    closing = games["odds_source"].str.endswith("_close")
+    games["odds_closing"] = closing.astype(float).where(games["odds_source"].notna())
 
     games["played"] = played
     games = games.sort_values(
@@ -241,6 +244,7 @@ def build_games(
     games = games.drop_duplicates("game_id").drop(columns="played")  # a played row wins
     games["game_date"], games["day"], games["week"] = espn.day_numbers(games)
     games["neutral_site"] = False
+    games = promoted(games)
     rows = espn.invert(games, negated=("spread_line",))
     rows = rows.rename(columns={"name": "team_name", "opp_name": "opp_name"})
     rows["result"] = rows["goals"] - rows["opp_goals"]
@@ -250,6 +254,23 @@ def build_games(
     rows = rows.drop(columns=["neutral_site"])
     return rows.sort_values(["season", "day", "game_id", "location"],
                             ascending=[True, True, True, False]).reset_index(drop=True)  # fmt: skip
+
+
+def promoted(games: pd.DataFrame) -> pd.DataFrame:
+    """``home_promoted`` / ``away_promoted``: 1 where a team was not in the
+    previous season's Premier League (newly promoted, or back after a while),
+    known before the season starts. 0 for the first season of ``games``, for
+    which there is no previous one to compare with."""
+    clubs = {
+        season: set(frame["home_team"]) | set(frame["away_team"])
+        for season, frame in games.groupby("season")
+    }
+    for side in ("home", "away"):
+        games[f"{side}_promoted"] = [
+            0.0 if season - 1 not in clubs else float(team not in clubs[season - 1])
+            for season, team in zip(games["season"], games[f"{side}_team"], strict=True)
+        ]
+    return games
 
 
 # ----------------------------------------------------------------- download

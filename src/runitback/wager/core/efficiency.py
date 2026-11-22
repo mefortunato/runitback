@@ -21,6 +21,8 @@ so each sport derives them here:
   power-play conversion.
 - **Premier League**: shot share, shots on target per shot, goals per
   shot and per shot on target, corner share and cards.
+- **Premier League, ``eff2``** (an option of its own): second-half goals, which say how the
+  game went after the interval, and whether a red card was shown (a game played a man down).
 - **MLB**: OBP, SLG, OPS, ISO, strikeout / walk / home-run rates, BABIP
   and a FIP-style pitching line (from the opponent's batting).
 
@@ -271,3 +273,20 @@ def epl_efficiency(games: pd.DataFrame) -> pd.DataFrame:
         }
 
     return both_sides(games, _epl_side, shared)
+
+
+def _epl_extra_side(own: Getter, opp: Getter) -> dict[str, pd.Series]:
+    reds = own("red_cards")
+    return {
+        "second_half_goals": own("goals") - own("half_time_goals"),
+        "red_card": (reds > 0).astype(float).where(reds.notna()),
+    }
+
+
+def epl_extra(games: pd.DataFrame) -> pd.DataFrame:
+    """The Premier League's ``eff2`` columns (``_eff_*`` and ``_eff_opp_*``)."""
+    return both_sides(games, _epl_extra_side)
+
+
+# sport -> a second set of efficiency columns, an option of its own (``eff2``)
+EXTRA_EFFICIENCY: dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {"epl": epl_extra}

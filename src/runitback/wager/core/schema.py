@@ -54,6 +54,9 @@ class GameSchema:
             from the same bookmakers in every season), where the sport's
             ``market_moneyline`` and ``market_draw`` are whichever bookmaker
             the games table preferred. Missing: those are the market arm.
+        market_closing: Column that is 1 where the market's prices for the game
+            are closing prices and 0 for opening ones (a sport whose source
+            changed bookmakers over the years): a feature of its market tokens.
         devig: How the bookmaker margin is removed from the three prices
             (``"proportional"``, ``"power"`` or ``"shin"``; see
             :func:`runitback.wager.backtest.no_vig_probabilities`).
@@ -82,6 +85,7 @@ class GameSchema:
     draws: bool = False
     market_draw: str | None = None
     market_average: tuple[str, str, str] | None = None
+    market_closing: str | None = None
     devig: str = "proportional"
 
     @property

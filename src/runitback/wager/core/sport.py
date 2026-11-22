@@ -31,6 +31,11 @@ class Sport:
         efficiency: Derives per-game rate stats (``_eff_*`` columns) from
             a games table's box score, for the transformer's history tokens
             (see :mod:`runitback.wager.core.efficiency`).
+        cold_start: Predict a game of a team the model has no state for (a
+            newly promoted club, one back after years away) from an empty
+            history, instead of leaving it out (the walk-forward backtest) or
+            refusing it (the predictor). Models that can (Elo, the
+            transformer) do; the others ignore it.
         lineup: The position groups behind the sport's player-value lineup
             columns (``_pv_*``), their signs on the total and the lineup
             editor's groups; None for a sport without player values (the
@@ -45,6 +50,7 @@ class Sport:
     elo: dict = field(default_factory=dict)
     efficiency: Callable[[pd.DataFrame], pd.DataFrame] | None = None
     lineup: LineupSpec | None = None
+    cold_start: bool = False
 
 
 def register_sport(sport: Sport) -> Sport:

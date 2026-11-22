@@ -35,6 +35,7 @@ MARKET_COLUMNS = [
     "avg_draw_moneyline",
     "avg_over_odds",
     "avg_under_odds",
+    "odds_closing",
 ]
 
 SCHEMA = GameSchema(
@@ -47,10 +48,11 @@ SCHEMA = GameSchema(
     target="result",
     stats=tuple(STATS_COLUMNS + OPP_STATS_COLUMNS),
     location="location",
-    context=("rest", "opp_rest"),
+    context=("rest", "opp_rest", "promoted", "opp_promoted"),
     paired=(
         ("goals", "opp_goals"),
         ("rest", "opp_rest"),
+        ("promoted", "opp_promoted"),
         ("moneyline", "opp_moneyline"),
         ("avg_moneyline", "opp_avg_moneyline"),
     ),
@@ -77,4 +79,5 @@ SCHEMA = GameSchema(
     # 2006-2016 (RPS -0.00019 and -0.00016, inside noise) but worse on the 2020-2021 closing
     # averages the market arm uses (+0.00029, +0.00020); experiments/epl/README.md
     devig="proportional",
+    market_closing="odds_closing",
 )

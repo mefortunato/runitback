@@ -85,3 +85,48 @@ seasons themselves (an oracle, not a forecast) the same ratings score 0.2009 (by
 0.2061, 0.2084), so **about 0.002 of the gap is calibration on one validation season and about 0.007 is what a
 rating-only model lacks** against prices that see lineups and injuries. That is the room for the transformer and
 the player data. Promoted clubs' first games are still left out of the walk-forward (E2).
+
+## E2 and E3: cold start, promoted clubs and the football market tokens (2026-11)
+
+**Cold start (`Sport.cold_start`, on for the EPL).** A club the model has no state for (newly promoted, or back after
+years away) is predicted from an empty history, the same as a team's first game in training, instead of being left out
+of the backtest and refused in production. Elo and the transformer support it (`MatchupModel.supports_cold_start`);
+the other families ignore it. Three settings go with it: the transformer trains on such games (`min_history` 0, which
+`Sport.transformer` now carries); a team's history stops two seasons back (`drop_older_than` 2, applied in
+`sequence()` so training sees exactly what serving does, since a club absent for more than that has no state); and the
+context columns `promoted` / `opp_promoted` (1 where a club was not in the previous season's league, known before the
+season starts; 0 in the first season of the table).
+
+The walk-forward now predicts **every** test game: 380 in each of 2022-2026 (1,900), where 1,853 were predicted before
+(47 left out, about 9 a season). Elo's RPS on the 72 games in which a promoted club plays one of its first five
+games (`scripts/epl_promoted_rps.py`):
+
+| Elo (football), 2022-2026 | n | model RPS | market RPS | model minus market |
+|---|---|---|---|---|
+| a promoted club's first 5 games | 72 | 0.1640 | 0.1549 | +0.0091 ± 0.0112 |
+| all other games | 1,828 | 0.2038 | 0.1951 | +0.0087 ± 0.0025 |
+| every game | 1,900 | 0.2022 | 0.1936 | +0.0087 ± 0.0025 |
+
+The model is no further behind the market on promoted clubs' first games than elsewhere (the interval is wide: 72
+games). Those games are easier for both: the promoted side is usually the underdog.
+
+**Market tokens for a sport with draws (`market_features_with_draws`).** `_mkt_win_minus_loss` and `_mkt_draw_prob` (from
+the three de-vigged prices) replace the two-way probit; `_mkt_points_surprise` (points won, 3 / 1 / 0, minus the points the
+prices expected) replaces the win surprise; `_mkt_over_z` (the probit of the over's no-vig probability) replaces the constant
+2.5 line; `_mkt_closing` is 1 where the game's prices are closing prices (`odds_closing`: opening bet365 through 2012,
+closing Pinnacle after), so the model can weight sharp prices more. `_mkt_spread` (the handicap line) and its cover stay as
+tokens only. Other sports' tokens are unchanged. A constant column, such as the over's probit when every game is priced
+-110 / -110, has its zero spread replaced by 1 when the features are standardized, so it becomes 0 and never divides by 0.
+
+**`eff2` (`core/efficiency.epl_extra`, an option of its own).** Second-half goals and a red-card indicator, for both
+sides. The plan's third column, shots on target conceded per shot, is already there: it is the opponent's `accuracy` in
+`epl_efficiency` (`_eff_opp_accuracy`), so it is not added again.
+
+**A latent bug the smoke run found:** a transformer with `distribution=True` could not be given `margin_range` /
+`total_range` (`TransformerModel` did not take them), so it always predicted margins over -70..70, the NFL's. They now
+reach the model (defaults unchanged), so an EPL transformer can use -10..10.
+
+**Smoke run, not a result:** the transformer with every option on (history 20, d_model 32, market tokens, efficiency,
+`eff2`, Elo strength, `distribution=True` over -10..10) trained for 2 epochs on 2001-2024 (validation 2025) and
+predicted all 380 games of 2026 with finite probabilities (win 0.14-0.74, draw 0.14-0.27). That is a check that the
+pipeline runs end to end, nothing more; the arms are E4's.

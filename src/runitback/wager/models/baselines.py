@@ -181,7 +181,12 @@ class EloParams:
 
 
 class EloModel(MatchupModel):
-    """Margin = (team Elo - opponent Elo + home edge) x points_per_elo."""
+    """Margin = (team Elo - opponent Elo + home edge) x points_per_elo.
+
+    A team it has not seen starts at ``EloParams.new_team``, so it can be
+    predicted from its first game (``cold_start``)."""
+
+    supports_cold_start = True
 
     def __init__(self, schema: GameSchema, params: EloParams = EloParams()):
         self.schema = schema
@@ -279,7 +284,9 @@ class EloModel(MatchupModel):
 
         def elo(keys):
             raw = np.array([self.ratings.get(k, p.start) for k in keys])
-            return np.where(new_season, self._regress(raw), raw)
+            # a team's rating is regressed when its season starts; a first rating is not
+            known = np.array([k in self.ratings for k in keys])
+            return np.where(new_season & known, self._regress(raw), raw)
 
         diff = elo(matchups[s.team]) - elo(matchups[s.opp])
         return (diff + p.home * _location(matchups, s)) * p.points_per_elo

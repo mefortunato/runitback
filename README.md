@@ -826,6 +826,9 @@ has three outcomes (about 25% of games are draws), so its schema turns on the wa
   Shin; the EPL uses proportional, `experiments/epl/README.md`). The market arm is the closing market average
   (`avg_*`, from 2019-20), the same bookmakers in every season; the games table's preferred bookmaker (closing
   Pinnacle where it has prices) is a second arm, `book`.
+- **Cold start.** A club the model has no state for (promoted, or back after years away) is predicted from an empty
+  history rather than left out (`Sport.cold_start`; Elo and the transformer). The ingest adds `promoted` /
+  `opp_promoted` (not in the previous season's league) and `odds_closing` (the prices are closing prices).
 - **Scoring.** The ranked probability score (RPS, lower is better; `core/metrics.three_way_scores`) on every game,
   draws included, with multiclass Brier and log loss beside it. `backtest`, `benchmark`, the ablation tables and
   tuning report RPS with paired 95% CIs against the market. There are no spread or moneyline records: a draw loses a

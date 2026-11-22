@@ -19,6 +19,7 @@ from .metrics import (
 from .predictor import MatchupModel, Predictor, save_predictor
 from .schema import GameSchema
 from .splits import SeasonSplit
+from .sport import get_sport
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,8 @@ def finish_fit(
         total_sigma = calibrate_total(rows, raw_total, model.schema, split, metrics)
     if print_metrics:
         print(format_metrics(metrics))
+    if getattr(model, "supports_cold_start", False) and get_sport(sport).cold_start:
+        model.cold_start = True
     model.update_state(games)
     predictor = Predictor(
         model,
