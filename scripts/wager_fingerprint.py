@@ -23,10 +23,10 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from runitback.wager import backtest as bt  # noqa: E402
-from runitback.wager import experiments, staking, tune  # noqa: E402
-from runitback.wager.core.sport import Sport, register_sport  # noqa: E402
-from tests.wager.conftest import TOY_SCHEMA, make_games  # noqa: E402
+from runitback.wager import backtest as bt
+from runitback.wager import experiments, staking, tune
+from runitback.wager.core.sport import Sport, register_sport
+from tests.wager.conftest import TOY_SCHEMA, make_games
 
 DECIMALS = 6
 
