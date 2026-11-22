@@ -16,22 +16,11 @@ repo (the public runitback URL), it says `RUNITBACK_URL`. Fill that in first.
 GitHub Pages can't send a server-side 301, so the redirect has to happen in the page itself. That
 works out, because we want a notice and a countdown anyway rather than a silent redirect.
 
-### Route mapping
+### Redirect target
 
-Both sites use `/<sport>/...` paths with the same shapes, so the redirect target is the sportsml
-path with `/sportsml` removed, on the runitback host, with the query string kept:
-
-| sportsml | runitback |
-|---|---|
-| `/sportsml/` | `/` |
-| `/sportsml/<sport>[/<season>[/<date>]]` | `/<sport>[/<season>[/<date>]]` |
-| `/sportsml/<sport>/recent[/<season>[/<date>]]` | same |
-| `/sportsml/<sport>/games/<gameId>` | same (check that game ids match, see Phase 0) |
-| `/sportsml/<sport>/rankings`, `/performance`, `/map`, `/challenge` | same |
-
-If a sport isn't in runitback's `SPORTS` list (`web/src/sports.ts`), or its predictions aren't
-published there yet, the target falls back to runitback's home page `/`, so nobody lands on a
-"missing" page.
+The redirect is global: **every sportsml page, whatever its path or query string, sends readers to
+runitback's home page** (`RUNITBACK_URL/`). There's no per-page mapping, so nothing depends on the
+two sites' routes or game ids matching. Readers pick their sport from runitback's home page.
 
 ## Phase 0: go / no-go checks (runitback)
 
@@ -40,13 +29,10 @@ Don't start the cutover until every box is ticked.
 - [ ] **Every sport sportsml shows is published on runitback.** sportsml exports `nfl, cfb, nba,
       cbb, wnba, wcbb, nhl, mlb`. At the time of writing, runitback's README lists `nhl` as not yet
       ported to `runitback.wager`, and says site pages for the newly ported sports "come later". Check
-      `RUNITBACK_URL/api/.../sports` (whatever `api.sports()` calls) lists every sport. Any sport
-      still missing goes in the redirect's fallback list (below) until it ships.
-- [ ] **Every sportsml page exists on runitback for each sport:** upcoming, recent, game detail,
-      rankings, performance, map, challenge. Open one URL of each kind on both sites and compare.
-- [ ] **Game ids match**, so `/<sport>/games/<gameId>` links carry over. Pick a few recent games
-      per sport and open the same id on both sites. If ids differ for a sport, send that sport's
-      game URLs to `/<sport>/recent` instead.
+      `RUNITBACK_URL/api/.../sports` (whatever `api.sports()` calls) lists every sport. If one is still
+      missing, decide whether to wait for it or cut over without it.
+- [ ] **runitback's home page links every sport**, since that's where every redirected reader
+      lands.
 - [ ] **runitback's backtests reproduce sportsml's production Brier** (plan package S4, the
       `experiments/<sport>/README.md` write-ups). This is the "the new site is at least as good"
       check.
@@ -72,14 +58,14 @@ On every page of the GitHub Pages build:
    > The predictions, rankings, backtests and "Beat the model" now live at
    > **runitback** (link), with the same pages and more.
    >
-   > Taking you to the same page on Run It Back in **10**…
+   > Taking you to Run It Back in **10**…
    >
    > [ Go now ]   [ Stay on the archived SportsML site ]
    >
    > _This site is archived and no longer updated. Its predictions stopped on <freeze date>.
    > SportsML will eventually be removed; please update your bookmarks._
 
-2. The countdown ticks down once a second. At 0 the page goes to the mapped runitback URL with
+2. The countdown ticks down once a second. At 0 the page goes to runitback's home page with
    `location.replace` (so Back doesn't bounce the reader into the redirect again).
 3. **Go now** redirects immediately.
 4. **Stay on the archived SportsML site** stops the timer and closes the dialog. The reader has to
@@ -88,7 +74,7 @@ On every page of the GitHub Pages build:
 5. Once someone has chosen to stay, the countdown doesn't come back on later pages in that tab
    (`sessionStorage`, key `sportsml-stay`). A slim banner stays pinned at the top of every page
    instead: "SportsML is archived and will eventually be removed. **Go to Run It Back →**" (the
-   link goes to the mapped URL for the current page). A new tab or visit shows the countdown again.
+   link goes to runitback's home page). A new tab or visit shows the countdown again.
    That's deliberate: staying is a one-visit choice, not a permanent opt-out.
 6. Storage access is wrapped in `try/catch`. If `sessionStorage` is blocked, the countdown just
    shows on every page load, which is still correct.
@@ -107,33 +93,23 @@ Not shown in the hash-routed artifact build (`npm run build:artifact`, `VITE_SPO
 
 ### Files
 
-- `web/src/lib/moved.ts`: the pure logic, unit-tested in `web/src/lib/moved.test.ts`:
+- `web/src/lib/moved.ts`: the constants, and the stay flag's read/write wrapped in `try/catch`
+  (unit-tested in `web/src/lib/moved.test.ts`, including a storage that throws):
 
   ```ts
-  export const RUNITBACK_URL = import.meta.env.VITE_RUNITBACK_URL ?? 'RUNITBACK_URL';
+  // the home page: every sportsml page redirects here, whatever its path
+  export const RUNITBACK_HOME = new URL('/', import.meta.env.VITE_RUNITBACK_URL).toString();
   export const COUNTDOWN_SECONDS = 10;
-  // sports published on runitback; others redirect to its home page
-  export const RUNITBACK_SPORTS = new Set(['nfl', 'cfb', 'nba', 'cbb', 'wnba', 'wcbb', 'mlb']);
-
-  /** The runitback URL for a sportsml path (base already stripped) and query string. */
-  export function runitbackUrl(path: string, search: string): string {
-    const [sport] = path.split('/').filter(Boolean);
-    const target = sport && !RUNITBACK_SPORTS.has(sport) ? '/' : path || '/';
-    return new URL(target + (target === '/' ? '' : search), RUNITBACK_URL).toString();
-  }
   ```
 
-  Tests: `/`, `/nfl`, `/nfl/2025/12`, `/nba/recent/2025`, `/cfb/games/401628374?x=1`, `/nhl/map`
-  (falls back to `/` while NHL is missing), a trailing slash, and an unknown sport.
-- `web/src/lib/components/MovedNotice.svelte`: the dialog, timer and stay banner. It reads
-  `page.url.pathname` with `base` stripped (`$app/paths`), so the target follows client-side
-  navigation. The timer starts in `$effect` (client only: the prerendered HTML ships the dialog
-  closed, and a reader without JavaScript gets the static banner with the link).
+  The build fails if `VITE_RUNITBACK_URL` is unset, rather than shipping a broken link.
+- `web/src/lib/components/MovedNotice.svelte`: the dialog, timer and stay banner, all pointing at
+  `RUNITBACK_HOME`. The timer starts in `$effect` (client only: the prerendered HTML ships the
+  dialog closed, and a reader without JavaScript gets the static banner with the link).
 - `web/src/routes/+layout.svelte`: render `<MovedNotice />` above the header when not the artifact
   build.
 - `web/src/app.html`: add `<meta name="robots" content="noindex">` so search engines drop the old
-  pages, and `<link rel="canonical">` to the runitback URL for the page (set from the layout with
-  `<svelte:head>`).
+  pages.
 - `.github/workflows/site.yml`: pass `VITE_RUNITBACK_URL` to the Build step, as a repository
   variable (`vars.RUNITBACK_URL`) rather than a hard-coded host.
 - `README.md`: a line at the top: "SportsML has moved to [Run It Back](RUNITBACK_URL). This
@@ -144,7 +120,8 @@ Not shown in the hash-routed artifact build (`npm run build:artifact`, `VITE_SPO
 - [ ] `cd web && npm test && npm run check && npm run build`, with the summary lines pasted in the PR.
 - [ ] Preview the build (`npm run preview` with `BASE_PATH=/sportsml`) and test in a browser, on
       desktop and at phone width:
-  - [ ] the countdown redirects to the mapped page at 0 (check a deep link, e.g. a game page);
+  - [ ] the countdown lands on runitback's home page at 0, from the home page and from a deep link
+        (e.g. a game page, with a query string);
   - [ ] **Stay** stops it, the slim banner appears, and moving to another page doesn't restart it;
   - [ ] a new tab shows the countdown again;
   - [ ] Escape and clicking outside don't dismiss it;
@@ -159,8 +136,9 @@ Not shown in the hash-routed artifact build (`npm run build:artifact`, `VITE_SPO
        Actions → Variables), and set the freeze date in the notice text.
 3. [ ] **Merge the Phase 1 PR.** `site.yml` redeploys on the push. As it's a `web/`-only change, it
        reuses the deployed data (the frozen export) instead of fetching new data.
-4. [ ] Check the live site: `https://mefortunato.github.io/sportsml/nfl` shows the notice and lands
-       on `RUNITBACK_URL/nfl`, and a deep link survives the 404.html fallback.
+4. [ ] Check the live site: `https://mefortunato.github.io/sportsml/` and a deep link such as
+       `.../sportsml/nfl/rankings` (served through the 404.html fallback) both show the notice and
+       land on `RUNITBACK_URL/`.
 5. [ ] **Stop sportsml's schedules:** delete the `schedule:` block from `site.yml` and disable the
        Site and Train workflows (Actions → workflow → "Disable workflow"). This stops spending The
        Odds API quota (`ODDS_API_KEY`) on a site nobody's meant to use. If runitback needs that key,
@@ -184,7 +162,7 @@ e.g. a season):
 
 1. [ ] Unarchive, replace the Pages deployment with a single redirect page (no app, no data, no
        Stay button): a short "SportsML has moved" note, `<meta http-equiv="refresh">` and a JS
-       redirect that keeps the path, also used as `404.html` so every deep link is covered.
+       redirect to runitback's home page, also used as `404.html` so every old URL is covered.
        Re-archive.
 2. [ ] Later still: unpublish GitHub Pages for the repo (Settings → Pages), and optionally delete
        the `webdata` and `backtest-cache` releases to free their storage. The repo stays archived
@@ -193,6 +171,6 @@ e.g. a season):
 ## Optional: welcome on runitback
 
 A small runitback change, not needed for the cutover: the redirect appends `?from=sportsml`, and
-runitback shows a one-time "Welcome from SportsML: same pages, new home" note and strips the
+runitback shows a one-time "Welcome from SportsML: same pages, new home' note on its home page and strips the
 parameter with `history.replaceState`. It's a frontend-only change (`web/`), so it doesn't touch any
 production settings, but it does deploy on merge to `main` through `deploy-cloud-run.yml`.
