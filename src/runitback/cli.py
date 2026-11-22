@@ -825,7 +825,43 @@ def cfb_train(out: Path = cfb_paths.runs_dir() / "prod", data: Path = CFB_DATA /
     from .cfb.foundation import CFBGenerator
     _log()
     gen = CFBGenerator(val_week=val_week, epochs=epochs, device=device, max_games=max_games or None)
-    typer.echo(gen.train(data, out, val_season, threads or None))
+    ckpt = gen.train(data, out, val_season, threads or None)
+    from .cfb.sim.sampler import attach_team_names  # the server lists schools from the checkpoint
+    typer.echo(f"{len(attach_team_names(ckpt, data))} school names added to {ckpt}")
+    typer.echo(ckpt)
+
+
+@cfb.command("fetch-model")
+def cfb_fetch_model(version: str = typer.Option(None, help="release version (default: the latest)"),
+                    dest: Path = cfb_paths.default_checkpoint(), force: bool = False,
+                    optional: bool = typer.Option(False, help="succeed without downloading if no college "
+                                                              "football model has been released yet")):
+    """Download a released, pre-trained college football model (no data download or training needed)."""
+    from .cfb import release
+    if optional and version is None and release.LATEST is None:
+        typer.echo("no college football model released yet; skipping")
+        return
+    typer.echo(f"model ready: {release.fetch_model(dest, version, force)}")
+
+
+@cfb.command("register-release")
+def cfb_register_release(version: str = typer.Argument(..., help="new version, e.g. v0.1.0 (the tag is cfb-<version>)"),
+                         ckpt: Path = typer.Option(..., help="the checkpoint attached to that release"),
+                         file: Path = typer.Option(None, help="releases.json to edit (default: the installed package's; "
+                                                              "pass src/runitback/cfb/releases.json in a checkout)")):
+    """Add a published checkpoint to cfb/releases.json and make it the latest (what the Docker image bakes in)."""
+    from .cfb.release import RELEASES_FILE
+    from .cfb.release import register_release as run
+    path = file or RELEASES_FILE
+    rel = run(version, ckpt, path)
+    typer.echo(json.dumps({"latest": rel["latest"], "file": str(path), **rel["models"][version]}, indent=1))
+
+
+@cfb.command("sha256")
+def cfb_sha256(ckpt: Path = cfb_paths.default_checkpoint()):
+    """Print a checkpoint's SHA-256, for adding a release to runitback/cfb/release.py."""
+    from .core.release import sha256
+    typer.echo(f"{sha256(ckpt)}  {ckpt}")
 
 
 @cfb.command("foundation")
@@ -884,13 +920,25 @@ def college_players(gender: str = GENDER_OPT, start: int = typer.Option(None), e
 @college.command("lineups")
 def college_lineups(gender: str = GENDER_OPT,
                     rule: str = typer.Option("dnp", help="dnp: the game's box-score roster minus players who "
-                                                         "didn't play; previous: the last 3 games' players")):
+                                                         "didn't play; previous: the last 3 games' players"),
+                    live: bool = typer.Option(False, help="also project ESPN's upcoming games (current rosters, "
+                                                          "/injuries): projected_lineups_upcoming.parquet"),
+                    days: int = typer.Option(2, help="--live: today and the next DAYS - 1 days (US Eastern)")):
     """Projected rotations for every game: data/<gender>/processed/projected_lineups.parquet
     (runitback.college.lineups); prints the check vs who actually played."""
+    import pandas as pd
+
     from .college.data import gender as get
     from .college.lineups import build_lineups
+    from .college.live import live_lineups
     _log()
-    typer.echo(build_lineups(_college_dir(get(gender).name) / "processed", rule).round(3).to_string(index=False))
+    g = get(gender).name
+    proc = _college_dir(g) / "processed"
+    typer.echo(build_lineups(proc, rule).round(3).to_string(index=False))
+    if live:
+        up = live_lineups(g, pd.read_parquet(proc / "player_games.parquet"), days=days)
+        up.to_parquet(proc / "projected_lineups_upcoming.parquet", index=False)
+        typer.echo(f"upcoming: {up.game_id.nunique()} games, {len(up)} players")
 
 
 @college.command("cbbd")
@@ -921,7 +969,17 @@ def college_player_values(gender: str = GENDER_OPT,
                           first_season: int = typer.Option(0, help="first season with pv.parquet rows "
                                                                    "(default: cbb 2012, wcbb 2017)"),
                           apm: bool = typer.Option(True, help="men's: adjusted plus-minus from the cached CBBD "
-                                                              "days (data/cbb/cbbd) around the box values")):
+                                                              "days (data/cbb/cbbd) around the box values"),
+                          fits_season: int = typer.Option(0, help="also write that season's weekly values "
+                                                                  "(fits_<season>.parquet, for the swap test)"),
+                          lineups: Path = typer.Option(None, help="projected rotations to sum (default "
+                                                                  "<processed>/projected_lineups.parquet; "
+                                                                  "projected_lineups_previous.parquet is the "
+                                                                  "leak-free rule)"),
+                          upcoming: Path = typer.Option(None, help="projected rotations of the upcoming games "
+                                                                   "(`runitback college lineups --live`'s "
+                                                                   "projected_lineups_upcoming.parquet; default "
+                                                                   "<processed>/ if present): their pv rows")):
     """Weekly leak-free player values and each team-game's lineup values (pv.parquet, ppg.json,
     values_latest.csv; runitback.college.player_values). Needs `players` and `lineups` first."""
     import pandas as pd
@@ -935,7 +993,7 @@ def college_player_values(gender: str = GENDER_OPT,
     proc = d / "processed"
     pg = pd.read_parquet(proc / "player_games.parquet")
     tg = pd.read_parquet(proc / "team_games.parquet")
-    proj = pd.read_parquet(proc / "projected_lineups.parquet")
+    proj = pd.read_parquet(lineups or proc / "projected_lineups.parquet")
     players = pd.read_parquet(proc / "players.parquet")
     poss = None
     if g == "cbb" and apm and (d / "cbbd").exists():
@@ -953,9 +1011,16 @@ def college_player_values(gender: str = GENDER_OPT,
             poss = pd.concat(parts, ignore_index=True)
             poss.to_parquet(proc / "possessions.parquet", index=False)
             typer.echo(json.dumps(stats))
-    gv = pv.build(pg, tg, proj, first_season or pv.FIRST_SEASON[g], poss, players, apm_from=cl.FIRST_SEASON)
+    upcoming = upcoming or proc / "projected_lineups_upcoming.parquet"
+    up = pd.read_parquet(upcoming) if upcoming.exists() else None
+    gv = pv.build(pg, tg, proj, first_season or pv.FIRST_SEASON[g], poss, players, apm_from=cl.FIRST_SEASON,
+                  upcoming=up)
     pv.write_game_table(gv, out or Path(f"player_values/{g}"), players)
-    typer.echo(f"{len(gv.pv)} team-games, {len(gv.fits)} weekly fits -> {out or Path(f'player_values/{g}')}")
+    if fits_season:
+        typer.echo(pv.write_fits(gv, out or Path(f"player_values/{g}"), fits_season))
+    n_up = int(gv.pv.game_id.isin(set(up.game_id.astype(str))).sum()) // 2 if up is not None else 0
+    typer.echo(f"{len(gv.pv)} team-games ({n_up} upcoming games), {len(gv.fits)} weekly fits "
+               f"-> {out or Path(f'player_values/{g}')}")
 
 
 def _college_league(gender: str):

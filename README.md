@@ -492,6 +492,20 @@ HTTP: `POST /api/nba/simulate {home, away, season, n, before?, ratings?}`, and i
 `GET /api/nba/teams` (teams always; seasons once a model is loaded).
 Set `RUNITBACK_NBA_DATA`, `RUNITBACK_NBA_RUNS` or `RUNITBACK_NBA_CKPT` to move the defaults.
 
+### College football generator
+
+`runitback.cfb.sim` is the NFL sampler under the college rules engine (`runitback.cfb.engine.rules`:
+tries from the 3, untimed overtime from the 25); the model is the team-level NFL play transformer
+trained on college plays, so there are no lineups, player stats or season simulator. Teams are ESPN
+team ids; `GET /api/cfb/teams` lists `{id, name}` and every other route speaks school names. Routes
+as the NFL's: `POST /api/cfb/simulate`, `POST /api/cfb/games`, `.../step`, `.../undo`, `.../winprob`.
+
+Train locally with `runitback cfb download --no-players`, `runitback cfb preprocess` and
+`runitback cfb train` (adds the school names to `runs/cfb/prod/model.pt`), or publish a model with
+the **CFB model** workflow (started by hand: trains on every season, releases it as `cfb-<version>`
+and opens the PR that registers it in `src/runitback/cfb/releases.json`; merging that PR deploys it).
+`runitback cfb fetch-model` downloads the registered one; `RUNITBACK_CFB_CKPT` moves the default.
+
 **NBA limitations:** team-level only (no players, injuries or rest); season simulations hold
 team strength fixed (no in-season rating updates) and don't export synthetic training data the
 way NFL seasons do; shot locations on the court are
@@ -1013,7 +1027,7 @@ NEW / OTHER.
 The repository includes a Docker image that builds the web app, installs the CPU version of PyTorch,
 and downloads the checksum-verified `v0.1.0` NFL model during the image build. It runs the combined
 server (`runitback.server:app`); the NBA page loads `RUNITBACK_NBA_CKPT`
-(`/app/runs/nba/prod/model.pt`) if the image contains one. Install and authenticate
+(`/app/runs/nba/prod/model.pt`) and the CFB page `RUNITBACK_CFB_CKPT` (`/app/runs/cfb/prod/model.pt`) if the image contains one. Install and authenticate
 the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install), then create and edit the deployment
 environment file:
 

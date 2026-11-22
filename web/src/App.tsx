@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import CfbApp from "./cfb/CfbApp";
 import Home from "./Home";
 import NbaApp from "./nba/NbaApp";
 import NflApp from "./nfl/NflApp";
@@ -14,6 +15,7 @@ import { navSports, sportById } from "./sports";
 // (only the sports with a simulator: see ./sports.ts)
 const GENERATORS: Record<string, () => React.ReactNode> = {
   nfl: () => <NflApp />,
+  cfb: () => <CfbApp />,
   nba: () => <NbaApp />,
 };
 

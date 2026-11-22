@@ -1,0 +1,10 @@
+{
+  "latest": "v0.1.0",
+  "models": {
+    "v0.1.0": {
+      "tag": "cfb-v0.1.0",
+      "asset": "runitback-cfb-model-v0.1.0.pt",
+      "sha256": "84fe3d9e6f648227d116bb1eef49f4e246ca04bb0c79db7681368162269a611e"
+    }
+  }
+}

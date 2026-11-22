@@ -64,8 +64,9 @@ def main() -> None:
     ap.add_argument("--out", type=Path)
     ap.add_argument("--pv", type=Path, help="player-value table for the subsets (instead of <root>/changes)")
     ap.add_argument("--sport", default="nfl")
+    ap.add_argument("--all-games", action="store_true", help="also games with no home side (neutral sites)")
     a = ap.parse_args()
-    results = load(a.root, None)
+    results = load(a.root, None, a.all_games)
     parts = [report(results, a.baseline).assign(subset="all")]
     for name, ids in (pv_subsets(a.pv, a.sport) if a.pv else subsets(a.root)).items():
         sub = {k: v[v.index.isin(ids)] for k, v in results.items()}

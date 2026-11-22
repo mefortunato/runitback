@@ -298,8 +298,9 @@ replacement; players of the last two seasons with 600+ minutes in the window):
    `tune-apm` with 2027 added. The window and decay are untuned. The CBBD cache (`data/cbb/cbbd`, about 220 MB) is rebuilt in each
    run: a full backfill is about 470 calls of a key shared with the CFB pipeline, so a workflow run
    that sets `cbbd: true` should be a deliberate choice.
-2. **C4:** register `LINEUP` on both college `Sport`s, join `pv.parquet` on `(game_id, team_id)`,
-   and run `prod` / `pbp32` / `pbp32_pvc` with 4 seeds plus the swap test.
+2. **C4 (done; see "The wager model on the foundation and the player values (C4)")**:
+   `LINEUP` is registered on both college `Sport`s and `pv.parquet` joins on `(game_id, team)`. The `prod` /
+   `pbp32` / `pbp32_pvc` arms with 4 seeds and the swap test are written up there.
 3. **Better values for changes.** Tune the box-value shrinkage on how well within-season changes
    predict margins, not only on season-level fit, so that a starter's absence is valued at what it
    costs. Opponent-adjust the rates by the schedule's strength. Add a freshman prior from recruiting
@@ -353,4 +354,176 @@ Work package C2 parameterizes the basketball engine by league (`runitback.nba.le
   played games exist.
 
 **Not done / next:** run `college-foundation.yml` and add the fold table (validation loss, PCA, the
-`nba_foundation_report.py` team-strength check) here; C4 joins `pbp_32.parquet` on `(game_id, team)`.
+`nba_foundation_report.py` team-strength check) here; C4 (`college-wager-experiment.yml`) trains the
+2022-2026 folds in its own run and joins `pbp_32.parquet` on `(game_id, team)`.
+
+## The wager model on the foundation and the player values (C4)
+
+Work package C4 (`docs/multisport/PLAN.md`): does the men's college basketball wager model
+(`runitback.wager`, the S4a port) get better with C2's frozen `pbp32` game embeddings and C3's player
+values of each game's projected rotation (`pvc`), and does changing a starter move its prediction the
+right way at every position? It is the NBA's N5 (`experiments/nba/README.md`) with college data.
+
+**Short answer** (run 44214391955 of `college-wager-experiment.yml`, `gender: cbb`, `cbbd` on; 4-seed ensembles
+against `prod_e4`, 28,335 games over 2022-2026, neutral sites included)
+- **`prod_pvc_e4` (the box-score model plus the player-value lineup terms) passes the bar on all three markets.**
+  Moneyline **-0.0007 ± 0.0003**, spread **-0.0007 ± 0.0004**, total -0.0004 ± 0.0003 (paired Brier, 95% CI,
+  negative is better). Moneyline is better in every season (-0.0003 to -0.0011), by little: the NBA's gain was
+  -0.0031.
+- **`pbp32_pvc_e4`, the plan's arm, passes but adds nothing.** Moneyline -0.0003 ± 0.0004, spread -0.0001 ± 0.0005, total
+  -0.0010 ± 0.0007: every interval includes 0. **`pbp32_e4` alone fails moneyline** (+0.0006 ± 0.0003). The foundation
+  embeddings do not help here.
+- **Most of the moneyline gain depends on the rotation leak.** On the leak-free rotation (`prod_pvc_prev_e4`, the team's last 3
+  games' players) the gains shrink to moneyline -0.0001 ± 0.0003, spread -0.0004 ± 0.0004, total -0.0003 ± 0.0003: still
+  non-inferior, no longer a significant gain. For moneyline, knowing who sat out is most of what the values add; for spread about half.
+- **The gain is in games where the rotation moved.** `prod_pvc_e4` moneyline: -0.0026 ± 0.0008 on the 6,865 games whose
+  projected rotation moved most (the top quarter), +0.0002 ± 0.0003 on the 13,132 steadiest. Spread: -0.0034 ± 0.0012 and +0.0003 ± 0.0004.
+- **The swap test passes** for both swapped arms: changing one starter to the best regular / worst regular / replacement / out moves the
+  margin and win probability the right way in 100% of 2026 games at G, F and C.
+- **The weight the fit learned is near C3's measurement.** Starting at 0.2 margin points per point of value change, the fits ended at
+  0.26 (`pbp32_pvc_s0`) and 0.27 (`prod_pvc_s0`), against C3's 0.15 within a season and 0.25 at season openers and the NFL's 0.58.
+  Starting at the NFL's 0.6 (`prod_pvc_w6`, one seed) changed no market beyond noise.
+- **Still behind the market.** `prod_pvc_e4` trails the closing moneyline by +0.0019 ± 0.0008 Brier (`prod_e4`: +0.0026 ± 0.0008).
+
+Results: `e4/report.md`, `e4/subsets.md`, `single/report.md` and `swap/*.md` in the run's `cbb-wager-results` artifact. The men's adjusted
+plus-minus (C3, 2024 on) was on, so the 2024-2026 values include it.
+
+### Setup
+
+- **Walk-forward, 2022-2026** (5 folds, about 6,000 games each, neutral sites included). For each test season S the wager model, the
+  foundation fold and its PCA see only games before S, and the player values are refit weekly on games
+  before each game's Monday.
+- **Games and lines:** CollegeBasketballData for finished games (`CBBD_API_KEY`, about a dozen calls a season), ESPN's odds API for upcoming ones. The wager games table is rebuilt in the run
+  (`runitback-wager cbb download` / `process`).
+- **Values:** Box-score values from 2012 plus, with `cbbd: true`, the adjusted plus-minus from 2024 (C3). Rotations are C3's projections.
+- **Arms** (`experiments/cbb/wager.yaml`; every name ends in `_s<seed>`):
+
+| arm | what it adds to `prod` |
+|---|---|
+| `prod` | nothing: the S4a box-score production model, the baseline |
+| `pbp32` | fold S's frozen 32-dim per-possession game embeddings in the history tokens |
+| `pbp32_pvc` | + each position group's (G / F / C, offense and defense) change in the projected rotation's value vs the team's last 8 rotations, through sign-constrained additive terms on margin and total (the NFL's production `pvc`). The values are hidden from the head's MLP |
+| `prod_pvc` | the player values without the foundation (the NBA's promoted arm) |
+| `prod_pvc_prev` | `prod_pvc` on the leak-free rotation (below) |
+| `prod_pvc_w6` | `prod_pvc` with the NFL's lineup-weight start (one seed, below) |
+
+- **Four seeds, as four jobs.** A college fit takes 1-2 hours, so four in one job would pass GitHub's
+  6-hour limit. Each seed is its own matrix job (`<arm>_s0 .. _s3`, seeds 0-3 as `ensemble: 4` would
+  train) and `scripts/ensemble_predictions.py` averages them into `<arm>_e4`. This differs from the
+  NBA's `_e4` in one way: the NBA's ensemble averages the members' margins and totals inside one model and
+  calibrates one sigma; here the members' margins, totals and probabilities are each averaged. It is the
+  same for every arm, so promotion still compares `_e4` with `_e4`. Single-seed tables use seed 0 of each arm.
+- **The `pvc` weight.** The lineup terms add `w` points of margin per point of value change, with one
+  learned non-negative `w`. The head starts it at 0.6 (the NFL learned 0.58). C3 measured much less in college
+  basketball: a change in projected lineup value moves the margin by 0.15 per point within a season (men;
+  0.14 women), and 0.25 (men) / 0.47 (women) at season openers, because the values overstate the gap
+  between a starter and his backup. So the college arms start `w` at 0.2 (`additive_init`, a new
+  option on the head; the default is unchanged, so NFL and NBA models are identical). `prod_pvc_w6`
+  starts it at 0.6 to show whether the start matters, and the swap-test report prints the weight each fit
+  ended at.
+- **The rotation leak, and its comparison.** ESPN's college box scores give no did-not-play reason, so C3's default
+  projection removes everyone who did not play. That includes coach's-decision absences, a larger leak
+  than the NBA's injury reasons (C3: top-5 right 81% against 74-75% without it). `prod_pvc_prev` uses
+  the leak-free rotation (the players of the team's last 3 games, nobody removed;
+  `runitback college lineups --rule previous`). **Read the gain of `pvc` against `prod_pvc_prev`
+  before believing it.** There are no historical college injury reports to do better.
+- **Joins.** Embeddings and values key games by the ESPN id string and teams by the school name the wager
+  games table uses. A `joins` job (`scripts/college_join_check.py`) fails the run before the arms start if
+  fewer than 80% of a season's Division I games find their rows. On a local check of 2025 men's games, 99.98% found
+  their `pv.parquet` row and 99.97% their leak-free one. Non-Division I opponents are the pooled `Non-D1` team and have no
+  player values, so those sides carry the missing flag (8.4% of 2025 men's games have one).
+- **Swap test** (`scripts/college_lineup_swap.py`, run on `pbp32_pvc_s0` and `prod_pvc_s0`, 2026): the model is fit on
+  the seasons before 2026, then every game of 2026 is re-predicted with one change to the listed (home)
+  team's projected rotation. The team's G, F or C with the most projected minutes becomes the group's
+  best / worst regular (offense plus defense value, 600+ minutes on the floor in the fit window, a 2026 player), a
+  replacement-level player (value 0), or is ruled out (the others' minutes scale up to 200, none above
+  38). The change goes through the week's values into the `_pv_*` row. A position passes when the predicted
+  margin and win probability move with the value in every game where it moved by more than 0.05
+  points. By default every second game day is predicted (`swap-stride`).
+- **Scoring:** paired per-game Brier difference to the baseline on moneyline, spread and total (95% CI), all
+  games including neutral sites (12% of 2025 men's games; `--all-games`), plus the games whose rotation moved most.
+  The market columns are the lines in the games table.
+
+### Results
+
+Paired Brier difference vs `prod_e4` (negative is better), ± 95% CI half-width, 4 seeds, 2022-2026. "fails" means the interval is above 0.
+
+| arm | n | Brier (moneyline) | Δ moneyline | Δ spread | Δ total | margin RMSE |
+|---|---|---|---|---|---|---|
+| prod_e4 (baseline) | 28,335 | 0.1799 | | | | 11.35 |
+| pbp32_e4 | 28,335 | 0.1805 | **+0.0006 ± 0.0003 (fails)** | +0.0004 ± 0.0004 | -0.0009 ± 0.0007 | 11.37 |
+| pbp32_pvc_e4 | 28,335 | 0.1797 | -0.0003 ± 0.0004 | -0.0001 ± 0.0005 | -0.0010 ± 0.0007 | 11.35 |
+| **prod_pvc_e4** | 28,335 | **0.1792** | **-0.0007 ± 0.0003** | **-0.0007 ± 0.0004** | -0.0004 ± 0.0003 | 11.32 |
+| prod_pvc_prev_e4 (leak-free rotation) | 28,335 | 0.1798 | -0.0001 ± 0.0003 | -0.0004 ± 0.0004 | -0.0003 ± 0.0003 | 11.33 |
+| market | 28,342 | 0.1773 | | | | 11.26 |
+
+Promotion bar (`docs/multisport/PLAN.md` section 3): on every market the 95% CI includes 0 or favors the arm. `prod_pvc_e4`, `prod_pvc_prev_e4`
+and `pbp32_pvc_e4` meet it; `pbp32_e4` does not (moneyline). Against `pbp32_e4` as the baseline, `prod_pvc_e4` is better on moneyline
+(-0.0013 ± 0.0004) and spread (-0.0010 ± 0.0005); against `prod_pvc_e4`, `pbp32_pvc_e4` is worse on moneyline (+0.0004 ± 0.0003) and spread
+(+0.0006 ± 0.0004).
+
+Moneyline Δ Brier by season, `prod_pvc_e4`: 2022 -0.0005, 2023 -0.0011, 2024 -0.0009, 2025 -0.0008, 2026 -0.0003. `pbp32_e4` is worse in
+four of five seasons.
+
+**Games where the rotation moved** (moneyline Δ vs `prod_e4`; `rotation_moved` is the top quarter of games by the summed change in both
+teams' lineup values, `steady` the bottom half):
+
+| arm | all (28,335) | rotation_moved (6,865) | steady (13,132) |
+|---|---|---|---|
+| pbp32_pvc_e4 | -0.0003 ± 0.0004 | -0.0022 ± 0.0009 | +0.0008 ± 0.0005 |
+| prod_pvc_e4 | -0.0007 ± 0.0003 | -0.0026 ± 0.0008 | +0.0002 ± 0.0003 |
+| prod_pvc_prev_e4 | -0.0001 ± 0.0003 | -0.0012 ± 0.0007 | +0.0004 ± 0.0003 |
+
+**Single seed** (seed 0, vs `prod`; `single/report.md`): `pbp32` +0.0006 ± 0.0005 moneyline; `pbp32_pvc` -0.0002 ± 0.0005;
+`prod_pvc` -0.0004 ± 0.0005 moneyline, -0.0011 ± 0.0007 spread; `prod_pvc_prev` +0.0002 ± 0.0004; `prod_pvc_w6` -0.0005 ± 0.0005. Against
+`prod_pvc`, `prod_pvc_w6` is within ±0.0004 on every market (total +0.0004 ± 0.0002 is the only interval above 0): the weight's start does not matter.
+
+### Swap test (2026, `prod_pvc_s0`, 3,210 games, every second game day)
+
+One change to the listed (home) team's projected rotation; Δ margin in points (`swap/swap_2026_prod_pvc_s0.md`; `pbp32_pvc_s0` is within 0.05).
+
+| group | best regular (Δ margin) | worst regular | replacement | out |
+|---|---|---|---|---|
+| G | +1.18 (Keonte Jones) | -1.66 | -1.81 | -0.51 |
+| F | +1.66 (Yaxel Lendeborg) | -1.30 | -1.22 | -0.08 |
+| C | +0.64 (Micah Handlogten) | -0.61 | -0.59 | +0.18 |
+
+Each is ± 0.02-0.03 (95% CI) and moves the right way in 100% of games where the value moved by more than 0.05 points. "Out" for a center
+adds value (+0.67 on average): the typical projected starting center is probably below replacement in these values, so removing him and giving his
+minutes to the others raises the lineup. The predicted total moves by up to 1.3 points and its sign varies by swap, because the total reads offense and
+defense separately and a "best" player is not best at both.
+
+### What it means
+
+- **Promote `prod_pvc_e4` if anything, not `pbp32_pvc_e4`.** It is the only men's arm with a significant gain on moneyline and spread. The gain is small (a fifth of the NBA's), concentrated in games where the rotation moved, and most of
+  the moneyline part depends on knowing who sat out, which an injury report would give but the pre-game data here does not. Turning the terms on in
+  production is a production setting and is not part of this package.
+- **The foundation does not help.** `pbp32` carried team strength and little beyond Elo in C2's design, and the wager model already has team strength.
+- **Next:** C3's better shrinkage for changes (the learned weight is 0.27, so the values still overstate a starter's cost beyond what C3 measured);
+  a freshman prior; live rotations without the leak.
+
+### Running it
+
+Once the workflow is on `main`, run `College wager experiment` from the Actions tab (it has no push trigger, so editing the
+configuration or the workflow does not start it):
+- `gender`: `cbb`. Run it once for each gender; the artifacts are named by gender.
+- `cbbd`: leave off for box-score values throughout the men's table (no CollegeBasketballData calls beyond the lines); on adds about 470 calls from the key shared with the CFB pipeline for the 2024+ adjusted plus-minus, which C3 recommends for the men's values. The workflow's results should say which was used.
+- `configs`: a JSON list of arm names to run a subset, e.g. `["prod_s0", "prod_pvc_s0"]` for a first look.
+- `swap-stride`: 2 by default; 1 predicts every game day.
+
+It rebuilds every input in the run: `college-experiment-inputs.yml` (play-by-play, engine events and the
+five foundation folds 2022-2026, about 2 hours each), the games table, the projected rotations and the weekly
+values. About 105 arm jobs (21 configurations x 5 seasons) at up to 355 minutes each. One cell locally:
+
+```bash
+python scripts/wager_arm.py prod_pvc_s0 2025 --sport cbb --experiment experiments/cbb/wager.yaml
+```
+
+(with `data/cbb/games.csv` and `player_values/cbb/pv.parquet` in place; `pbp32` arms also need
+`runs/foundation/fold2025/`).
+
+### How these results were run
+
+Run 44214391955 (18 Nov 2026, the C4 branch at the commit that held a temporary push trigger, since a workflow that exists only on a branch cannot be dispatched through
+the API; the trigger is removed in the next commit). All jobs succeeded. The artifact is kept 90 days. A rerun reproduces
+these tables within seed noise; the men's `_e4` tables are the ones to compare. The runs are not committed: only this write-up is.

@@ -17,3 +17,12 @@ def data_dir() -> Path:
 def runs_dir() -> Path:
     """Root of training runs (RUNITBACK_CFB_RUNS, default runs/cfb)."""
     return Path(os.environ.get("RUNITBACK_CFB_RUNS", "runs/cfb"))
+
+
+def default_checkpoint() -> Path:
+    return runs_dir() / "prod" / "model.pt"
+
+
+def checkpoint_path() -> Path:
+    """Checkpoint the server loads (RUNITBACK_CFB_CKPT, default runs/cfb/prod/model.pt)."""
+    return Path(os.environ.get("RUNITBACK_CFB_CKPT", str(default_checkpoint())))

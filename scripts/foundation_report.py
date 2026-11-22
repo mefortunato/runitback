@@ -23,7 +23,9 @@ MARKETS = {
 }
 
 
-def load(root: Path, configs: list[str] | None) -> dict[str, pd.DataFrame]:
+def load(root: Path, configs: list[str] | None, all_games: bool = False) -> dict[str, pd.DataFrame]:
+    """Each configuration's per-game results, the home team's side (``location == 1``); with
+    ``all_games`` also the games with no home side (neutral sites: a college basketball tournament)."""
     out = {}
     for d in sorted(p for p in root.iterdir() if p.is_dir()):
         files = sorted(d.glob("[0-9]*.csv"))
@@ -32,7 +34,8 @@ def load(root: Path, configs: list[str] | None) -> dict[str, pd.DataFrame]:
         df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
         if "win_prob" not in df:
             continue
-        out[d.name] = df[df.location == 1].set_index("game_id") if (df.location == 1).any() else df.set_index("game_id")
+        keep = all_games or not (df.location == 1).any()
+        out[d.name] = (df if keep else df[df.location == 1]).set_index("game_id")
     return out
 
 
@@ -96,8 +99,9 @@ def main():
     ap.add_argument("--baseline", default="prod")
     ap.add_argument("--configs", nargs="*")
     ap.add_argument("--out", type=Path)
+    ap.add_argument("--all-games", action="store_true", help="also games with no home side (neutral sites)")
     a = ap.parse_args()
-    table = report(load(a.root, a.configs), a.baseline)
+    table = report(load(a.root, a.configs, a.all_games), a.baseline)
     text = to_markdown(table)
     print(text)
     if a.out:

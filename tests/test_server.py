@@ -50,7 +50,7 @@ def test_every_ported_sport_has_pages(tmp_path, monkeypatch):
 
 def test_sports_listing_matches_the_exports_and_the_web_app(tmp_path, monkeypatch):
     """/api/sports, the predictions export's sports and web/src/sports.ts list the same sports in
-    the same order; only the NFL and NBA have generators."""
+    the same order; only the NFL, college football and NBA have generators."""
     import re
     from pathlib import Path
 
@@ -58,7 +58,7 @@ def test_sports_listing_matches_the_exports_and_the_web_app(tmp_path, monkeypatc
 
     listed = _app(tmp_path, monkeypatch).get("/api/sports").json()["sports"]
     assert [s["id"] for s in listed] == list(BUILTIN_VIEWS)
-    assert [s["id"] for s in listed if s["generator"]] == ["nfl", "nba"]
+    assert [s["id"] for s in listed if s["generator"]] == ["nfl", "cfb", "nba"]
     assert not any(s["model_available"] for s in listed if not s["generator"])
     web = (Path(__file__).resolve().parents[1] / "web" / "src" / "sports.ts").read_text()
     entries = re.findall(r'\{ id: "(\w+)", label: "(\w+)", generator: (true|false)[^}]*\}', web)
@@ -78,10 +78,12 @@ def test_importing_the_server_does_not_import_torch_or_pandas():
 
 
 def test_startup_warm_up_loads_the_generators_that_are_present(tmp_path, monkeypatch):
+    from runitback.cfb.server import app as cfb_server
     from runitback.nba.server import app as nba_server
     from runitback.nfl.server import app as nfl_server
 
     loaded = []
+    monkeypatch.setattr(cfb_server, "get_sim", lambda: loaded.append("cfb"))
     monkeypatch.setattr(nfl_server, "get_sim", lambda: loaded.append("nfl"))
     monkeypatch.setattr(nba_server, "get_sim", lambda: loaded.append("nba"))
     c = _app(tmp_path, monkeypatch)

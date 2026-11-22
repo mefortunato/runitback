@@ -1,0 +1,292 @@
+# Build one sport's wager model for Train predictions, with every ensemble member and every backtest
+# season in a job of its own (a job that times out loses only itself; each finished member and season
+# is kept in the `predictions-backtest-cache` release at once).
+#
+#   prep    the sport's inputs (the caller's `prep` script: player values, ...), the games table
+#           (`web prep`) and the plan (`web plan`: which fits and seasons are missing)
+#   fit     one job per fit x seed: `main` (the model for upcoming games) and each season the main
+#           model does not stand in for (`web fit_member`)
+#   main    assembles the main model from its members (`web main`)
+#   season  one job per missing season: assembles that season's model (its own fit's members, or
+#           the main model's) and backtests it (`web season`)
+#   combine `web combine`: runitback.wager.web.build.build from the cache, writing the sport's web
+#           data (pool, rankings, model, meta) as before; uploaded as `webdata-<sport>`
+#
+# The members and the seasons are the ones a single `web build` would train and backtest, joined by
+# runitback.wager.web.split (tests/wager/test_split.py compares the two); Train predictions' `publish`
+# job takes the `webdata-<sport>` artifact as it did from the one-job build.
+name: Build a sport
+
+on:
+  workflow_call:
+    inputs:
+      sport:
+        type: string
+        required: true
+      env:
+        description: "KEY=value lines set in every job (e.g. RUNITBACK_<SPORT>_PLAYER_VALUES)"
+        type: string
+        default: ""
+      prep:
+        description: "bash run in the prep job after the install: builds the sport's inputs"
+        type: string
+        default: ""
+      inputs_paths:
+        description: "paths (one a line) the prep script leaves for the other jobs"
+        type: string
+        default: ""
+      artifact:
+        description: "an artifact of the calling run to download (into artifact_path) before the prep script"
+        type: string
+        default: ""
+      artifact_path:
+        type: string
+        default: ""
+      max_new_seasons:
+        description: "empty or all: every missing season; a number: at most that many (the latest)"
+        type: string
+        default: ""
+      refresh_backtest:
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # the predictions-backtest-cache release
+
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    outputs:
+      fits: ${{ steps.plan.outputs.fits }}
+      seeds: ${{ steps.plan.outputs.seeds }}
+      seasons: ${{ steps.plan.outputs.seasons }}
+      has_seasons: ${{ steps.plan.outputs.has_seasons }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SPORT: ${{ inputs.sport }}
+      SPORT_ENV: ${{ inputs.env }}
+      PREP: ${{ inputs.prep }}
+      INPUTS_PATHS: ${{ inputs.inputs_paths }}
+      MAX_NEW: ${{ inputs.max_new_seasons }}
+      REFRESH: ${{ inputs.refresh_backtest }}
+      CBBD_API_KEY: ${{ secrets.CBBD_API_KEY }}
+      MLFLOW_DISABLE_AGENT_HINT: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - name: Environment
+        run: printf '%s\n' "$SPORT_ENV" >> "$GITHUB_ENV"
+      - name: The cache release (created here, so the jobs do not race to)
+        run: |
+          gh release view predictions-backtest-cache >/dev/null 2>&1 || gh release create predictions-backtest-cache \
+            --title "Backtest cache (seasons, models, ensemble members)" --latest=false \
+            --notes "Backtest seasons and trained models by key (runitback.wager.web.cache); any build can reuse them." \
+            || gh release view predictions-backtest-cache >/dev/null
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.artifact != '' }}
+        with: { name: "${{ inputs.artifact }}", path: "${{ inputs.artifact_path }}" }
+      - name: The sport's inputs
+        if: ${{ inputs.prep != '' }}
+        run: bash -e -o pipefail -c "$PREP"
+      - name: The games table
+        run: runitback-wager web prep --sport "$SPORT" --out games.pkl
+      - name: The previous build (its backtest seasons are reused)
+        run: |
+          mkdir -p webdata
+          if gh release download predictions-webdata --pattern webdata.tar.gz; then
+            tar -xzf webdata.tar.gz -C webdata && rm webdata.tar.gz
+          else
+            echo "no previous predictions-webdata release"
+          fi
+      - name: Plan
+        id: plan
+        run: |
+          max=()
+          case "$MAX_NEW" in
+            ""|all) ;;
+            *[!0-9]*) echo "::error::max_new_seasons must be a whole number or all, got '$MAX_NEW'"; exit 1 ;;
+            *) max=(--max_new_seasons "$MAX_NEW") ;;
+          esac
+          prev=()
+          [ -d "webdata/$SPORT" ] && prev=(--previous "webdata/$SPORT")
+          runitback-wager web plan --sport "$SPORT" --games games.pkl --out plan.json \
+            --cache release:predictions-backtest-cache --refresh_backtest "$REFRESH" "${prev[@]}" "${max[@]}"
+          {
+            echo "fits=$(jq -c '.fits' plan.json)"
+            echo "seeds=$(jq -c '.seeds' plan.json)"
+            echo "seasons=$(jq -c '{include: [.seasons[] as $s | {season: $s, from_main: (.main_for | index($s) != null)}]}' plan.json)"
+            echo "has_seasons=$(jq '(.seasons | length) > 0' plan.json)"
+          } >> "$GITHUB_OUTPUT"
+      - name: Pack the inputs for the other jobs
+        run: |
+          mkdir -p share
+          cp games.pkl plan.json share/
+          while read -r p; do [ -n "$p" ] && mkdir -p "share/$(dirname "$p")" && cp -a "$p" "share/$p"; done <<<"$INPUTS_PATHS"
+          if [ -d "webdata/$SPORT" ]; then mkdir -p "share/webdata" && cp -a "webdata/$SPORT" "share/webdata/"; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inputs-${{ inputs.sport }}
+          path: share
+          include-hidden-files: true
+          retention-days: 1
+
+  fit:
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        fit: ${{ fromJSON(needs.prep.outputs.fits) }}
+        seed: ${{ fromJSON(needs.prep.outputs.seeds) }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SPORT: ${{ inputs.sport }}
+      SPORT_ENV: ${{ inputs.env }}
+      MLFLOW_DISABLE_AGENT_HINT: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - name: Environment
+        run: printf '%s\n' "$SPORT_ENV" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with: { name: "inputs-${{ inputs.sport }}", path: . }
+      - name: Train the member (or take it from the cache)
+        run: |
+          runitback-wager web fit_member --sport "$SPORT" --games games.pkl --fit "${{ matrix.fit }}" \
+            --seed ${{ matrix.seed }} --out members --cache release:predictions-backtest-cache
+      - uses: actions/upload-artifact@v4
+        with:
+          name: members-${{ inputs.sport }}-${{ matrix.fit }}-${{ matrix.seed }}
+          path: members/member${{ matrix.seed }}.ckpt
+          retention-days: 1
+          if-no-files-found: error
+
+  main:
+    needs: [prep, fit]
+    if: ${{ !cancelled() && needs.prep.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SPORT: ${{ inputs.sport }}
+      SPORT_ENV: ${{ inputs.env }}
+      MLFLOW_DISABLE_AGENT_HINT: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - name: Environment
+        run: printf '%s\n' "$SPORT_ENV" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with: { name: "inputs-${{ inputs.sport }}", path: . }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "members-${{ inputs.sport }}-main-*", path: members/main, merge-multiple: true }
+      - name: The main model
+        run: |
+          runitback-wager web main --sport "$SPORT" --games games.pkl --checkpoints members/main \
+            --output_dir webdata --cache release:predictions-backtest-cache
+
+  season:
+    needs: [prep, fit]
+    if: ${{ !cancelled() && needs.prep.result == 'success' && needs.prep.outputs.has_seasons == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prep.outputs.seasons) }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SPORT: ${{ inputs.sport }}
+      SPORT_ENV: ${{ inputs.env }}
+      MLFLOW_DISABLE_AGENT_HINT: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - name: Environment
+        run: printf '%s\n' "$SPORT_ENV" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with: { name: "inputs-${{ inputs.sport }}", path: . }
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "members-${{ inputs.sport }}-${{ matrix.from_main && 'main' || matrix.season }}-*"
+          path: members
+          merge-multiple: true
+      - name: Backtest the season
+        run: |
+          runitback-wager web season --sport "$SPORT" --games games.pkl --season ${{ matrix.season }} \
+            --checkpoints members --from_main ${{ matrix.from_main }} --cache release:predictions-backtest-cache
+
+  combine:
+    needs: [prep, main, season]
+    # the main model is required; a season that failed is left out, as `max_new_seasons` leaves one out
+    if: ${{ !cancelled() && needs.main.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SPORT: ${{ inputs.sport }}
+      SPORT_ENV: ${{ inputs.env }}
+      REFRESH: ${{ inputs.refresh_backtest }}
+      MLFLOW_DISABLE_AGENT_HINT: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - name: Environment
+        run: printf '%s\n' "$SPORT_ENV" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with: { name: "inputs-${{ inputs.sport }}", path: . }
+      - name: Combine
+        run: |
+          # `share/webdata/<sport>` (the previous build) is where `build` looks for reusable seasons
+          mkdir -p webdata
+          # a refreshed backtest: the seasons just stored, not the previous build's
+          if [ "$REFRESH" = true ]; then rm -rf "webdata/$SPORT"; fi
+          runitback-wager web combine --sport "$SPORT" --games games.pkl --output_dir webdata \
+            --cache release:predictions-backtest-cache
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webdata-${{ inputs.sport }}
+          path: webdata/${{ inputs.sport }}
+          retention-days: 1
+          if-no-files-found: error

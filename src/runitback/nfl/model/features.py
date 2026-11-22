@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..engine.rules import GameState, Outcome, legal_results, legal_types, yards_range
+from ..engine import rules as _nfl_rules
+from ..engine.rules import GameState, Outcome
 from ..vocab import (
     FIRST_SEASON, MAX_ELAPSED, N_ELAPSED, N_YARDS, PLAY_TYPES, PT, RESULTS, RS, TEAM_IDX,
     YARDS_MIN, bucket_diff, bucket_qsec, yards_to_idx,
@@ -78,20 +79,22 @@ def encode_prev(prev: Outcome | None) -> dict[str, int]:
                 prev_yards=yards_to_idx(prev.yards) + 1, prev_elapsed=min(prev.elapsed, MAX_ELAPSED) + 1)
 
 
-def type_mask(s: GameState) -> np.ndarray:
+# The masks follow a rules module (``legal_types``, ``legal_results``, ``yards_range``): the NFL's by
+# default, the college game's (``runitback.cfb.engine.rules``) for its simulator.
+def type_mask(s: GameState, engine=_nfl_rules) -> np.ndarray:
     m = np.zeros(len(PLAY_TYPES), dtype=bool)
-    m[[PT[t] for t in legal_types(s)]] = True
+    m[[PT[t] for t in engine.legal_types(s)]] = True
     return m
 
 
-def result_mask(s: GameState, play_type: str) -> np.ndarray:
+def result_mask(s: GameState, play_type: str, engine=_nfl_rules) -> np.ndarray:
     m = np.zeros(len(RESULTS), dtype=bool)
-    m[[RS[r] for r in legal_results(s, play_type)]] = True
+    m[[RS[r] for r in engine.legal_results(s, play_type)]] = True
     return m
 
 
-def yards_mask(s: GameState, play_type: str, result: str) -> np.ndarray:
-    lo, hi = yards_range(s, play_type, result)
+def yards_mask(s: GameState, play_type: str, result: str, engine=_nfl_rules) -> np.ndarray:
+    lo, hi = engine.yards_range(s, play_type, result)
     ar = np.arange(N_YARDS) + YARDS_MIN
     return (ar >= lo) & (ar <= hi)
 
