@@ -208,19 +208,20 @@ def torch_tensor(values):
 
 
 # ------------------------------------------------------------------------- the report
-def synthetic_results(seed, strength, seasons, games=120):
-    """Walk-forward results in the repo's format for the EPL schema; ``strength`` > 0 is a better model."""
-    rng = np.random.default_rng(seed)
+def synthetic_results(strength, seasons, games=120):
+    """Walk-forward results in the repo's format for the EPL schema: the same games and the same noise for
+    every ``strength``, whose model probabilities are the truth plus that noise scaled down by it, so a larger
+    strength is a better model by construction."""
+    rng = np.random.default_rng(7)
     rows = []
     for season in seasons:
         truth = rng.dirichlet([4.5, 2.7, 3.2], games)
         market = np.clip(truth + rng.normal(0, 0.01, truth.shape), 0.02, None)
         market /= market.sum(1, keepdims=True)
-        model = np.clip(
-            truth + rng.normal(0, 0.08 / (1 + strength), truth.shape), 0.02, None
-        )
-        model /= model.sum(1, keepdims=True)
+        noise = rng.normal(0, 1, truth.shape)
         outcome = np.array([rng.choice(3, p=p) for p in truth])
+        model = np.clip(truth + 0.3 / (1 + strength) * noise, 0.02, None)
+        model /= model.sum(1, keepdims=True)
         for i in range(games):
             rows.append(
                 {"season": season, "game_id": f"{season}_{i}", "location": 1, "day": i // 10, "team": f"A{i % 7}",
@@ -233,15 +234,8 @@ def synthetic_results(seed, strength, seasons, games=120):
 
 
 def write(root, quality, seasons):
-    for i, (name, strength) in enumerate(quality.items()):
-        frame = synthetic_results(
-            7, strength, seasons
-        )  # the same games, a better or worse model
-        rng = np.random.default_rng(100 + i)
-        p = frame[["win_prob", "draw_prob"]].to_numpy()
-        frame[["win_prob", "draw_prob"]] = np.clip(
-            p + rng.normal(0, 0.06 / (1 + strength), p.shape), 0.02, 0.9
-        )
+    for name, strength in quality.items():
+        frame = synthetic_results(strength, seasons)
         (root / name).mkdir(parents=True)
         for season in seasons:
             frame[frame.season == season].to_csv(
