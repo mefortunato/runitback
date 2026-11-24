@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../lib/api";
+import { seasonText } from "../lib/format";
 import type { PlayerGroup, PlayerRanks, SportInfo } from "../lib/types";
 import { remember, remembered, useData } from "../useData";
 import { cx } from "../cx";
@@ -8,6 +9,7 @@ import s from "./Players.module.css";
 const SHOWN = 25;
 const KEY = "players-position";
 const signed = (v: number, digits: number) => `${v < 0 ? "−" : ""}${Math.abs(v).toFixed(digits)}`;
+const through = (r: PlayerRanks) => r.through_label ?? `week ${r.through}`;
 
 export default function Players({ info }: { info: SportInfo }) {
   const { data, error } = useData(() => api.players(info.sport), [info.sport]);
@@ -28,7 +30,7 @@ function PlayersView({ info, ranks }: { info: SportInfo; ranks: PlayerRanks }) {
       <h1>Player rankings</h1>
       <p className={cx("muted", s.intro)}>
         Every {info.label} player's value this season, ranked within a position: {ranks.unit}, from the
-        model's player values after week {ranks.through}. Players with very little playing time are left out.
+        model's player values through {through(ranks)}. Players with very little playing time are left out.
       </p>
       <nav className={s.filters} aria-label="Position">
         {ranks.positions.map((p) => (
@@ -36,12 +38,12 @@ function PlayersView({ info, ranks }: { info: SportInfo; ranks: PlayerRanks }) {
             onClick={() => pick(p.key)}>{p.key}</button>
         ))}
       </nav>
-      <PositionChart group={group} ranks={ranks} all={all} onAll={() => setAll(true)} />
+      <PositionChart info={info} group={group} ranks={ranks} all={all} onAll={() => setAll(true)} />
     </div>
   );
 }
 
-function PositionChart({ group, ranks, all, onAll }: { group: PlayerGroup; ranks: PlayerRanks; all: boolean; onAll: () => void }) {
+function PositionChart({ info, group, ranks, all, onAll }: { info: SportInfo; group: PlayerGroup; ranks: PlayerRanks; all: boolean; onAll: () => void }) {
   const rows = all ? group.players : group.players.slice(0, SHOWN);
   const values = group.players.map((p) => p.value);
   const hi = Math.max(0, ...values);
@@ -50,7 +52,7 @@ function PositionChart({ group, ranks, all, onAll }: { group: PlayerGroup; ranks
   const zero = (-lo / span) * 100;   // where zero sits along the track, in %
   return (
     <section className="card">
-      <h2 className={s.title}>{group.label} <span className="muted">· {ranks.season} season, through week {ranks.through}</span></h2>
+      <h2 className={s.title}>{group.label} <span className="muted">· {seasonText(ranks.season, info.split_season)} season, through {through(ranks)}</span></h2>
       <p className={cx("muted", s.note)}>Bars: {ranks.unit}. Rate column: {ranks.detail}.</p>
       <table className={s.table}>
         <thead>
