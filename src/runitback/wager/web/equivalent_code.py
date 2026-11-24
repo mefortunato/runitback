@@ -57,7 +57,7 @@ EQUIVALENT_CODE: dict[str, tuple[str, ...]] = {
     # core/metrics.py, core/evaluation.calibrate, core/predictor.py, backtest.py, experiments.py,
     # tune.py and staking.py's 1X2 market), EloParams' football rule (models/baselines.py) and cold start
     # (Sport.cold_start, the transformer's drop_older_than / eff2 / draws market tokens, TransformerModel's
-    # distribution ranges), every
+    # distribution ranges, rps_weight, experiments' `family`), every
     # new branch of which is off for a schema without draws, for EloParams' defaults and for a Sport
     # without cold_start. The only
     # production transformers that read the Elo tokens are cfb, cbb and wcbb (``opponent_strength``),
@@ -66,35 +66,35 @@ EQUIVALENT_CODE: dict[str, tuple[str, ...]] = {
     # two-outcome outputs). The code of main after #110 and #111, #110, and before; regenerate with
     # scripts/equivalent_code.py after any later change to hashed code.
     # nfl
-    "d380f3d6bca86069ec9cf883aea3cad4e96d88ffdffe5a82dda34e557951a085": (
+    "e0700a1b3bddcd9b777d629cde6cf60c247588bfc45ecd33d7e7e28f6af1a578": (
         "85e0396c4305482d5f903225c2d6c9e9ce03cfaea557ead52466581c2113b300",
     ),
     # cfb
-    "c7c5d227638ecce3130333dc24d8d283fecbc0502240a81bf2c879ae08a198be": (
+    "5080b7bb61c9deb06bdef57d9425c875236bb1904ebe5debadb7b858c223e8a0": (
         "0df622ddd4b4f59d2c71f8e843dcabee2c1b0abd7fb9390eeacbad591df6ae6e",
     ),
     # nba
-    "2594979f8c7567e1389b39610f5933fe6de3c59ad74d67c4c88ebb7e99a96af4": (
+    "576d183d998ac8161309e2596652e61daf244d69f1f9aa21c623806d33a39485": (
         "f7a55e00c54bbfadb186faac858a3adfdf892fdec2e92dec284b544aaaa76693",
     ),
     # cbb
-    "fe0ba4ea186f809eef8f18f5ba64b96f20ebc227956879a79d7f6cb3f5ad207c": (
+    "4d68bd949b29e0ac0c980c7fb82cca65f08aaf492b17eefeb568445a5ac8f7a8": (
         "95fe4dd6de56ca91ffcda43e97a9cb45e016c8e89107f47bc14e35dcf8d73272",
     ),
     # wcbb
-    "11ffa9d58911871ad5bd70d3943b52dd2da5b7f5829242939cf685838a4ab3c3": (
+    "8a2bea9229d7c3048f43bc83ac66d721b48b76d7cec651f963ee9fbff4aa43c8": (
         "f1edc337306155a719f9b63f0191da27d1b8d5090140e70c01101103ed76303a",
     ),
     # wnba
-    "16a4facdcc511cf4bd5885c2638811e5c3ca33671a6544b6ecf75eaf2e78cfd3": (
+    "d576b284d69dbd721d357ba2d7b4da84e5a34fedf963e59df86be06d015a79a2": (
         "08fc830245c03bdd9d5af9c7e9ebbb2724516675ef5179503db2d9893d53a16d",
     ),
     # nhl
-    "555d57463e277ed7be663624e67347e48ae5b72f628ad371a23fd7add4398dc8": (
+    "8ec7cdf1555f27accdf8b2b18cc9662f838c28b02aa0c3ef31f41d95aa80fbcc": (
         "8af32119569361b8600b0a8c304720903bea243105051a92fe364cb2f1417ae7",
     ),
     # mlb
-    "b2fafade668910acab78fe82255f674e2d8981865419aa44255c9519c1734a09": (
+    "25ed226f87b44bf320a4dc38d9e097e833332d3c323a5c6e6ff7a8c3dc483f29": (
         "5bbf73ec765cd9d807dadb298084807a66db70646526d7a1dd4086840ff45e99",
     ),
 }

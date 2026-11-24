@@ -376,7 +376,7 @@ def format_table_three_way(table: pd.DataFrame) -> str:
         "|---|---|---|---|---|---|---|---|",
     ]
     for name, r in table.iterrows():
-        cells = [name, f"{r['n']}", f"{r['rps']:.5f}", f"{r['brier3']:.4f}", f"{r['log_loss3']:.4f}",
+        cells = [name, f"{int(r['n'])}", f"{r['rps']:.5f}", f"{r['brier3']:.4f}", f"{r['log_loss3']:.4f}",
                  "" if pd.isna(r["rmse"]) else f"{r['rmse']:.3f}",
                  pm(r.get("d_rps"), r.get("d_rps_ci95")), pm(r.get("vs_market"), r.get("vs_market_ci95"))]  # fmt: skip
         lines.append("| " + " | ".join(cells) + " |")

@@ -163,9 +163,10 @@ def final_report(results: dict[str, pd.DataFrame], reference: str, games: pd.Dat
     if games is not None:
         ids = early_promoted(games, 5)
         subset = {n: f[f["game_id"].isin(ids)] for n, f in results.items()}
+        early = ablation_table(subset, SPORT, reference)
         text += (
-            f"\n### A promoted club's first 5 games ({len(next(iter(subset.values())))} games)\n\n"
-            + format_table(ablation_table(subset, SPORT, reference))
+            f"\n### A promoted club's first 5 games ({int(early['n'].max())} games every arm predicted)\n\n"
+            + format_table(early)
             + "\n"
         )
     return text
