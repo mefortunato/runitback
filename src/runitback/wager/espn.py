@@ -25,6 +25,7 @@ import concurrent.futures
 import io
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -186,9 +187,18 @@ def parse_odds(data: dict) -> dict:
     Each market comes from the most preferred book that has it, its prices
     from the same book. (In hockey and baseball the spread is the puck or
     run line, a handicap of 1.5 goals or runs priced like a moneyline.)
+
+    ``home_team_id`` is the ESPN id of the team the odds call home, where
+    they say: at a neutral site ESPN's live event can list the teams the
+    other way round from sportsdataverse's schedule, and :func:`join_lines`
+    flips such a game's lines to the schedule's home team.
     """
     books = _books(data.get("items") or [])
     out = {}
+    for item in books:
+        if (team_id := _team_id(item.get("homeTeamOdds"))) is not None:
+            out["home_team_id"] = team_id
+            break
     for item in books:
         spread = _number(item.get("spread"))
         if np.isfinite(spread):
@@ -222,6 +232,14 @@ def parse_odds(data: dict) -> dict:
             break
     return {k: (None if isinstance(v, float) and np.isnan(v) else v)
             for k, v in out.items()}  # fmt: skip
+
+
+def _team_id(side: dict | None) -> int | None:
+    """The ESPN team id of one side of an odds item (its ``team`` reference,
+    ``.../teams/238?lang=en``), or ``None``."""
+    ref = ((side or {}).get("team") or {}).get("$ref") or ""
+    match = re.search(r"/teams/(\d+)", ref)
+    return int(match.group(1)) if match else None
 
 
 def odds_refused() -> list[str]:
@@ -314,9 +332,26 @@ def join_lines(games: pd.DataFrame, lines: dict[str, dict] | None) -> pd.DataFra
     """One-row-per-game ``games`` (``game_id``) with each game's lines as
     ``spread_line``, ``total_line``, ``ou_over`` / ``ou_under`` and
     ``home_*`` / ``away_*`` moneylines and spread prices, ready for
-    :func:`invert`."""
+    :func:`invert`.
+
+    A game whose lines name the other team as home (``home_team_id``, see
+    :func:`parse_odds`) has them flipped: spread negated, the sides' prices
+    and moneylines swapped."""
     market = pd.DataFrame.from_dict(lines or {}, orient="index")
-    market = market.reindex(columns=LINE_COLUMNS).rename(
+    market = market.reindex(columns=[*LINE_COLUMNS, "home_team_id"])
+    if "home_id" in games and market["home_team_id"].notna().any():
+        home = games.set_index("game_id")["home_id"]
+        odds_home = pd.to_numeric(market["home_team_id"], errors="coerce")
+        swapped = odds_home.notna() & odds_home.ne(home.reindex(market.index))
+        if swapped.any():
+            logger.info("%d games' lines name the other team home: flipped",
+                        int(swapped.sum()))  # fmt: skip
+            market.loc[swapped, "spread_line"] = -market.loc[swapped, "spread_line"]
+            for a, b in (("spread_odds", "opp_spread_odds"),
+                         ("moneyline", "opp_moneyline")):  # fmt: skip
+                flipped = market.loc[swapped, [b, a]].to_numpy(copy=True)
+                market.loc[swapped, [a, b]] = flipped
+    market = market.drop(columns="home_team_id").rename(
         columns={
             "moneyline": "home_moneyline",
             "opp_moneyline": "away_moneyline",
