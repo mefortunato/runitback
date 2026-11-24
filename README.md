@@ -1138,7 +1138,9 @@ deployments keep needing a merge to `main`:
   kickoff window; NBA lines only on the daily run and manual runs, to spare the Odds API quota; CFB
   lines are ESPN's, no key or quota, on every run) downloads that release, re-downloads results and lines (The Odds API with the
   `ODDS_API_KEY` secret; without it the previous lines carry over), refreshes team state (no
-  retraining), exports, and syncs the files to the bucket. The pages pick them up within a minute:
+  retraining), exports, and syncs the files to the bucket. Each sport exports in its own job at the
+  same time (`web export --sports`), and a `publish` job combines them (`web merge`); a sport whose
+  job fails keeps its published files while the others update. The pages pick them up within a minute:
   the mount caches metadata for 60 s and `/data` responses carry `Cache-Control: no-cache`.
 - **Deploy to Cloud Run** mounts the bucket when the `PREDICTIONS_BUCKET` secret is set (it also
   switches the service to the second-generation execution environment, which Cloud Storage volumes
