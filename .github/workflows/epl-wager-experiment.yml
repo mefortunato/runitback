@@ -4,18 +4,24 @@
 #   plan (the stage's jobs) ─┐
 #   inputs (games table) ────┴─► arms (one job per configuration × season) ─► report
 #
-# By hand only (Actions tab → "EPL wager experiment" → Run workflow): a push never starts it, because a stage is
-# hours of compute and which one to run next depends on the last. In order:
-#   1. stage `screen`: every arm on 2017-2021, one seed. The report names the reference arm and the arms worth a
-#      4-seed ensemble, and the `arms` to give the next run.
-#   2. stage `baselines`: the baselines and four seeds of the default transformer on 2022-2026 (the noise floor).
-#   3. stage `final`: `arms` (the reference arm and the screen's picks, e.g. `elo,tf_mkt_e4,tf_eff_e4`) on 2022-2026
+# Three stages, in order (Actions tab → "EPL wager experiment" → Run workflow, or the API):
+#   1. `screen`: every arm on 2017-2021, one seed. The report names the reference arm and the arms worth a
+#      4-seed ensemble, and the `arms` to give the last run. This is what a push runs.
+#   2. `baselines`: the baselines and four seeds of the default transformer on 2022-2026 (the noise floor).
+#   3. `final`: `arms` (the reference arm and the screen's picks, e.g. `elo,tf_mkt_e4,tf_eff_e4`) on 2022-2026
 #      as 4-seed ensembles (`<name>_e4`), scored against `reference`.
-# The games table is rebuilt from football-data.co.uk in the run; nothing is committed or reused from earlier
-# runs. Each report is uploaded as the epl-wager-<stage> artifact together with the per-game results.
+# A stage is hours of compute, so only a change to THIS file on a claude/ branch starts one (the push trigger is
+# also what makes GitHub register a workflow that is not on the default branch yet): put [skip ci] in the commit
+# message of an edit you do not mean to run. The games table is rebuilt from football-data.co.uk in the run;
+# nothing is committed or reused from earlier runs. Each report is uploaded as the epl-wager-<stage> artifact
+# together with the per-game results.
 name: EPL wager experiment
 
 on:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - .github/workflows/epl-wager-experiment.yml
   workflow_dispatch:
     inputs:
       stage:
@@ -52,7 +58,7 @@ jobs:
       - run: pip install pyyaml
       - id: matrix
         env:
-          STAGE: ${{ inputs.stage }}
+          STAGE: ${{ inputs.stage || 'screen' }}
           ARMS: ${{ inputs.arms }}
         run: |
           MATRIX=$(python scripts/epl_wager_matrix.py --stage "$STAGE" --arms "$ARMS")
@@ -135,8 +141,8 @@ jobs:
         with: { pattern: "arm-*", path: runs/wager, merge-multiple: true }
       - name: Score
         env:
-          STAGE: ${{ inputs.stage }}
-          REFERENCE: ${{ inputs.reference }}
+          STAGE: ${{ inputs.stage || 'screen' }}
+          REFERENCE: ${{ inputs.reference || 'elo' }}
         run: |
           ls runs/wager
           python scripts/epl_report.py "$STAGE" runs/wager --out runs/report.md \
@@ -144,7 +150,7 @@ jobs:
           cat runs/report.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
-          name: "epl-wager-${{ inputs.stage }}"
+          name: "epl-wager-${{ inputs.stage || 'screen' }}"
           path: |
             runs/report.md
             runs/wager
