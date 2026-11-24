@@ -476,8 +476,10 @@ export interface Recent {
 /** `<sport>/players.json`: this season's players ranked by value within each position group. */
 export interface PlayerRanks {
 	season: number;
-	/** The last week played. */
+	/** The last week played (NBA: the last game day, as YYYYMMDD). */
 	through: number;
+	/** How the page names `through` ("Nov 23"); absent: "week <through>". */
+	through_label?: string;
 	/** What `value` is. */
 	unit: string;
 	/** What `rate` is. */

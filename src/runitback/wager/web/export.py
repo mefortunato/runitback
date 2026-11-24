@@ -405,6 +405,8 @@ def merge(
     parts_dir: str = "parts",
     output_dir: str = "web/static",
     require_refresh: bool = False,
+    sports: list[str] | None = None,
+    previous: str | None = None,
 ) -> None:
     """Combine exports of some sports each (``export --sports``) into one.
 
@@ -415,6 +417,14 @@ def merge(
         require_refresh: Fail unless some sport was refreshed (``export
             --refresh``), as an export of every sport at once does: a part
             whose download failed kept its built data.
+        sports: Every sport the merge must publish. One with no part (its
+            CI job failed) keeps its files from ``previous``, so one sport's
+            failure does not hold back the others; one that ``previous``
+            does not have either fails the merge (publishing without it
+            would delete it from the site).
+        previous: The published ``data/`` directory (its files, its
+            ``sports.json`` and ``challenge-keys.json``) to carry missing
+            sports over from.
     """
     out = pathlib.Path(output_dir) / "data"
     out.mkdir(parents=True, exist_ok=True)
@@ -432,6 +442,25 @@ def merge(
         raise ValueError(f"no exported sports under {parts_dir}")
     if require_refresh and not any(i.get("refreshed_at") for i in infos.values()):
         raise RuntimeError("no sport was refreshed: every download failed")
+    missing = [s for s in sports or [] if s not in infos]
+    if missing:
+        old = pathlib.Path(previous) if previous else None
+        old_infos, old_keys = {}, {}
+        if old and (old / "sports.json").exists():
+            old_infos = {i["sport"]: i for i in json.loads((old / "sports.json").read_text())}
+        if old and (old / CHALLENGE_KEYS).exists():
+            old_keys = json.loads((old / CHALLENGE_KEYS).read_text())
+        for sport in missing:
+            if sport not in old_infos or not (old / sport).is_dir():
+                raise RuntimeError(
+                    f"{sport} was not exported and {previous} has no published copy"
+                )
+            infos[sport] = old_infos[sport]
+            shutil.copytree(old / sport, out / sport, dirs_exist_ok=True)
+            if sport in old_keys:
+                keys[sport] = old_keys[sport]
+            # a GitHub Actions annotation, plain text elsewhere
+            print(f"::warning::{sport} was not exported: keeping its published data")
     order = sorted(infos, key=_nav_order)
     (out / "sports.json").write_text(json.dumps([infos[s] for s in order]))
     (out / CHALLENGE_KEYS).write_text(

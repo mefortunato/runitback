@@ -29,6 +29,13 @@
 # export's lines carry over. NBA lines (about 3 requests each) are fetched only by the daily
 # run and by manual runs, so the extra cost is about 30 requests a month; the other runs carry
 # the NBA's previous lines over.
+#
+# Each sport runs in its own job, at the same time (the run takes as long as its slowest sport, not
+# all of them in turn): `plan` lists the sports the webdata has and fetches the published data once;
+# `export` exports one sport per matrix job (`web export --sports`); `publish` merges the parts
+# (`web merge`) and writes the bucket. A sport whose job fails keeps its published files, and the
+# other sports are published without it (the run still shows the failure); if no sport is exported,
+# or a failed sport has never been published, nothing is.
 name: Refresh predictions
 
 on:
@@ -50,32 +57,38 @@ permissions:
   contents: read
   id-token: write # Workload Identity Federation
 
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  RUNITBACK_NFL_FOUNDATION: foundation/nfl
+  RUNITBACK_NFL_PLAYER_VALUES: player_values/nfl
+  RUNITBACK_NBA_PLAYER_VALUES: player_values/nba
+  RUNITBACK_WNBA_PLAYER_VALUES: player_values/wnba
+  RUNITBACK_CFB_FOUNDATION: foundation/cfb
+  RUNITBACK_CFB_PLAYER_VALUES: player_values/cfb
+  RUNITBACK_WCBB_PLAYER_VALUES: player_values/wcbb
+
 concurrency:
   group: refresh-predictions
   cancel-in-progress: false
 
 jobs:
-  export:
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 15
     # the Google Cloud settings live with the deploy's; if that environment requires a reviewer,
     # put these secrets in an environment without one (scheduled runs would otherwise wait)
     environment: production
     env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
       GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
       GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
       GCP_DEPLOY_SERVICE_ACCOUNT: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
       PREDICTIONS_BUCKET: ${{ secrets.PREDICTIONS_BUCKET }}
-      MLFLOW_DISABLE_AGENT_HINT: "1"
-      RUNITBACK_NFL_FOUNDATION: foundation/nfl
-      RUNITBACK_NFL_PLAYER_VALUES: player_values/nfl
-      RUNITBACK_NBA_PLAYER_VALUES: player_values/nba
-      RUNITBACK_WNBA_PLAYER_VALUES: player_values/wnba
-      RUNITBACK_CFB_FOUNDATION: foundation/cfb
-      RUNITBACK_CFB_PLAYER_VALUES: player_values/cfb
-      RUNITBACK_WCBB_PLAYER_VALUES: player_values/wcbb
+    outputs:
+      webdata_sha256: ${{ steps.webdata.outputs.sha256 }}
+      sports: ${{ steps.webdata.outputs.sports }}
+      sports_list: ${{ steps.webdata.outputs.sports_list }}
     steps:
       - name: Check configuration
         run: |
@@ -88,6 +101,54 @@ jobs:
             exit 1
           fi
       - uses: actions/checkout@v5
+      - name: Fetch the trained model, list its sports
+        id: webdata
+        env:
+          WANT: ${{ inputs.webdata_sha256 }}
+        run: |
+          source scripts/ci/release.sh
+          fetch_webdata "$WANT"
+          echo "sha256=$(sha256sum webdata.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          # the sports Train has published (the WNBA, college football and basketball only once it has)
+          sports=""
+          for s in nfl nba wnba cfb wcbb cbb; do
+            if [ -f "webdata/$s/meta.json" ]; then sports="${sports:+$sports,}$s"; fi
+          done
+          [ -n "$sports" ] || { echo "::error::webdata has no sport to export"; exit 1; }
+          echo "sports exported: $sports"
+          echo "sports_list=$sports" >> "$GITHUB_OUTPUT"
+          echo "sports=[\"${sports//,/\",\"}\"]" >> "$GITHUB_OUTPUT"
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: Fetch the published data (line history, reusable challenge files)
+        run: |
+          mkdir previous
+          gcloud storage cp -r "gs://$PREDICTIONS_BUCKET/*" previous/ \
+            || echo "nothing published yet: a full export"
+          # the artifact is never empty (a first run's previous/ would be)
+          date -u +%FT%TZ > previous/fetched-at.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: previous
+          path: previous
+          retention-days: 1
+
+  export:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    # for ODDS_API_KEY and CBBD_API_KEY, wherever they are kept
+    environment: production
+    strategy:
+      fail-fast: false # one sport's failure leaves the others to publish
+      matrix:
+        sport: ${{ fromJSON(needs.plan.outputs.sports) }}
+    name: export (${{ matrix.sport }})
+    steps:
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -97,22 +158,15 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -e ".[data,wager]"
       - name: Fetch the trained model
-        env:
-          WANT: ${{ inputs.webdata_sha256 }}
         run: |
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            rm -f webdata.tar.gz
-            gh release download predictions-webdata --pattern webdata.tar.gz
-            got="$(sha256sum webdata.tar.gz | cut -d' ' -f1)"
-            if [ -z "$WANT" ] || [ "$got" = "$WANT" ]; then break; fi
-            if [ "$attempt" = 10 ]; then
-              echo "::error::predictions-webdata asset is $got, not the trained $WANT"; exit 1
-            fi
-            echo "predictions-webdata asset is still the previous one ($got); retrying"
-            sleep 30
-          done
-          mkdir webdata && tar -xzf webdata.tar.gz -C webdata
+          source scripts/ci/release.sh
+          fetch_webdata "${{ needs.plan.outputs.webdata_sha256 }}"
+      - uses: actions/download-artifact@v4
+        with:
+          name: previous
+          path: previous
       - name: Embed the games played since
+        if: matrix.sport == 'nfl'
         run: |
           end=$(python -c "import datetime as d; t=d.date.today(); print(t.year if t.month >= 9 else t.year - 1)")
           runitback nfl download --start 1999 --end "$end"
@@ -127,8 +181,10 @@ jobs:
           done
           runitback nfl foundation --root "$RUNITBACK_NFL_FOUNDATION" --existing --threads $(nproc)
       - name: Player values (latest depth charts and injury reports)
+        if: matrix.sport == 'nfl'
         run: runitback nfl player-values --out "$RUNITBACK_NFL_PLAYER_VALUES"
       - name: NBA player values (rotations from rosters and the injury report)
+        if: matrix.sport == 'nba'
         run: |
           runitback nba download --start 2015 --end 2027
           runitback nba players --start 2015 --end 2027
@@ -137,8 +193,7 @@ jobs:
             --lineups data/nba/processed/projected_lineups.parquet \
             --upcoming data/nba/processed/projected_lineups_upcoming.parquet
       - name: WNBA player values (rotations from rosters and the injury report)
-        # only once Train has published the WNBA: until then there is nothing to export
-        if: ${{ hashFiles('webdata/wnba/meta.json') != '' }}
+        if: matrix.sport == 'wnba'
         run: |
           runitback wnba download --start 2006 --end 2027
           runitback wnba players --start 2006 --end 2027
@@ -147,8 +202,7 @@ jobs:
             --lineups data/wnba/processed/projected_lineups.parquet \
             --upcoming data/wnba/processed/projected_lineups_upcoming.parquet
       - name: Women's college player values (rotations from rosters for upcoming games)
-        # only once Train has published women's college basketball: until then there is nothing to export
-        if: ${{ hashFiles('webdata/wcbb/meta.json') != '' }}
+        if: matrix.sport == 'wcbb'
         run: |
           runitback college download --gender wcbb
           runitback college players --gender wcbb
@@ -160,17 +214,15 @@ jobs:
           fetch_asset wcbb-espn-cache wcbb-espn-cache.tar.gz dl/wcbb
           tar -xzf dl/wcbb/wcbb-espn-cache.tar.gz -C data/wcbb/espn_cache
       - name: Men's college lines cache
-        # only once Train has published men's college basketball (it kept the finished games' lines)
-        if: ${{ hashFiles('webdata/cbb/meta.json') != '' }}
+        # the finished games' lines Train kept
+        if: matrix.sport == 'cbb'
         run: |
           source scripts/ci/release.sh
           mkdir -p data/cbb/espn_cache
           fetch_asset cbb-espn-cache cbb-espn-cache.tar.gz dl/cbb
           tar -xzf dl/cbb/cbb-espn-cache.tar.gz -C data/cbb/espn_cache
       - name: CFB folds (embed the games played since), quarterback values, cached lines
-        # only once Train has published CFB: until then there is nothing to export, and the work
-        # (about ten minutes) would be wasted
-        if: ${{ hashFiles('webdata/cfb/meta.json') != '' }}
+        if: matrix.sport == 'cfb'
         run: |
           source scripts/ci/release.sh
           end=$(python -c "import datetime as d; t=d.date.today(); print(t.year if t.month >= 9 else t.year - 1)")
@@ -188,42 +240,77 @@ jobs:
           mkdir -p data/cfb/espn_cache
           fetch_asset cfb-espn-cache cfb-espn-cache.tar.gz dl/cfb
           tar -xzf dl/cfb/cfb-espn-cache.tar.gz -C data/cfb/espn_cache
-      - uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ env.GCP_DEPLOY_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v3
-      - name: Fetch the published data (line history, reusable challenge files)
-        run: |
-          mkdir previous
-          gcloud storage cp -r "gs://$PREDICTIONS_BUCKET/*" previous/ \
-            || echo "nothing published yet: a full export"
       - name: Export fresh data and lines
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           # men's college basketball: finished games' lines (without it the export would request ~85,000)
           CBBD_API_KEY: ${{ secrets.CBBD_API_KEY }}
           SCHEDULE: ${{ github.event.schedule }}
+          SPORT: ${{ matrix.sport }}
         run: |
           odds="{nfl: oddsapi, cfb: espn}"
           # NBA lines: the daily run and manual runs only (The Odds API's monthly quota)
           if [ -z "$SCHEDULE" ] || [ "$SCHEDULE" = "17 10 * * *" ]; then
             odds="{nfl: oddsapi, nba: oddsapi, cfb: espn}"
           fi
-          sports="nfl,nba,cfb"
-          pv="nfl: $RUNITBACK_NFL_PLAYER_VALUES, nba: $RUNITBACK_NBA_PLAYER_VALUES"
-          if [ -f webdata/wnba/meta.json ]; then sports="$sports,wnba"; pv="$pv, wnba: $RUNITBACK_WNBA_PLAYER_VALUES"; fi
-          if [ -f webdata/wcbb/meta.json ]; then sports="$sports,wcbb"; fi
-          if [ -f webdata/cbb/meta.json ]; then sports="$sports,cbb"; fi
-          runitback-wager web export --data_dir webdata --output_dir out --sports "[$sports]" \
+          runitback-wager web export --data_dir webdata --output_dir out --sports "[$SPORT]" \
             --refresh true --require_refresh false --odds "$odds" \
             --odds_history previous --challenge_from previous \
-            --player_values "{$pv}"
+            --player_values "{nfl: $RUNITBACK_NFL_PLAYER_VALUES, nba: $RUNITBACK_NBA_PLAYER_VALUES, wnba: $RUNITBACK_WNBA_PLAYER_VALUES}"
+          python -c "import json,sys; s=[i['sport'] for i in json.load(open('out/data/sports.json'))]; sys.exit(0 if s == ['$SPORT'] else f'exported {s}, not $SPORT')"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: part-${{ matrix.sport }}
+          path: out/data
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [plan, export]
+    # also when some sport's export failed: the others are published, the failed one keeps its files
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_DEPLOY_SERVICE_ACCOUNT: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      PREDICTIONS_BUCKET: ${{ secrets.PREDICTIONS_BUCKET }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[data,wager]"
+      - uses: actions/download-artifact@v4
+        with:
+          name: previous
+          path: previous
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: part-*
+          path: parts
+      - name: Merge the sports
+        env:
+          SPORTS: ${{ needs.plan.outputs.sports_list }}
+        run: |
+          mkdir -p parts
+          runitback-wager web merge --parts_dir parts --output_dir out \
+            --sports "[$SPORTS]" --previous previous
           # a run that fetched no NBA lines keeps the published ones (the sync below deletes
           # what is missing from out/data)
           if [ ! -f out/data/nba/odds.json ] && [ -f previous/nba/odds.json ]; then
             mkdir -p out/data/nba && cp previous/nba/odds.json out/data/nba/odds.json
           fi
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
       - name: Publish to the bucket
         # files first, then removals: a page loading mid-sync sees old or new files, never none
         run: |
