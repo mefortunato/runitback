@@ -7,6 +7,7 @@ package the wager model was ported from) and is written as `sportsml_<config>`, 
 scored against its source on the same games:
 
     python scripts/wager_arm.py prod 2023 --sport cfb --experiment experiments/cfb/baseline.yaml
+    python scripts/wager_arm.py prod_e4 2023 --sport cfb --experiment experiments/cfb/baseline.yaml  # 4 seeds
     python scripts/wager_arm.py prod 2023 --sport cfb --experiment experiments/cfb/baseline.yaml \
         --package sportsml --games data/cfb/games_sportsml.csv
 
@@ -25,6 +26,17 @@ import yaml
 PACKAGES = {"runitback": "runitback.wager", "sportsml": "sportsml"}
 
 
+def resolve(configs: dict, name: str) -> dict | None:
+    """The experiment file's configuration ``name``; ``<name>_e4`` is ``<name>`` averaging 4 seeds
+    (``fit: {ensemble: 4}``) unless the file defines it; None if there is no such configuration."""
+    if name in configs:
+        return configs[name]
+    if name.endswith("_e4") and name[:-3] in configs:
+        base = configs[name[:-3]]
+        return {**base, "fit": {**(base.get("fit") or {}), "ensemble": 4}}
+    return None
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("config")
@@ -37,13 +49,14 @@ def main() -> None:
     ap.add_argument("--threads", type=int, default=os.cpu_count() or 1)
     a = ap.parse_args()
     configs = yaml.safe_load(a.experiment.read_text())["configs"]
-    if a.config not in configs:
+    config = resolve(configs, a.config)
+    if config is None:
         raise SystemExit(f"{a.config} is not in {a.experiment}: {', '.join(configs)}")
     name = a.config if a.package == "runitback" else f"{a.package}_{a.config}"
     games = a.games or f"data/{a.sport}/games.csv"
     output_dir = a.output_dir or str(a.experiment.with_suffix(""))
     experiments = importlib.import_module(f"{PACKAGES[a.package]}.experiments")
-    experiments.run_experiments(games, a.sport, {name: configs[a.config]}, [a.season], output_dir,
+    experiments.run_experiments(games, a.sport, {name: config}, [a.season], output_dir,
                                 n_jobs=1, threads=a.threads)
     print(Path(output_dir) / name / f"{a.season}.csv")
 

@@ -1,0 +1,151 @@
+# E1 and E4 (docs/epl/PLAN.md): the EPL wager baselines and transformer arms, walk-forward, scored by the ranked
+# probability score against the closing market average (experiments/epl/wager.yaml, experiments/epl/README.md):
+#
+#   plan (the stage's jobs) ─┐
+#   inputs (games table) ────┴─► arms (one job per configuration × season) ─► report
+#
+# By hand only (Actions tab → "EPL wager experiment" → Run workflow): a push never starts it, because a stage is
+# hours of compute and which one to run next depends on the last. In order:
+#   1. stage `screen`: every arm on 2017-2021, one seed. The report names the reference arm and the arms worth a
+#      4-seed ensemble, and the `arms` to give the next run.
+#   2. stage `baselines`: the baselines and four seeds of the default transformer on 2022-2026 (the noise floor).
+#   3. stage `final`: `arms` (the reference arm and the screen's picks, e.g. `elo,tf_mkt_e4,tf_eff_e4`) on 2022-2026
+#      as 4-seed ensembles (`<name>_e4`), scored against `reference`.
+# The games table is rebuilt from football-data.co.uk in the run; nothing is committed or reused from earlier
+# runs. Each report is uploaded as the epl-wager-<stage> artifact together with the per-game results.
+name: EPL wager experiment
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "screen (2017-2021, one seed), baselines (2022-2026) or final (2022-2026, 4-seed ensembles)"
+        type: choice
+        options: [screen, baselines, final]
+        default: screen
+      arms:
+        description: "final only: comma separated arms, e.g. elo,tf_mkt_e4,tf_eff_e4 (the screen report prints them)"
+        type: string
+        default: ""
+      reference:
+        description: "final only: the reference arm the others are scored against (the screen report names it)"
+        type: string
+        default: elo
+
+permissions:
+  contents: read
+
+env:
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13" }
+      - run: pip install pyyaml
+      - id: matrix
+        env:
+          STAGE: ${{ inputs.stage }}
+          ARMS: ${{ inputs.arms }}
+        run: |
+          MATRIX=$(python scripts/epl_wager_matrix.py --stage "$STAGE" --arms "$ARMS")
+          echo "$MATRIX"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  inputs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - name: Games and odds (football-data.co.uk), processed
+        run: |
+          runitback-wager epl download --output_file data/epl/raw.csv
+          runitback-wager epl process --games data/epl/raw.csv --output_file data/epl/games.csv
+          python - <<'PY'
+          import pandas as pd
+          g = pd.read_csv("data/epl/games.csv")
+          print(len(g) // 2, "games;", g.groupby("season").game_id.nunique().to_dict())
+          print("avg prices:", g[g.location == 1].groupby("season").avg_moneyline.apply(lambda s: s.notna().mean()).round(2).to_dict())
+          PY
+      - uses: actions/upload-artifact@v4
+        with: { name: epl-data, path: data/epl/games.csv, retention-days: 14 }
+
+  arms:
+    needs: [plan, inputs]
+    runs-on: ubuntu-latest
+    # a transformer fit takes a few minutes, a 4-seed ensemble four times that
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: epl-data, path: data/epl }
+      - name: Backtest ${{ matrix.config }} on ${{ matrix.season }}
+        env:
+          CONFIG: ${{ matrix.config }}
+          SEASON: ${{ matrix.season }}
+        run: |
+          python scripts/wager_arm.py "$CONFIG" "$SEASON" --sport epl --experiment experiments/epl/wager.yaml \
+            --games data/epl/games.csv --output-dir runs/wager --threads "$(nproc)"
+          mkdir -p "out/$CONFIG"
+          cp "runs/wager/$CONFIG/$SEASON.csv" "out/$CONFIG/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: "arm-${{ matrix.config }}-${{ matrix.season }}"
+          path: out
+          retention-days: 30
+
+  report:
+    needs: [inputs, arms]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13", cache: pip }
+      - name: Install
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[wager]"
+      - uses: actions/download-artifact@v4
+        with: { name: epl-data, path: data/epl }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "arm-*", path: runs/wager, merge-multiple: true }
+      - name: Score
+        env:
+          STAGE: ${{ inputs.stage }}
+          REFERENCE: ${{ inputs.reference }}
+        run: |
+          ls runs/wager
+          python scripts/epl_report.py "$STAGE" runs/wager --out runs/report.md \
+            --reference "$REFERENCE" --games data/epl/games.csv
+          cat runs/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: "epl-wager-${{ inputs.stage }}"
+          path: |
+            runs/report.md
+            runs/wager
+          retention-days: 90

@@ -264,6 +264,7 @@ class TransformerModel(MarginModule):
         token_features: dict | None = None,
         margin_range: tuple[int, int] = (-70, 70),
         total_range: tuple[int, int] = (0, 130),
+        rps_weight: float = 0.0,
     ):
         super().__init__(
             lr,
@@ -275,6 +276,7 @@ class TransformerModel(MarginModule):
             distribution,
             margin_range,
             total_range,
+            rps_weight,
         )
         self.encoder = encoder
         self.head = head

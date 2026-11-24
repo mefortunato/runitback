@@ -96,6 +96,7 @@ class MarginModule(pl.LightningModule):
         distribution: bool = False,
         margin_range: tuple[int, int] = (-70, 70),
         total_range: tuple[int, int] = (0, 130),
+        rps_weight: float = 0.0,
     ):
         super().__init__()
         if len(extra_weights) != len(extra_targets):
@@ -104,6 +105,9 @@ class MarginModule(pl.LightningModule):
             raise ValueError("a score distribution takes the total as its only extra")
         self.lr = lr
         self.weight_decay = weight_decay
+        # a score distribution's loss also scores the win / draw / loss probabilities it
+        # implies by their ranked probability score, with this weight (0: the margin's NLL alone)
+        self.rps_weight = float(rps_weight)
         self.extra_targets = tuple(extra_targets)
         n = 1 + len(self.extra_targets)
         mean = torch.as_tensor(target_mean, dtype=torch.float32)
@@ -227,12 +231,28 @@ class MarginModule(pl.LightningModule):
                 self.log(f"{stage}_{name}", metric, on_epoch=True, batch_size=n)
         return loss
 
+    def ranked_probability_score(self, log_prob: torch.Tensor, margin: torch.Tensor):
+        """Mean RPS of the win / draw / loss probabilities of a margin distribution (loss < draw
+        < win; :func:`runitback.wager.core.metrics.three_way_scores`), over the games whose margin
+        is known."""
+        values = self.margin_dist.values
+        pmf = log_prob.exp()
+        loss, draw = pmf[:, values < 0].sum(1), pmf[:, values == 0].sum(1)
+        known = ~torch.isnan(margin)
+        lost, level = (margin < 0).float(), (margin <= 0).float()
+        score = 0.5 * ((loss - lost) ** 2 + (loss + draw - level) ** 2)
+        return (score * known).sum() / known.sum().clamp(min=1)
+
     def _distribution_step(self, batch, stage: str):
         y = self.targets(batch)
         y = y[:, None] if y.dim() == 1 else y
         log_probs = self.log_probs(batch)
         loss = self.margin_dist.nll(log_probs["margin"], y[:, 0])
         n = len(y)
+        if self.rps_weight:
+            rps = self.ranked_probability_score(log_probs["margin"], y[:, 0])
+            self.log(f"{stage}_rps", rps, on_epoch=True, batch_size=n)
+            loss = loss + self.rps_weight * rps
         if "total" in log_probs:
             total = self.total_dist.nll(log_probs["total"], y[:, 1])
             self.log(f"{stage}_margin_loss", loss, on_epoch=True, batch_size=n)

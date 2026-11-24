@@ -1,0 +1,63 @@
+# E1 and E4 (docs/epl/PLAN.md): the EPL baselines and the transformer arms, walk-forward, scored by the
+# ranked probability score (RPS) against the closing market average. Run by
+# .github/workflows/epl-wager-experiment.yml by hand (Actions tab, "EPL wager experiment"); it rebuilds the
+# games table from football-data.co.uk in the run and uploads the epl-wager-results artifact. Nothing here
+# is committed as data. One cell by hand:
+#   python scripts/wager_arm.py tf_mkt 2019 --sport epl --experiment experiments/epl/wager.yaml \
+#       --games data/epl/games.csv --output-dir runs/wager
+#
+# Choosing without looking at the test seasons: the `screen` stage fits every arm on 2017-2021 (each season
+# on the ones before it, one seed) and the report picks the reference arm (the best non-market arm there) and
+# the arms worth a 4-seed ensemble. Only those are then run on 2022-2026 (`final`), next to the baselines.
+# `<name>_e4` is `<name>` averaging 4 seeds (the plan's promotion decisions compare _e4 with _e4).
+#
+# The transformer: a score distribution over goal differences (-10..10), a season-long history of 38 games
+# that stops two seasons back (the sport's `drop_older_than`), cold start for promoted clubs, a small model
+# (d_model 32, 2 layers) for about 9,000 games. `tf` is the box score and result alone; the arms add the
+# token options of E3 (market tokens with the closing flag, efficiency, eff2, Elo strength), history 19 / 57
+# and the RPS auxiliary loss. Token options other than `opponent_strength` go in `model`; that one goes in `fit`
+# (it is also an argument of the fit itself).
+seasons: [2022, 2023, 2024, 2025, 2026]
+baseline: tf
+stages:
+  screen:
+    seasons: [2017, 2018, 2019, 2020, 2021]
+    configs: [home, elo, sklearn, gnn, tf, tf_h19, tf_h57, tf_mkt, tf_eff, tf_eff2, tf_opp,
+              tf_mkt_eff, tf_mkt_eff_opp, tf_all, tf_rps]
+  baselines:
+    seasons: [2022, 2023, 2024, 2025, 2026]
+    configs: [home, elo, sklearn, gnn, tf, tf_s1, tf_s2, tf_s3]
+  final:
+    seasons: [2022, 2023, 2024, 2025, 2026]
+    configs: []  # the `arms` input of the workflow: the reference arm and the screen's picks, with _e4
+configs:
+  home: {family: home}
+  elo: {family: elo}
+  sklearn: {family: sklearn}
+  gnn: {family: gnn, max_epochs: 60}
+  tf:
+    model: &tf
+      history: 38
+      d_model: 32
+      nhead: 4
+      num_layers: 2
+      dropout: 0.2
+      season_embedding: true
+      season_decay: true
+      max_seasons_ago: 2
+      distribution: true
+      margin_range: [-10, 10]
+  # the same seed noise, three more seeds of `tf`: its 1-seed spread (the noise floor of every 1-seed delta)
+  tf_s1: {model: *tf, fit: {seed: 1}}
+  tf_s2: {model: *tf, fit: {seed: 2}}
+  tf_s3: {model: *tf, fit: {seed: 3}}
+  tf_h19: {model: {<<: *tf, history: 19}}
+  tf_h57: {model: {<<: *tf, history: 57}}
+  tf_mkt: {model: {<<: *tf, market_tokens: true}}
+  tf_eff: {model: {<<: *tf, efficiency: true}}
+  tf_eff2: {model: {<<: *tf, efficiency: true, eff2: true}}
+  tf_opp: {model: *tf, fit: {opponent_strength: true}}
+  tf_mkt_eff: {model: {<<: *tf, market_tokens: true, efficiency: true}}
+  tf_mkt_eff_opp: {model: {<<: *tf, market_tokens: true, efficiency: true}, fit: {opponent_strength: true}}
+  tf_all: {model: {<<: *tf, market_tokens: true, efficiency: true, eff2: true}, fit: {opponent_strength: true}}
+  tf_rps: {model: {<<: *tf, rps_weight: 0.5}}

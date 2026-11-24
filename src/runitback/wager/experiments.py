@@ -7,7 +7,9 @@ Each configuration is a dict with any of
   e.g. ``{"market_tokens": True, "antisymmetric": True, "lr": 1e-3}``;
 - ``fit``: :func:`~runitback.wager.models.transformer.fit_transformer` arguments,
   e.g. ``{"ensemble": 5, "batch_size": 128}``;
-- ``max_epochs`` / ``patience``: training length and early stopping.
+- ``max_epochs`` / ``patience``: training length and early stopping;
+- ``family``: another model family instead of a transformer (``home``,
+  ``point_diff``, ``elo``, ``sklearn``, ``gnn``; only ``max_epochs`` applies).
 
 Every (configuration, season) pair is one job: a fit on the earlier seasons
 and the season replayed date by date, as in :func:`~runitback.wager.backtest.
@@ -69,7 +71,7 @@ def _run_job(
 
     import torch
 
-    from .backtest import transformer_fitter, walk_forward
+    from .backtest import family_fitter, transformer_fitter, walk_forward
 
     warnings.filterwarnings("ignore")
     logging.getLogger("lightning").setLevel(logging.ERROR)
@@ -77,13 +79,19 @@ def _run_job(
     torch.set_num_threads(threads)
     start = time.time()
     games = read_table(games_path)
-    fitter = transformer_fitter(
-        sport,
-        max_epochs=config.get("max_epochs", 100),
-        patience=config.get("patience", 10),
-        model=config.get("model") or {},
-        **(config.get("fit") or {}),
-    )
+    # a configuration is a transformer unless it names another model family (home, point_diff,
+    # elo, sklearn, gnn), which takes only ``max_epochs``
+    family = config.get("family", "transformer")
+    if family == "transformer":
+        fitter = transformer_fitter(
+            sport,
+            max_epochs=config.get("max_epochs", 100),
+            patience=config.get("patience", 10),
+            model=config.get("model") or {},
+            **(config.get("fit") or {}),
+        )
+    else:
+        fitter = family_fitter(family, sport, max_epochs=config.get("max_epochs", 100))
     results = walk_forward(games, sport, fitter, [season])
     path = pathlib.Path(output)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -410,7 +418,8 @@ def ablate(
     text = format_table(table)
     path = pathlib.Path(output_dir)
     (path / "ablation.md").write_text(
-        f"{sport}, seasons {list(seasons)}\n\n{text}\n\nΔ Brier by season\n\n"
+        f"{sport}, seasons {list(seasons)}\n\n{text}\n\n"
+        f"Δ {'RPS' if get_sport(sport).schema.draws else 'Brier'} by season\n\n"
         + format_seasons(by_season)
         + "\n"
     )
