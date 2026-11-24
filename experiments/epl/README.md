@@ -184,4 +184,48 @@ and the GNN, so one seed cannot rank them, which is why the plan promotes on 4-s
 to the market (0.009), so that gap is not seed luck.
 
 These are the arms' numbers on the test seasons; the **reference arm is not chosen from them**: it comes from the
-`screen` on 2017-2021 (stage 1). Results of the screen and of the final ensembles go here when they finish.
+`screen` on 2017-2021 (below).
+
+### `screen` stage: the arms on the validation seasons (2017-2021, one seed)
+
+Run 45312451331 (75 jobs, all succeeded). **Its own first report was wrong and is superseded.** It said 2017-2021 but scored
+only 2020 and 2021 (740 of 1,782 games): the comparison dropped every game the market had no prices for, and the closing
+average starts in 2019-20. Nothing was wrong with the arms, which ran on all five seasons; the same results were
+re-scored with the fix (`scripts/epl_report.py`: the market is the closing average where it exists and the preferred
+bookmaker's close, Pinnacle, before; and every report now says how many of the games every arm predicted it scored and
+warns when that is not nearly all). Scored on all 1,782 games every arm predicted:
+
+| Arm | RPS | Δ vs `tf` (95% CI) | Behind the market |
+|---|---|---|---|
+| Market | 0.19267 | | |
+| `tf_opp` (+ Elo strength) | 0.19792 | -0.00228 ± 0.00153 | +0.00525 |
+| `tf_mkt` (+ market tokens) | 0.19807 | -0.00213 ± 0.00176 | +0.00539 |
+| `tf_mkt_eff_opp` | 0.19823 | -0.00197 ± 0.00202 | +0.00556 |
+| `tf_mkt_eff` | 0.19846 | -0.00174 ± 0.00183 | +0.00578 |
+| `tf_all` | 0.19917 | -0.00103 ± 0.00181 | +0.00649 |
+| GNN | 0.19951 | -0.00069 ± 0.00174 | +0.00684 |
+| `tf_eff` | 0.19992 | -0.00029 ± 0.00152 | +0.00724 |
+| `tf` (box score and result only) | 0.20020 | | +0.00753 |
+| `tf_h57` (history 57) | 0.20043 | +0.00023 ± 0.00114 | +0.00775 |
+| `tf_h19` (history 19) | 0.20055 | +0.00035 ± 0.00167 | +0.00788 |
+| Elo | 0.20057 | +0.00037 ± 0.00356 | +0.00790 |
+| `tf_eff2` | 0.20087 | +0.00066 ± 0.00140 | +0.00819 |
+| `tf_rps` (RPS loss, weight 0.5) | 0.20147 | +0.00127 ± 0.00073 | +0.00880 |
+| sklearn | 0.20238 | +0.00218 ± 0.00222 | +0.00971 |
+| home advantage only | 0.23459 | +0.03439 ± 0.00628 | +0.04192 |
+
+The rule picked **reference `gnn`** (the best of Elo, sklearn, GNN and `tf`; it leads `tf` by 0.0007, inside the noise) and the
+transformer arms **`tf_opp` and `tf_mkt`** for 4-seed ensembles. What the screen says:
+
+- **Elo strength and the market tokens help, a little.** Each takes about 0.0021-0.0023 off the default transformer, which is
+  larger than the biggest gap between two seeds of `tf` (0.0016) but not by much, and their CIs only just exclude 0. Stacking
+  them (`tf_mkt_eff_opp`, `tf_all`) is no better than either alone.
+- **Efficiency columns, `eff2` and a history of 19 or 57 games do nothing** (all within +-0.0007 of `tf`).
+- **The RPS auxiliary loss hurts** at weight 0.5: +0.0013 ± 0.0007, a CI that excludes 0 on the wrong side. The margin NLL
+  already prices the draw; a second loss on the same probabilities does not help.
+- **Even the best arm is 0.005 behind the market** on these seasons (the closing line, Pinnacle's, is sharper than anything
+  here, and has the lineups and injuries these models do not).
+
+**Final stage** (run 45319135123): `gnn` (the reference, one seed), and `tf`, `tf_opp` and `tf_mkt` as 4-seed ensembles on
+2022-2026. `tf_e4` is not in the plan: without it the ensembles of the two picks would be compared with a single-seed
+reference, and averaging four seeds would flatter them. `tf_opp_e4` against `tf_e4` isolates the option. Its results go here.
