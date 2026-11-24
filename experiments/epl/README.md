@@ -131,7 +131,7 @@ reach the model (defaults unchanged), so an EPL transformer can use -10..10.
 predicted all 380 games of 2026 with finite probabilities (win 0.14-0.74, draw 0.14-0.27). That is a check that the
 pipeline runs end to end, nothing more; the arms are E4's.
 
-## E1 and E4: the baselines and the transformer arms (running, 2026-11)
+## E1 and E4: the baselines and the transformer arms (2026-11)
 
 `experiments/epl/wager.yaml` lists the arms and the three stages; `.github/workflows/epl-wager-experiment.yml` runs a
 stage as one Actions job per (arm, season) and `scripts/epl_report.py` scores it. The games table is rebuilt in the
