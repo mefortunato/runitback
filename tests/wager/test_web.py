@@ -447,6 +447,38 @@ def test_per_sport_exports_merge_into_one(webdata, tmp_path):
     with pytest.raises(RuntimeError):
         merge(parts_dir=str(tmp_path / "flat"), output_dir=str(tmp_path / "x"),
               require_refresh=True)  # fmt: skip
+    # a sport whose job failed keeps its published files; the others are fresh
+    previous = tmp_path / "previous"
+    (previous / "mlb" / "challenge").mkdir(parents=True)
+    (previous / "mlb" / "upcoming.json").write_text('{"old": 1}')
+    (previous / "mlb" / "challenge" / "0.json").write_text("[]")
+    (previous / "toy").mkdir()
+    (previous / "toy" / "upcoming.json").write_text('{"stale": 1}')
+    (previous / "sports.json").write_text(
+        json.dumps([{"sport": "mlb", "label": "MLB"}, {"sport": "toy"}])
+    )
+    (previous / "challenge-keys.json").write_text('{"mlb": "m", "toy": "t"}')
+    merge(parts_dir=str(tmp_path / "flat"), output_dir=str(tmp_path / "kept"),
+          sports=["nfl", "toy", "mlb"], previous=str(previous))  # fmt: skip
+    kept = tmp_path / "kept" / "data"
+    infos = json.loads((kept / "sports.json").read_text())
+    assert {i["sport"] for i in infos} == {"nfl", "toy", "mlb"}
+    assert {"sport": "mlb", "label": "MLB"} in infos
+    assert (kept / "mlb" / "upcoming.json").read_text() == '{"old": 1}'
+    assert (kept / "mlb" / "challenge" / "0.json").exists()
+    keys = json.loads((kept / "challenge-keys.json").read_text())
+    assert keys["mlb"] == "m" and keys["toy"] != "t"  # fresh parts win
+    assert (kept / "toy" / "upcoming.json").read_bytes() == (
+        data / "toy" / "upcoming.json"
+    ).read_bytes()
+    # a missing sport with no published copy: publishing would delete it
+    with pytest.raises(RuntimeError, match="no published copy"):
+        merge(parts_dir=str(tmp_path / "flat"), output_dir=str(tmp_path / "z"),
+              sports=["toy", "wnba"], previous=str(previous))  # fmt: skip
+    with pytest.raises(RuntimeError, match="no published copy"):
+        merge(parts_dir=str(tmp_path / "flat"), output_dir=str(tmp_path / "z2"),
+              sports=["mlb"])  # fmt: skip
+
     shutil.copytree(tmp_path / "flat" / "toy", tmp_path / "flat" / "toy2")
     with pytest.raises(ValueError, match="more than one part"):
         merge(parts_dir=str(tmp_path / "flat"), output_dir=str(tmp_path / "y"))

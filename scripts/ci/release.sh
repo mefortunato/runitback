@@ -49,3 +49,22 @@ fetch_folds() {
     mkdir -p "$root/fold$s" && tar -xzf "dl/$sport/fold$s.tar.gz" -C "$root/fold$s" || return 1
   done
 }
+
+# fetch_webdata [<sha256>]: download and unpack the `predictions-webdata` release's webdata.tar.gz
+# into webdata/. With a sha256 (the asset Train predictions just uploaded, or the one an earlier job
+# of the same run fetched), wait for that asset: the release can still hold the previous one.
+fetch_webdata() {
+  local want=${1:-} got attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    rm -f webdata.tar.gz
+    gh release download predictions-webdata --pattern webdata.tar.gz || return 1
+    got="$(sha256sum webdata.tar.gz | cut -d' ' -f1)"
+    if [ -z "$want" ] || [ "$got" = "$want" ]; then break; fi
+    if [ "$attempt" = 10 ]; then
+      echo "::error::predictions-webdata asset is $got, not $want" >&2; return 1
+    fi
+    echo "predictions-webdata asset is still the previous one ($got); retrying"
+    sleep 30
+  done
+  rm -rf webdata && mkdir webdata && tar -xzf webdata.tar.gz -C webdata
+}
