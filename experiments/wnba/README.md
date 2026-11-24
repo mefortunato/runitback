@@ -368,10 +368,14 @@ centers are close to its starters in value (C replacement −1.42 value points a
 which the wager model already has from the box-score and market tokens, so the embeddings add noise, most of it
 on the total.
 
-**Next:** (1) promoting `prod_pvc_e4` (`RUNITBACK_WNBA_PLAYER_VALUES` and a values step in Train predictions, as the
-NBA's) is a production change for the owner to decide; (2) the box-score prior for rookies and low-minute
-players; (3) live projected lineups (ESPN `/injuries`, posted starters) for upcoming WNBA games, which
-`runitback.nba.data.lineups.live_lineups` only does for the NBA so far.
+**Promoted: `prod_pvc_e4` is the WNBA's production model**, as the NBA's. Train predictions' `build-wnba` job
+rebuilds the values (`runitback wnba players`, `lineups --live`, `player-values --upcoming`) and trains with
+`RUNITBACK_WNBA_PLAYER_VALUES` set (4 seeds, the `pvc` lineup terms); Refresh predictions rebuilds the values and
+exports the WNBA once Train has published it. Upcoming games' rotations come from ESPN's WNBA rosters, injury
+report and posted starters (`runitback.nba.data.lineups.live_lineups` with `WNBA_PLAYERS`), as the NBA's, and the
+game pages' lineup editor reads them (the WNBA's layout has the NBA's one ranked rotation).
+
+**Next:** the box-score prior for rookies and low-minute players.
 
 **Reproducing:** run `WNBA wager experiment` from the Actions tab, or push a change to
 `experiments/wnba/wager.yaml` or the workflow on a `claude/**` branch. It rebuilds the games with lines and the

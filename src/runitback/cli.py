@@ -1111,13 +1111,17 @@ def wnba_players(start: int = 2006, end: int = 2027,
 
 @wnba.command("lineups")
 def wnba_lineups(roster: bool = typer.Option(True, help="candidates are the game's box-score roster (else the "
-                                                          "team's last 5 games' rotation, injury DNPs removed only)")):
+                                                          "team's last 5 games' rotation, injury DNPs removed only)"),
+                 live: bool = typer.Option(False, help="also project ESPN's upcoming WNBA games (rosters, /injuries, "
+                                                       "posted starters)")):
     """Projected pre-game lineups for every game in player_games.parquet (as `runitback nba lineups`, with the
-    WNBA's 200 team minutes): data/wnba/processed/projected_lineups.parquet; prints the check vs actual."""
+    WNBA's 200 team minutes): data/wnba/processed/projected_lineups.parquet (and, with --live,
+    projected_lineups_upcoming.parquet); prints the check vs actual."""
     from .nba.data.lineups import build_lineups
     from .nba.data.players import WNBA_PLAYERS
     _log()
-    typer.echo(json.dumps(build_lineups(WNBA_DATA / "processed", roster=roster, league=WNBA_PLAYERS), indent=1))
+    typer.echo(json.dumps(build_lineups(WNBA_DATA / "processed", roster=roster, live=live, league=WNBA_PLAYERS),
+                          indent=1))
 
 
 @wnba.command("player-values")
@@ -1127,7 +1131,10 @@ def wnba_player_values(out: Path = typer.Option(Path("player_values/wnba"), help
                                                                 "WNBA settings', runitback.nba.player_values)"),
                        jobs: int = 0, rebuild: bool = typer.Option(False, help="rebuild possessions.parquet"),
                        lineups: Path = typer.Option(None, help="projected lineups to sum (`runitback wnba lineups`' "
-                                                    "projected_lineups.parquet); default the previous game's rotation")):
+                                                    "projected_lineups.parquet); default the previous game's rotation"),
+                       upcoming: Path = typer.Option(None, help="projected lineups of the upcoming games (`runitback "
+                                                     "wnba lineups --live`' projected_lineups_upcoming.parquet): their "
+                                                     "pv.parquet rows and the lineup editor's lineups.parquet")):
     """Weekly possession-level adjusted plus-minus with the WNBA's settings (WNBA_VALUES) and each team-game's
     lineup values (pv.parquet, slots.json, values_latest.csv), keyed as runitback.wager.wnba keys teams.
     Needs `runitback wnba players` first (and `runitback wnba lineups` for --lineups)."""
@@ -1147,10 +1154,12 @@ def wnba_player_values(out: Path = typer.Option(Path("player_values/wnba"), help
     poss, pg = pv.franchise_only(poss, pd.read_parquet(proc / "player_games.parquet"), cfg.teams)
     players = pd.read_parquet(proc / "players.parquet")
     proj = pv.projected_rotation(pd.read_parquet(lineups)) if lineups else None
+    up = pd.read_parquet(upcoming) if upcoming and upcoming.exists() else None
     gv = pv.game_table(poss, pg, players, first_season or cfg.first_season, jobs or os.cpu_count() or 1,
-                       lineups=proj, cfg=cfg.config())
+                       lineups=proj, cfg=cfg.config(), upcoming=up)
     pv.write_game_table(gv, out, players)   # player_games' teams are already the wager model's keys
-    typer.echo(f"{len(gv.pv)} team-games, {len(gv.fits)} weekly fits -> {out}")
+    n_up = 0 if gv.lineups is None else gv.lineups.game_id.nunique()
+    typer.echo(f"{len(gv.pv)} team-games ({n_up} upcoming games), {len(gv.fits)} weekly fits -> {out}")
 
 
 @wnba.command("preprocess")

@@ -14,7 +14,8 @@
 # The players page (player values ranked by position) is exported from the same player values.
 #
 # The NBA is exported from the same webdata: its player values (rotations from rosters and the
-# injury report) are rebuilt below, and the lineup editor and players page read them.
+# injury report) are rebuilt below, and the lineup editor and players page read them. The WNBA's
+# (W2) are rebuilt the same way, once Train has published the WNBA.
 #
 # College football is exported from the same webdata: the folds' newly played games are embedded and
 # keyed for the wager model, and the quarterback values rebuilt (depth is not needed: the projected
@@ -71,6 +72,7 @@ jobs:
       RUNITBACK_NFL_FOUNDATION: foundation/nfl
       RUNITBACK_NFL_PLAYER_VALUES: player_values/nfl
       RUNITBACK_NBA_PLAYER_VALUES: player_values/nba
+      RUNITBACK_WNBA_PLAYER_VALUES: player_values/wnba
       RUNITBACK_CFB_FOUNDATION: foundation/cfb
       RUNITBACK_CFB_PLAYER_VALUES: player_values/cfb
       RUNITBACK_WCBB_PLAYER_VALUES: player_values/wcbb
@@ -134,6 +136,16 @@ jobs:
           runitback nba player-values --start 2015 --end 2027 --out "$RUNITBACK_NBA_PLAYER_VALUES" \
             --lineups data/nba/processed/projected_lineups.parquet \
             --upcoming data/nba/processed/projected_lineups_upcoming.parquet
+      - name: WNBA player values (rotations from rosters and the injury report)
+        # only once Train has published the WNBA: until then there is nothing to export
+        if: ${{ hashFiles('webdata/wnba/meta.json') != '' }}
+        run: |
+          runitback wnba download --start 2006 --end 2027
+          runitback wnba players --start 2006 --end 2027
+          runitback wnba lineups --live
+          runitback wnba player-values --start 2006 --end 2027 --out "$RUNITBACK_WNBA_PLAYER_VALUES" \
+            --lineups data/wnba/processed/projected_lineups.parquet \
+            --upcoming data/wnba/processed/projected_lineups_upcoming.parquet
       - name: Women's college player values (rotations from rosters for upcoming games)
         # only once Train has published women's college basketball: until then there is nothing to export
         if: ${{ hashFiles('webdata/wcbb/meta.json') != '' }}
@@ -199,12 +211,14 @@ jobs:
             odds="{nfl: oddsapi, nba: oddsapi, cfb: espn}"
           fi
           sports="nfl,nba,cfb"
+          pv="nfl: $RUNITBACK_NFL_PLAYER_VALUES, nba: $RUNITBACK_NBA_PLAYER_VALUES"
+          if [ -f webdata/wnba/meta.json ]; then sports="$sports,wnba"; pv="$pv, wnba: $RUNITBACK_WNBA_PLAYER_VALUES"; fi
           if [ -f webdata/wcbb/meta.json ]; then sports="$sports,wcbb"; fi
           if [ -f webdata/cbb/meta.json ]; then sports="$sports,cbb"; fi
           runitback-wager web export --data_dir webdata --output_dir out --sports "[$sports]" \
             --refresh true --require_refresh false --odds "$odds" \
             --odds_history previous --challenge_from previous \
-            --player_values "{nfl: $RUNITBACK_NFL_PLAYER_VALUES, nba: $RUNITBACK_NBA_PLAYER_VALUES}"
+            --player_values "{$pv}"
           # a run that fetched no NBA lines keeps the published ones (the sync below deletes
           # what is missing from out/data)
           if [ ! -f out/data/nba/odds.json ] && [ -f previous/nba/odds.json ]; then

@@ -1,7 +1,7 @@
 # Train the wager model (spread / moneyline / total), run its walk-forward backtest (the
 # performance page, Beat the model, past power rankings) and publish the result as the
 # `predictions-webdata` release asset that Refresh predictions exports from. Ported from
-# sportsml's Train workflow. NFL, NBA, CFB and college basketball (women's and men's).
+# sportsml's Train workflow. NFL, NBA, WNBA, CFB and college basketball (women's and men's).
 #
 # The NFL model reads the play-by-play foundation's frozen game embeddings (experiments/nfl:
 # pbp32): one foundation model per test season ("fold", runitback.nfl.foundation), kept in the
@@ -18,6 +18,11 @@
 # the `pbp32` arms did not pass the promotion bar. Its values (`runitback nba player-values`,
 # from N1-N3) are rebuilt in the build job from the public sources; its backtest and model are
 # cached like the NFL's.
+#
+# The WNBA model (experiments/wnba: prod_pvc_e4, W2) is built the same way: player values only
+# (`runitback wnba player-values`, the NBA's pipeline with the WNBA's settings; the rotations of upcoming
+# games from ESPN's rosters, injuries and posted starters, `runitback wnba lineups --live`), trained with
+# RUNITBACK_WNBA_PLAYER_VALUES set (runitback.wager.wnba).
 #
 # The CFB model (experiments/cfb: pbp32_qb, 4 seeds) reads both: college play-by-play folds
 # (`runitback cfb foundation`, team-level, 54-97 minutes each on a 4-core runner, one matrix job per
@@ -41,7 +46,7 @@
 # (CBBD_API_KEY, about a dozen requests a season, a quota shared with CFB's); without the key the build
 # would need ~85,000 ESPN odds requests, so it stops.
 #
-# Each sport is built by .github/workflows/wager-sport.yml, in parallel (`build-nfl`, `build-nba`, `build-cfb`, `build-wcbb`, `build-cbb`; each with its
+# Each sport is built by .github/workflows/wager-sport.yml, in parallel (`build-nfl`, `build-nba`, `build-wnba`, `build-cfb`, `build-wcbb`, `build-cbb`; each with its
 # own runner and time limit) and `publish` lays what was built over the published web data: a sport
 # whose build failed keeps its previous data, and the others are published.
 #
@@ -80,6 +85,10 @@ on:
         default: ""
       max_new_seasons_nba:
         description: "max_new_seasons for the NBA alone (empty: use max_new_seasons; all, or a number, 0 included)"
+        type: string
+        default: ""
+      max_new_seasons_wnba:
+        description: "max_new_seasons for the WNBA alone (empty: use max_new_seasons; all, or a number, 0 included)"
         type: string
         default: ""
       max_new_seasons_cfb:
@@ -413,8 +422,26 @@ jobs:
         player_values/nba
       max_new_seasons: ${{ inputs.max_new_seasons_nba || inputs.max_new_seasons }}
       refresh_backtest: ${{ inputs.refresh_backtest || false }}
+  build-wnba:
+    uses: ./.github/workflows/wager-sport.yml
+    secrets: inherit
+    with:
+      sport: wnba
+      env: |
+        RUNITBACK_WNBA_PLAYER_VALUES=player_values/wnba
+      prep: |
+        runitback wnba download --start 2006 --end 2027
+        runitback wnba players --start 2006 --end 2027
+        runitback wnba lineups --live
+        runitback wnba player-values --start 2006 --end 2027 --out player_values/wnba \
+          --lineups data/wnba/processed/projected_lineups.parquet \
+          --upcoming data/wnba/processed/projected_lineups_upcoming.parquet
+      inputs_paths: |
+        player_values/wnba
+      max_new_seasons: ${{ inputs.max_new_seasons_wnba || inputs.max_new_seasons }}
+      refresh_backtest: ${{ inputs.refresh_backtest || false }}
   # Needs every college job: without all of its inputs CFB is not built, and its published data stays
-  # (the NFL and NBA are built and published either way).
+  # (the NFL, NBA and WNBA are built and published either way).
   build-cfb:
     needs: [cfb-plan, cfb-data, cfb-folds, cfb-lines, cfb-lines-cache]
     uses: ./.github/workflows/wager-sport.yml
@@ -707,8 +734,8 @@ jobs:
   # Lays the sports built in this run over the published web data, so a sport that failed (or was
   # not built) keeps what it had, and publishes it.
   publish:
-    needs: [build-nfl, build-nba, build-cfb, build-wcbb, build-cbb]
-    if: ${{ !cancelled() && (needs.build-nfl.result == 'success' || needs.build-nba.result == 'success' || needs.build-cfb.result == 'success' || needs.build-wcbb.result == 'success' || needs.build-cbb.result == 'success') }}
+    needs: [build-nfl, build-nba, build-wnba, build-cfb, build-wcbb, build-cbb]
+    if: ${{ !cancelled() && (needs.build-nfl.result == 'success' || needs.build-nba.result == 'success' || needs.build-wnba.result == 'success' || needs.build-cfb.result == 'success' || needs.build-wcbb.result == 'success' || needs.build-cbb.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -734,7 +761,7 @@ jobs:
             cp -a "$d/." "webdata/$sport/"
             echo "built $sport"
           done
-          echo "NFL: ${{ needs.build-nfl.result }}, NBA: ${{ needs.build-nba.result }}, CFB: ${{ needs.build-cfb.result }}, WCBB: ${{ needs.build-wcbb.result }}, CBB: ${{ needs.build-cbb.result }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "NFL: ${{ needs.build-nfl.result }}, NBA: ${{ needs.build-nba.result }}, WNBA: ${{ needs.build-wnba.result }}, CFB: ${{ needs.build-cfb.result }}, WCBB: ${{ needs.build-wcbb.result }}, CBB: ${{ needs.build-cbb.result }}" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Publish the predictions-webdata release asset
         run: |
           tar -czf webdata.tar.gz -C webdata .

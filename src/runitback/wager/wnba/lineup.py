@@ -22,4 +22,9 @@ LINEUP = LineupSpec(
     summaries=(("offense", OFFENSE), ("defense", DEFENSE)),
     # a quarter of the wager model's 40-game history (as the NBA's, so runitback.nba.player_values' RECENT)
     recent=10,
+    # the lineup editor, as the NBA's: one ranked rotation (the model's slots are team-wide minutes ranks,
+    # not per position); each player adds her offense and defense into her G / F / C columns
+    editor_groups=("ROT",),
+    labels={"ROT": "Rotation"},
+    rotation_groups=("ROT",),
 )

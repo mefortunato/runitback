@@ -115,3 +115,38 @@ def test_real_wnba_season_has_five_on_court_for_99_percent_of_events(tmp_path):
     assert summary[s]["five_share"] >= 0.99, summary[s]
     pg = pd.read_parquet(tmp_path / "player_games.parquet")
     assert set(pg.team.dropna()) <= WNBA_PLAYERS.teams
+
+
+def test_wnba_live_lineups_key_teams_by_espn_id(monkeypatch):
+    from runitback.nba.data import lineups as L
+
+    from .test_lineups import BOS
+
+    # Detroit's franchise (ESPN id 3) plays as Dallas: every feed's team becomes "DAL"
+    injuries = L.parse_injuries({"injuries": [{"id": "3", "injuries": [
+        {"status": "Out", "athlete": {"id": "1", "team": {"id": "3", "abbreviation": "TUL"}}}]}]}, WNBA_PLAYERS)
+    assert injuries[["team", "player_id", "status"]].values.tolist() == [["DAL", 1, "Out"]]
+    posted = L.parse_posted_starters({"boxscore": {"players": [{"team": {"id": "3", "abbreviation": "DAL"},
+        "statistics": [{"athletes": [{"starter": p in (2, 3, 4, 5, 7), "athlete": {"id": str(p)}} for p in BOS]}]}]}},
+        WNBA_PLAYERS)
+    assert posted == {"DAL": [2, 3, 4, 5, 7]}
+    scoreboard = {"season": {"year": 2027}, "events": [
+        {"id": "9", "date": "2027-05-20T23:30Z", "status": {"type": {"state": "pre"}},
+         "competitions": [{"competitors": [
+             {"homeAway": "home", "team": {"id": "3", "abbreviation": "DAL"}},
+             {"homeAway": "away", "team": {"id": "17", "abbreviation": "LV"}}]}]},
+        {"id": "10", "date": "2027-07-19T23:30Z", "status": {"type": {"state": "pre"}},   # All-Star game
+         "competitions": [{"competitors": [
+             {"homeAway": "home", "team": {"id": "131247", "abbreviation": "COL"}},
+             {"homeAway": "away", "team": {"id": "131246", "abbreviation": "CLA"}}]}]}]}
+    calls = []
+    monkeypatch.setattr(L, "_espn", lambda path, league=None, **kw: calls.append((path, league.name)) or scoreboard)
+    games = L.fetch_upcoming(["20270520"], WNBA_PLAYERS)
+    assert games[["game_id", "season", "home", "away"]].values.tolist() == [["9", 2027, "DAL", "LV"]]
+    assert calls == [("scoreboard", "wnba")]
+
+    pg = toy().assign(team="DAL")
+    roster = L.parse_roster({"athletes": [{"id": str(p), "position": {"abbreviation": "G"}} for p in BOS]})
+    live = L.project_live(pg, games.assign(game_id="u1"), {"DAL": roster}, injuries, league=WNBA_PLAYERS)
+    av = live[live.status == "available"]
+    assert av.proj_minutes.sum() == pytest.approx(200.0, abs=0.05) and 1 not in set(av.player_id)
