@@ -130,3 +130,30 @@ reach the model (defaults unchanged), so an EPL transformer can use -10..10.
 `eff2`, Elo strength, `distribution=True` over -10..10) trained for 2 epochs on 2001-2024 (validation 2025) and
 predicted all 380 games of 2026 with finite probabilities (win 0.14-0.74, draw 0.14-0.27). That is a check that the
 pipeline runs end to end, nothing more; the arms are E4's.
+
+## E1 and E4: the baselines and the transformer arms (running, 2026-11)
+
+`experiments/epl/wager.yaml` lists the arms and the three stages; `.github/workflows/epl-wager-experiment.yml` runs a
+stage as one Actions job per (arm, season) and `scripts/epl_report.py` scores it. The games table is rebuilt in the
+run, nothing is committed. A stage is hours of compute, so the arms are not chosen on the test seasons:
+
+1. **`screen`**: every arm on 2017-2021, one seed (each season fit on the ones before it). Its report picks the
+   **reference arm** (the best of `elo`, `sklearn`, `gnn` and the default transformer `tf` on those seasons) and the
+   **two transformer arms** worth a 4-seed ensemble, and prints the `arms` to give stage 3. (15 arms x 5 seasons.)
+2. **`baselines`**: the baselines and four seeds of `tf` on 2022-2026, which give the **noise floor**: how far apart
+   two seeds of the same model land, so a 1-seed difference smaller than that is not an effect. (8 x 5.)
+3. **`final`**: the reference arm and the screen's two picks as 4-seed ensembles (`<arm>_e4`) on 2022-2026, each
+   against the reference and the market, with the plan's verdict (the CI of the RPS difference includes 0 or favors the
+   arm), by season and on a promoted club's first games. Run it with the `arms` and `reference` inputs the screen printed.
+
+Cost, measured on four cores here: one season's fit takes about 8 minutes for a transformer, 2 for the GNN, under 1
+for sklearn and Elo; a 4-seed ensemble about 30. Stages 1 and 2 are about 100 jobs.
+
+The arms: `tf` (the box score and the result), history 19 and 57, the draws market tokens with the closing flag
+(`tf_mkt`), efficiency (`tf_eff`), efficiency with `eff2` (`tf_eff2`), Elo strength (`tf_opp`), their combinations
+(`tf_mkt_eff`, `tf_mkt_eff_opp`, `tf_all`) and the RPS auxiliary loss (`tf_rps`, weight 0.5).
+
+A dress rehearsal of the same scripts on real data (two seasons, two epochs, `scripts/wager_arm.py` then
+`scripts/epl_report.py`) ran before the first stage; it found and fixed only formatting, and `tf_rps` trained.
+
+Results go here when the stages finish.
