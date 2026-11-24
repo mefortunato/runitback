@@ -5,7 +5,7 @@ latest weekly, leak-free fit of every player's value. That table also holds play
 playing, so each sport's adapter joins it with who played this season (and for which team), keeps
 the players with a minimum of playing time and ranks them within their position group.
 
-Only the NFL has an adapter so far; a sport is added to :data:`ADAPTERS` with a function from its
+The NFL and the NBA have adapters; a sport is added to :data:`ADAPTERS` with a function from its
 values directory and processed data directory to a :class:`Ranks`.
 """
 
@@ -30,14 +30,16 @@ DEFAULT_MIN_SNAPS = 100          # about two games of a starter
 @dataclass
 class Ranks:
     season: int
-    through: int                  # the last week played
+    through: int                  # the last week played (NBA: the last game day, as YYYYMMDD)
     unit: str                     # what ``value`` is, for the page
     detail: str                   # what ``rate`` is
     positions: list[dict]
+    through_label: str | None = None  # how the page names ``through`` ("Nov 23"); None: "week <through>"
 
     def json(self) -> dict:
         return {"season": self.season, "through": self.through, "unit": self.unit,
-                "detail": self.detail, "positions": self.positions}
+                "detail": self.detail, "positions": self.positions,
+                **({"through_label": self.through_label} if self.through_label else {})}
 
 
 def nfl_ranks(values_dir: pathlib.Path, processed_dir: pathlib.Path) -> Ranks:
@@ -65,7 +67,50 @@ def nfl_ranks(values_dir: pathlib.Path, processed_dir: pathlib.Path) -> Ranks:
                  "EPA per play, over replacement", [p for p in positions if p["players"]])
 
 
-ADAPTERS: dict[str, Callable[[pathlib.Path, pathlib.Path], Ranks]] = {"nfl": nfl_ranks}
+NBA_GROUPS = [("G", "Guards"), ("F", "Forwards"), ("C", "Centers")]
+NBA_MIN_MINUTES = 100             # about four games of a starter
+
+
+def nba_ranks(values_dir: pathlib.Path, processed_dir: pathlib.Path) -> Ranks:
+    """The current NBA season's players by group (G / F / C), ranked by points per game as a starter
+    over a replacement-level player: ``values_latest.csv``'s offense plus defense ``pts_as_starter``
+    (``runitback nba player-values``). Players without a coefficient of their own (too few minutes in
+    the fit's window) are replacement level and left out, as are those under ``NBA_MIN_MINUTES``
+    minutes this season."""
+    from ...nba.player_values import franchise_games
+
+    values = pd.read_csv(values_dir / "values_latest.csv")
+    pg = pd.read_parquet(processed_dir / "player_games.parquet",
+                         columns=["game_id", "season", "game_date", "team", "opponent", "player_id",
+                                  "name", "group", "dnp", "minutes"])
+    pg = pg[pg.game_id.isin(franchise_games(pg))]
+    season = int(pg.season.max())
+    cur = pg[(pg.season == season) & ~pg.dnp & (pg.minutes > 0)].sort_values("game_date", kind="stable")
+    played = cur.groupby("player_id").agg(team=("team", "last"), games=("game_id", "nunique"),
+                                          minutes=("minutes", "sum"), box_name=("name", "last"))
+    total = values.groupby("player_id").agg(group=("group", "first"), value=("pts_as_starter", "sum"),
+                                            rate=("value_poss", "sum"),
+                                            **({"name": ("name", "first")} if "name" in values else {}))
+    table = total.join(played, how="inner")
+    table["name"] = table["name"].fillna(table.box_name) if "name" in table else table.box_name
+    table = table[table.minutes >= NBA_MIN_MINUTES]
+    positions = []
+    for group, label in NBA_GROUPS:
+        rows = table[table.group == group].sort_values("value", ascending=False)
+        positions.append({
+            "key": group, "label": label, "side": "off",
+            "players": [{"id": str(pid), "name": r["name"], "team": r.team, "games": int(r.games),
+                         "snaps": int(round(r.minutes)), "value": round(float(r.value), 3),
+                         "rate": round(100 * float(r.rate), 3), "rank": i + 1}
+                        for i, (pid, r) in enumerate(rows.iterrows())]})
+    last = pd.Timestamp(cur.game_date.max())
+    return Ranks(season, int(last.strftime("%Y%m%d")),
+                 "points per game as a starter (offense plus defense), over a replacement-level player",
+                 "points per 100 possessions on court, over replacement",
+                 [p for p in positions if p["players"]], through_label=f"{last:%b} {last.day}")
+
+
+ADAPTERS: dict[str, Callable[[pathlib.Path, pathlib.Path], Ranks]] = {"nfl": nfl_ranks, "nba": nba_ranks}
 
 
 def player_ranks(sport: str, values_dir: str | pathlib.Path, processed_dir: str | pathlib.Path) -> dict | None:
