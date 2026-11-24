@@ -138,7 +138,19 @@ def test_e4_is_the_same_configuration_averaging_four_seeds():
 
 
 # ------------------------------------------------------------------- family arms in a run
-def test_a_configuration_can_be_a_model_family(tmp_path, toy_sport):
+@pytest.fixture
+def torch_threads():
+    """``_run_job`` sets torch's thread count for its process; a test calling it in this one puts it back
+    (a different count changes float summation order, which the tests that compare trained models bit for
+    bit would see)."""
+    import torch
+
+    threads = torch.get_num_threads()
+    yield
+    torch.set_num_threads(threads)
+
+
+def test_a_configuration_can_be_a_model_family(tmp_path, toy_sport, torch_threads):
     import dataclasses
 
     from runitback.wager.core.sport import register_sport
