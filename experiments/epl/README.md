@@ -156,4 +156,32 @@ The arms: `tf` (the box score and the result), history 19 and 57, the draws mark
 A dress rehearsal of the same scripts on real data (two seasons, two epochs, `scripts/wager_arm.py` then
 `scripts/epl_report.py`) ran before the first stage; it found and fixed only formatting, and `tf_rps` trained.
 
-Results go here when the stages finish.
+### `baselines` stage: the baselines on the test seasons (2022-2026, one seed)
+
+Run 45312464607, scored by `scripts/epl_report.py baselines` on the 1,739 games every arm predicted (sklearn and the GNN
+have no cold start, so they skip 161 promoted clubs' early games; Elo and the transformer predict all 1,900). RPS, lower
+is better; the last column is the paired difference to the closing market average with its 95% CI.
+
+| Arm | RPS | Multiclass log loss | Behind the market |
+|---|---|---|---|
+| Market (closing average) | 0.19392 | 0.9574 | |
+| Pinnacle close (`book`) | 0.19396 | 0.9574 | +0.00004 |
+| Elo (football) | 0.20300 | 0.9861 | +0.00908 ± 0.00261 |
+| `tf` (transformer, seed 0) | 0.20327 | 0.9872 | +0.00935 ± 0.00297 |
+| sklearn | 0.20483 | 0.9919 | +0.01091 ± 0.00337 |
+| GNN | 0.20509 | 0.9925 | +0.01117 ± 0.00335 |
+| home advantage only | 0.23297 | 1.0711 | +0.03904 ± 0.00630 |
+
+**Every model is behind the market**, by about 0.009 to 0.011 RPS, in every test season and with a CI that excludes 0.
+The models are indistinguishable from one another: the transformer with only the box score is level with Elo (-0.00027
+± 0.00320) and a little ahead of sklearn and the GNN (about 0.0016-0.0018, inside their CIs). Home advantage alone is far
+behind (+0.030).
+
+**The noise floor.** Four seeds of the same transformer (`tf`, `tf_s1`, `tf_s2`, `tf_s3`, on 1,900 games) score 0.20267,
+0.20417, 0.20385 and 0.20256: a standard deviation of **0.00082**, and **0.00162** between the best and worst seed. So a
+1-seed difference under about 0.0016 is not an effect. That is the same size as the whole spread among Elo, `tf`, sklearn
+and the GNN, so one seed cannot rank them, which is why the plan promotes on 4-seed ensembles. It is also smaller than the gap
+to the market (0.009), so that gap is not seed luck.
+
+These are the arms' numbers on the test seasons; the **reference arm is not chosen from them**: it comes from the
+`screen` on 2017-2021 (stage 1). Results of the screen and of the final ensembles go here when they finish.
