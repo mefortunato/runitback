@@ -245,9 +245,14 @@ def synthetic_results(strength, seasons, games=120):
     return pd.DataFrame(rows)
 
 
-def write(root, quality, seasons):
+def write(root, quality, seasons, average_from=None):
+    """Write each arm's results; with ``average_from`` the closing average (``market_prob``) exists only from
+    that season on, as in life (2019-20), while the preferred bookmaker's close (``book_prob``) always does."""
     for name, strength in quality.items():
         frame = synthetic_results(strength, seasons)
+        if average_from is not None:
+            early = frame.season < average_from
+            frame.loc[early, ["market_prob", "market_draw_prob"]] = np.nan
         (root / name).mkdir(parents=True)
         for season in seasons:
             frame[frame.season == season].to_csv(
@@ -349,3 +354,40 @@ def test_the_report_runs_from_the_command_line(tmp_path, monkeypatch, capsys):
         "Reference arm" in (tmp_path / "r.md").read_text()
         and "Reference arm" in capsys.readouterr().out
     )
+
+
+def test_the_screen_scores_every_season_even_where_the_closing_average_is_missing(
+    tmp_path,
+):
+    write(
+        tmp_path, QUALITY, SCREEN_SEASONS, average_from=2019
+    )  # no average prices in 2017 and 2018
+    results = experiments.load_results(str(tmp_path), list(QUALITY), SCREEN_SEASONS)
+    text, pick = report_script.screen_report(results)
+    games = len(results["tf"])
+    assert f"Scored on {games} of the {games} games" in text and "Warning" not in text
+    assert "Pinnacle" in text  # the market of the early seasons, said so
+    assert (
+        pick["arms"] == "tf_e4,tf_mkt_e4,tf_eff_e4"
+    )  # the same picks as with the average everywhere
+    by_season = report_script.season_table(
+        report_script.with_market_fallback(results), "epl", "tf"
+    )
+    assert list(by_season.index) == SCREEN_SEASONS
+
+
+def test_a_report_that_scores_fewer_games_than_it_loaded_says_so(tmp_path):
+    write(
+        tmp_path, {"elo": 2, "tf": 3, "tf_mkt_e4": 5}, SCREEN_SEASONS, average_from=2019
+    )
+    results = experiments.load_results(
+        str(tmp_path), ["elo", "tf", "tf_mkt_e4"], SCREEN_SEASONS
+    )
+    # the baselines and final reports do not fall back: the test seasons have the average, and if they
+    # did not the reader has to be told that most of the games were left out
+    text = report_script.final_report(results, "elo", None)
+    assert (
+        "Warning" in text and "left out" in text and "not over all the seasons" in text
+    )
+    scored = len(results["tf"]) // 3
+    assert f"Scored on {scored} of the {len(results['tf'])} games" in text

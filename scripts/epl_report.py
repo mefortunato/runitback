@@ -63,6 +63,35 @@ def complete(root: Path, seasons: list[int]) -> list[str]:
     return have
 
 
+def with_market_fallback(results: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """The market arm of games the closing average has no prices for, from the preferred bookmaker's close.
+
+    The closing average exists from 2019-20; the screen's seasons start in 2016-17. Without this a comparison
+    that needs the market priced would score only the seasons that have the average (and say 2017-2021)."""
+    out = {}
+    for name, frame in results.items():
+        frame = frame.copy()
+        for column, fallback in (("market_prob", "book_prob"), ("market_draw_prob", "book_draw_prob")):
+            if column in frame and fallback in frame:
+                frame[column] = frame[column].fillna(frame[fallback])
+        out[name] = frame
+    return out
+
+
+def coverage_note(table: pd.DataFrame, results: dict[str, pd.DataFrame]) -> str:
+    """How many of the games every arm predicted were scored, loudly when it is not nearly all of them."""
+    game_ids = [set(f["game_id"]) for f in results.values()]
+    predicted = len(set.intersection(*game_ids))
+    scored = int(table["n"].max())
+    note = f"Scored on {scored} of the {predicted} games every arm predicted."
+    if scored < 0.95 * predicted:
+        note += (
+            f" **Warning: {predicted - scored} games are left out, because the market has no prices for them; "
+            "the comparison is not over all the seasons it names.**"
+        )
+    return note + "\n\n"
+
+
 def choose(table: pd.DataFrame) -> dict:
     """The reference arm and the transformer arms to run as 4-seed ensembles, from the screen's table."""
     candidates = [c for c in REFERENCE_CANDIDATES if c in table.index]
@@ -74,14 +103,17 @@ def choose(table: pd.DataFrame) -> dict:
 
 
 def screen_report(results: dict[str, pd.DataFrame]) -> tuple[str, dict]:
+    results = with_market_fallback(results)
     baseline = "tf" if "tf" in results else next(iter(results))
     table = ablation_table(results, SPORT, baseline).sort_values("rps")
     pick = choose(table)
     seasons = sorted({int(s) for f in results.values() for s in f["season"]})
     text = (
         f"## Screen: 2017-2021, one seed ({len(results)} arms, seasons {seasons})\n\n"
-        f"Ranked probability score on the games every arm predicted and the market priced; Δ RPS is the paired "
-        f"difference to `{baseline}` (negative is better), `vs market` to the closing average.\n\n"
+        f"Ranked probability score on the games every arm predicted; Δ RPS is the paired difference to `{baseline}` "
+        f"(negative is better). The market (`vegas`) is the closing average where it exists (2019-20 on) and the "
+        f"preferred bookmaker's close (Pinnacle) before; `book` is that bookmaker throughout.\n\n"
+        + coverage_note(table, results)
         + format_table(table)
         + f"\n\nΔ RPS to `{baseline}` by season (2021 is the season without crowds)\n\n"
         + format_seasons(season_table(results, SPORT, baseline))
@@ -123,6 +155,7 @@ def baselines_report(results: dict[str, pd.DataFrame]) -> str:
     return (
         f"## Baselines on the test seasons {seasons}, one seed\n\n"
         "Δ RPS is the paired difference to `tf` (negative is better), `vs market` to the closing average.\n\n"
+        + coverage_note(table, results)
         + format_table(table)
         + "\n\nΔ RPS to `tf` by season\n\n"
         + format_seasons(season_table(results, SPORT, "tf"))
@@ -153,6 +186,7 @@ def final_report(results: dict[str, pd.DataFrame], reference: str, games: pd.Dat
     text = (
         f"## Final: 4-seed ensembles on {seasons}, against `{reference}`\n\n"
         "Paired per-game RPS differences with 95% CIs. A promotion needs the CI to include 0 or favor the arm.\n\n"
+        + coverage_note(table, results)
         + format_table(table)
         + "\n\n"
         + verdict(table, reference)
