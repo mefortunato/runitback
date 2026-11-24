@@ -226,6 +226,51 @@ transformer arms **`tf_opp` and `tf_mkt`** for 4-seed ensembles. What the screen
 - **Even the best arm is 0.005 behind the market** on these seasons (the closing line, Pinnacle's, is sharper than anything
   here, and has the lineups and injuries these models do not).
 
-**Final stage** (run 45319135123): `gnn` (the reference, one seed), and `tf`, `tf_opp` and `tf_mkt` as 4-seed ensembles on
-2022-2026. `tf_e4` is not in the plan: without it the ensembles of the two picks would be compared with a single-seed
-reference, and averaging four seeds would flatter them. `tf_opp_e4` against `tf_e4` isolates the option. Its results go here.
+### `final` stage: 4-seed ensembles on the test seasons (2022-2026)
+
+Run 45319135123 (20 jobs, all succeeded): `gnn` (the screen's reference, one seed) and `tf`, `tf_opp` and `tf_mkt` (the
+screen's two picks) as 4-seed ensembles. `tf_e4` is not in the plan: without it the picks' ensembles would be compared with
+a single-seed reference, and averaging four seeds would flatter them. Scored on the 1,739 games every arm predicted. The
+last two columns are the paired RPS difference (95% CI) to the arm in the heading; negative is better.
+
+| Arm | RPS | Behind the market | vs `tf_e4` (like for like) | vs `gnn` (the reference) | vs Elo |
+|---|---|---|---|---|---|
+| Market (closing average) | 0.19392 | | | | |
+| `tf_opp_e4` (+ Elo strength) | 0.20241 | +0.00849 ± 0.00263 | -0.00087 ± 0.00127 | -0.00274 ± 0.00200 | -0.00059 ± 0.00266 |
+| `tf_mkt_e4` (+ market tokens) | 0.20291 | +0.00899 ± 0.00262 | -0.00038 ± 0.00156 | -0.00224 ± 0.00228 | -0.00009 ± 0.00291 |
+| Elo (football) | 0.20300 | +0.00908 ± 0.00261 | | | |
+| `tf_e4` (box score and result) | 0.20329 | +0.00936 ± 0.00296 | | -0.00186 ± 0.00190 | +0.00029 ± 0.00324 |
+| `gnn` (reference, 1 seed) | 0.20515 | +0.01123 ± 0.00335 | +0.00186 ± 0.00190 | | +0.00215 ± 0.00347 |
+
+**What it says**
+
+1. **The screen's picks were mostly noise.** On the validation seasons `tf_opp` and `tf_mkt` looked 0.0021-0.0023 better than
+   `tf`; on the test seasons, like for like, they are 0.0009 and 0.0004 better with CIs that include 0. The screen chose
+   the best two of 15 near-ties, and the best of many noisy results is lucky by construction. Neither option is shown to help;
+   neither is shown to hurt.
+2. **The plan's verdict ("the CI includes 0 or favors the arm") passes both arms against every reference, but that only
+   means "not significantly worse".** Against `gnn`, `tf_opp_e4` is the only arm whose CI is wholly below 0 (-0.0027 ± 0.0020,
+   its upper end at -0.0007), and so is `tf_e4`'s nearly (+0.00004): that comparison mostly shows a single-seed GNN
+   behind a 4-seed ensemble, not an effect of the arm.
+3. **Nothing beats Elo.** The football Elo (no training, no seeds) is level with the best transformer arm (0.0006 apart, CI
+   +-0.0027) and with the default one. Four seeds of a transformer are 0.0006 better than their average single seed
+   (0.20329 against 0.20387 on these games) and that is all ensembling bought.
+4. **Every model is 0.0085 to 0.011 behind the market**, with a CI that excludes 0, in the test seasons taken together. There
+   is no edge in models of the games table alone.
+5. **A promoted club's first five games are where the market is furthest ahead** (45 games every arm predicted; a small
+   sample, and it leaves out the first game, which the GNN cannot predict): the market scores 0.141, the models 0.179-0.188,
+   +0.038 to +0.047 behind with CIs of about +-0.02, four to five times the gap on the other games. The market knows the
+   squads and the signings; a model that has seen nothing of the club cannot. That is the most direct argument for the player
+   data.
+6. **By season** the transformer arms beat `gnn` in 2022-2025 and trail it in 2026; `gnn` is far behind in 2025 (+0.009
+   against `tf_e4`).
+
+**What is not shown.** The noise floor measured earlier (sd 0.0008 for one seed) is for single seeds; the ensembles' own
+spread was not measured, so a 0.0009 gap between two ensembles cannot be called noise or effect. These are also 1,739 games
+in five seasons: the CIs are about +-0.0013 even for paired ensembles.
+
+**Conclusion for the plan.** E1 and E4 are done and found no transformer arm worth promoting over the Elo baseline: the options
+the plan expected to help (market tokens, efficiency, Elo strength, longer or shorter history, the RPS loss) each move the RPS
+by less than the noise, and the RPS auxiliary loss hurts. The remaining gap to the market (about 0.009) is information the
+games table does not have: the lineups, injuries and squads that the player data can supply. E5 (promote and serve) therefore
+waits for the player-data arm, as already decided; there is nothing in these results to promote.
