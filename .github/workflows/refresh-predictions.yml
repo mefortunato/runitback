@@ -14,7 +14,8 @@
 # The players page (player values ranked by position) is exported from the same player values.
 #
 # The NBA is exported from the same webdata: its player values (rotations from rosters and the
-# injury report) are rebuilt below, and the lineup editor and players page read them.
+# injury report) are rebuilt below, and the lineup editor and players page read them. The WNBA's
+# (W2) are rebuilt the same way, once Train has published the WNBA.
 #
 # College football is exported from the same webdata: the folds' newly played games are embedded and
 # keyed for the wager model, and the quarterback values rebuilt (depth is not needed: the projected
@@ -63,6 +64,7 @@ env:
   RUNITBACK_NFL_FOUNDATION: foundation/nfl
   RUNITBACK_NFL_PLAYER_VALUES: player_values/nfl
   RUNITBACK_NBA_PLAYER_VALUES: player_values/nba
+  RUNITBACK_WNBA_PLAYER_VALUES: player_values/wnba
   RUNITBACK_CFB_FOUNDATION: foundation/cfb
   RUNITBACK_CFB_PLAYER_VALUES: player_values/cfb
   RUNITBACK_WCBB_PLAYER_VALUES: player_values/wcbb
@@ -107,9 +109,9 @@ jobs:
           source scripts/ci/release.sh
           fetch_webdata "$WANT"
           echo "sha256=$(sha256sum webdata.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-          # the sports Train has published (college football and basketball only once it has)
+          # the sports Train has published (the WNBA, college football and basketball only once it has)
           sports=""
-          for s in nfl nba cfb wcbb cbb; do
+          for s in nfl nba wnba cfb wcbb cbb; do
             if [ -f "webdata/$s/meta.json" ]; then sports="${sports:+$sports,}$s"; fi
           done
           [ -n "$sports" ] || { echo "::error::webdata has no sport to export"; exit 1; }
@@ -190,6 +192,15 @@ jobs:
           runitback nba player-values --start 2015 --end 2027 --out "$RUNITBACK_NBA_PLAYER_VALUES" \
             --lineups data/nba/processed/projected_lineups.parquet \
             --upcoming data/nba/processed/projected_lineups_upcoming.parquet
+      - name: WNBA player values (rotations from rosters and the injury report)
+        if: matrix.sport == 'wnba'
+        run: |
+          runitback wnba download --start 2006 --end 2027
+          runitback wnba players --start 2006 --end 2027
+          runitback wnba lineups --live
+          runitback wnba player-values --start 2006 --end 2027 --out "$RUNITBACK_WNBA_PLAYER_VALUES" \
+            --lineups data/wnba/processed/projected_lineups.parquet \
+            --upcoming data/wnba/processed/projected_lineups_upcoming.parquet
       - name: Women's college player values (rotations from rosters for upcoming games)
         if: matrix.sport == 'wcbb'
         run: |
@@ -245,7 +256,7 @@ jobs:
           runitback-wager web export --data_dir webdata --output_dir out --sports "[$SPORT]" \
             --refresh true --require_refresh false --odds "$odds" \
             --odds_history previous --challenge_from previous \
-            --player_values "{nfl: $RUNITBACK_NFL_PLAYER_VALUES, nba: $RUNITBACK_NBA_PLAYER_VALUES}"
+            --player_values "{nfl: $RUNITBACK_NFL_PLAYER_VALUES, nba: $RUNITBACK_NBA_PLAYER_VALUES, wnba: $RUNITBACK_WNBA_PLAYER_VALUES}"
           python -c "import json,sys; s=[i['sport'] for i in json.load(open('out/data/sports.json'))]; sys.exit(0 if s == ['$SPORT'] else f'exported {s}, not $SPORT')"
       - uses: actions/upload-artifact@v4
         with:

@@ -1,8 +1,8 @@
-"""NBA swap test: does the wager model's prediction move the right way when one starter changes, at
-every position?
+"""NBA / WNBA swap test: does the wager model's prediction move the right way when one starter changes,
+at every position?
 
-Fits a wager configuration with the player values (default ``pbp32_pvc_e4``, experiments/nba/
-wager.yaml) on the seasons before ``--season``, then predicts every game of that season again with
+Fits a wager configuration with the player values (default ``pbp32_pvc_e4``, experiments/<sport>/
+wager.yaml; ``--sport wnba`` for the WNBA's, W2) on the seasons before ``--season``, then predicts every game of that season again with
 one change to the home team's projected rotation (N3, ``projected_lineups.parquet``): the starter
 of one position group (its top-ranked G, F or C) replaced by
 
@@ -19,6 +19,7 @@ margin, win probability and total, and prints the summary table: a position pass
 and the win probability move with the value in every game where the value moved (|Δ| > 0.05).
 
     python scripts/nba_lineup_swap.py --season 2026 --out swap/swap_2026.csv
+    python scripts/nba_lineup_swap.py --sport wnba --season 2026 --out swap/swap_2026.csv
     python scripts/nba_lineup_swap.py --summary swap/swap_2026.csv
 """
 from __future__ import annotations
@@ -39,16 +40,25 @@ MIN_CHANGE = 0.05      # points of value: smaller changes are not scored for dir
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--sport", choices=("nba", "wnba"), default="nba")
     ap.add_argument("--season", type=int, default=2026)
     ap.add_argument("--config", default="pbp32_pvc_e4")
-    ap.add_argument("--experiment", type=Path, default=Path("experiments/nba/wager.yaml"))
-    ap.add_argument("--games", default="data/nba/games.csv")
-    ap.add_argument("--data", type=Path, default=Path("data/nba/processed"))
-    ap.add_argument("--regular-minutes", type=float, default=2000.0)
-    ap.add_argument("--out", type=Path, default=Path("experiments/nba/wager/swap.csv"))
+    ap.add_argument("--experiment", type=Path, help="default experiments/<sport>/wager.yaml")
+    ap.add_argument("--games", help="default data/<sport>/games.csv")
+    ap.add_argument("--data", type=Path, help="default data/<sport>/processed")
+    ap.add_argument("--regular-minutes", type=float, help="minutes on court in the fit's window for a "
+                    "best / worst regular (default: NBA 2000, WNBA 800)")
+    ap.add_argument("--out", type=Path, help="default experiments/<sport>/wager/swap.csv")
     ap.add_argument("--summary", type=Path, help="only summarize an earlier --out file")
+    ap.add_argument("--members", type=Path, help="the config's ensemble members for --season (wager_arm.py "
+                    "--member): assembled instead of fitting the config here")
     ap.add_argument("--threads", type=int, default=os.cpu_count() or 1)
     a = ap.parse_args()
+    a.experiment = a.experiment or Path(f"experiments/{a.sport}/wager.yaml")
+    a.games = a.games or f"data/{a.sport}/games.csv"
+    a.data = a.data or Path(f"data/{a.sport}/processed")
+    a.regular_minutes = a.regular_minutes or {"nba": 2000.0, "wnba": 800.0}[a.sport]
+    a.out = a.out or Path(f"experiments/{a.sport}/wager/swap.csv")
     if a.summary:
         print(summarize(pd.read_csv(a.summary)))
         return
@@ -65,19 +75,26 @@ def main() -> None:
     from runitback.wager.models.transformer import data as tdata
 
     cfg = yaml.safe_load(a.experiment.read_text())["configs"][a.config]
-    schema = get_sport("nba").schema
+    settings = pv.VALUE_SETTINGS[a.sport]
+    schema = get_sport(a.sport).schema
     games = played(read_table(a.games), schema)
     history = games[games[schema.season] < a.season]
-    fitter = transformer_fitter("nba", max_epochs=cfg.get("max_epochs", 100), patience=cfg.get("patience", 10),
+    fitter = transformer_fitter(a.sport, max_epochs=cfg.get("max_epochs", 100), patience=cfg.get("patience", 10),
                                 model=cfg.get("model") or {}, **(cfg.get("fit") or {}))
-    log.info("fitting %s on the seasons before %d", a.config, a.season)
-    predictor = fitter(history, split_seasons(history[schema.season].unique(), test=[]))
+    if a.members:
+        from runitback.wager.web.split import arm_predictor
+
+        log.info("assembling %s for %d from %s", a.config, a.season, a.members)
+        predictor = arm_predictor(games, a.sport, cfg, a.season, a.members)
+    else:
+        log.info("fitting %s on the seasons before %d", a.config, a.season)
+        predictor = fitter(history, split_seasons(history[schema.season].unique(), test=[]))
     pv_path = tdata.pbp_fold_path(cfg["model"]["lineup"], a.season)
     table = tdata._read_pbp(pv_path)
 
     # this season's weekly values, rotations and usage, as runitback nba player-values builds them
     poss = pd.read_parquet(a.data / "possessions.parquet")
-    poss, pg = pv.franchise_only(poss, pd.read_parquet(a.data / "player_games.parquet"))
+    poss, pg = pv.franchise_only(poss, pd.read_parquet(a.data / "player_games.parquet"), settings.teams)
     players = pd.read_parquet(a.data / "players.parquet")
     group_of = pv.player_groups(players)
     names = dict(zip(players.player_id, players.name))
@@ -92,13 +109,13 @@ def main() -> None:
     log.info("fitting %d weekly values for %d", len(weeks), a.season)
     from runitback.core.player_values import fit_weekly
 
-    fits = fit_weekly(events, pv.apm_config(), weeks, lambda w: a.season, a.threads)
+    fits = fit_weekly(events, settings.config(), weeks, lambda w: a.season, a.threads)
     fits = {w: f.rename(columns={"events": "possessions", "value": "value_poss"}) for w, f in zip(weeks, fits)}
     vals = {w: dict(zip(zip(f.side, f.player_id), f.value_poss)) for w, f in fits.items()}
-    refs = pv.swap_refs(fits[weeks[0]], int(a.regular_minutes * pv.POSS_PER_MIN))
+    refs = pv.swap_refs(fits[weeks[0]], int(a.regular_minutes * settings.poss_per_min))
     for (g, k), p in sorted(refs.items()):
         log.info("%s %s regular: %s", g, k, names.get(p, p))
-    # player_games' team keys (canonical franchise abbreviations) are the wager table's
+    # player_games' team keys (NBA: canonical franchise abbreviations; WNBA: by ESPN id) are the wager table's
     missing = set(sched.team) - set(table.index.get_level_values(1))
     if missing:
         raise SystemExit(f"teams of player_games not in {pv_path}: {sorted(missing)}")

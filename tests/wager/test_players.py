@@ -43,3 +43,20 @@ def test_nba_ranks_offense_plus_defense(tmp_path):
     assert [(p["name"], p["value"], p["rate"], p["games"]) for p in guards] == [("P2", 3.0, 3.0, 2), ("P1", 2.0, 2.0, 2)]
     assert out["positions"][1]["players"][0]["value"] == 2.0
     assert out["season"] == 2027 and out["through"] == 20261123 and out["through_label"] == "Nov 23"
+
+
+def test_wnba_ranks_use_the_wnba_franchises(tmp_path):
+    pv, proc = tmp_path / "pv", tmp_path / "proc"
+    pv.mkdir(); proc.mkdir()
+    pd.DataFrame([("off", 1, "C", 0.03, 2.0), ("def", 1, "C", 0.01, 1.0), ("off", 2, "G", 0.01, 0.5)],
+                 columns=["side", "player_id", "group", "value_poss", "pts_as_starter"]).assign(
+        possessions=900, name=lambda d: "P" + d.player_id.astype(str)).to_csv(pv / "values_latest.csv", index=False)
+    rows = [(f"g{d}", 2026, f"2026-07-{d:02d}", "LV", "DAL", p, "P%d" % p, g, False, 32.0)
+            for d in (1, 4, 8, 12) for p, g in ((1, "C"), (2, "G"))]
+    rows += [("as", 2026, "2026-07-19", None, None, 2, "P2", "G", False, 30.0)]    # the All-Star game
+    pd.DataFrame(rows, columns=["game_id", "season", "game_date", "team", "opponent", "player_id", "name",
+                                "group", "dnp", "minutes"]).to_parquet(proc / "player_games.parquet")
+    out = player_ranks("wnba", pv, proc)
+    assert [g["key"] for g in out["positions"]] == ["G", "C"]
+    assert out["positions"][1]["players"][0]["value"] == 3.0 and out["positions"][1]["players"][0]["team"] == "LV"
+    assert out["positions"][0]["players"][0]["games"] == 4 and out["through_label"] == "Jul 12"

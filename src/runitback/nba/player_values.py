@@ -61,6 +61,28 @@ POINTS_CLIP = 4.0
 SLOTS = 13                          # rotation slots with a usage (the 13th man and beyond: 0)
 DEFAULT_GROUP = "F"                 # players with no ESPN position
 
+@dataclass(frozen=True)
+class ValueSettings:
+    """A league's adjusted plus-minus settings (``config``) and the teams whose games count. The NBA's
+    (``NBA_VALUES``) are the module constants above; the WNBA's (``WNBA_VALUES``, W2) shrink harder: a
+    team plays 40-44 games a season, so a player has about a quarter of an NBA player's possessions."""
+
+    name: str
+    teams: frozenset
+    lam: float
+    window: int
+    decay: float
+    min_minutes: float
+    poss_per_min: float
+    first_season: int           # the first season with pv.parquet rows (the one before gives the slots)
+
+    def config(self, lam: float | None = None, window: int | None = None, decay: float | None = None,
+               min_minutes: float | None = None) -> APMConfig:
+        mm = self.min_minutes if min_minutes is None else min_minutes
+        return apm_config(lam=self.lam if lam is None else lam, window=self.window if window is None else window,
+                          decay=self.decay if decay is None else decay, min_poss=int(round(mm * self.poss_per_min)))
+
+
 # how a possession started (the previous one's end)
 START_PERIOD, START_MADE, START_DREB, START_TO, START_OTHER = range(5)
 N_START = 5
@@ -205,22 +227,23 @@ def season_possessions(pbp: pd.DataFrame, oc: pd.DataFrame) -> pd.DataFrame:
     return out[POSS_COLUMNS].reset_index(drop=True)
 
 
-def franchise_games(pg: pd.DataFrame) -> set[str]:
-    """Games between two of the 30 franchises (ESPN's box scores also have All-Star, Rising Stars and
-    exhibition games, which are no evidence of how players play)."""
-    from .vocab import TEAMS
+def franchise_games(pg: pd.DataFrame, teams=None) -> set[str]:
+    """Games between two of the league's franchises (``teams``, default the NBA's 30; ESPN's box scores
+    also have All-Star, Rising Stars and exhibition games, which are no evidence of how players play)."""
+    if teams is None:
+        from .vocab import TEAMS as teams
 
-    ok = pg.assign(f=pg.team.isin(TEAMS) & pg.opponent.isin(TEAMS)).groupby("game_id").f.all()
+    ok = pg.assign(f=pg.team.isin(teams) & pg.opponent.isin(teams)).groupby("game_id").f.all()
     return set(ok.index[ok])
 
 
-def franchise_only(poss: pd.DataFrame, pg: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def franchise_only(poss: pd.DataFrame, pg: pd.DataFrame, teams=None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """``poss`` and ``pg`` restricted to :func:`franchise_games`."""
-    keep = franchise_games(pg)
+    keep = franchise_games(pg, teams)
     return poss[poss.game_id.isin(keep)].reset_index(drop=True), pg[pg.game_id.isin(keep)].reset_index(drop=True)
 
 
-def build_possessions(seasons: list[int], raw_dir: Path, processed_dir: Path) -> pd.DataFrame:
+def build_possessions(seasons: list[int], raw_dir: Path, processed_dir: Path, teams=None) -> pd.DataFrame:
     """``possessions.parquet`` (processed_dir) for the seasons with play-by-play in raw_dir, from
     N1's ``on_court.parquet``. Logs the points per possession and possessions per team-game."""
     from .data.download import numpy_dtypes
@@ -244,7 +267,7 @@ def build_possessions(seasons: list[int], raw_dir: Path, processed_dir: Path) ->
     poss = pd.concat(parts, ignore_index=True)
     pg_path = processed_dir / "player_games.parquet"
     if pg_path.exists():
-        poss, _ = franchise_only(poss, pd.read_parquet(pg_path, columns=["game_id", "team", "opponent"]))
+        poss, _ = franchise_only(poss, pd.read_parquet(pg_path, columns=["game_id", "team", "opponent"]), teams)
     poss.to_parquet(processed_dir / "possessions.parquet", index=False)
     return poss
 
@@ -283,6 +306,24 @@ def apm_config(lam: float = LAMBDA, window: int = WINDOW, decay: float = DECAY, 
     """The NBA's adjusted plus-minus settings for the generic fitter."""
     return APMConfig(groups=GROUPS, target="points", controls=_controls, sides=SIDES, min_events=min_poss,
                      decay=decay, window=window, lam=lam, target_clip=POINTS_CLIP, iter_lim=1000)
+
+
+def _settings() -> dict[str, ValueSettings]:
+    from .data.players import NBA_PLAYERS, WNBA_PLAYERS
+    nba = ValueSettings("nba", NBA_PLAYERS.teams, LAMBDA, WINDOW, DECAY, MIN_MINUTES, POSS_PER_MIN, 2016)
+    wnba = ValueSettings("wnba", WNBA_PLAYERS.teams, WNBA_LAMBDA, WNBA_WINDOW, DECAY, WNBA_MIN_MINUTES,
+                         WNBA_POSS_PER_MIN, 2008)
+    return {"nba": nba, "wnba": wnba}
+
+
+# W2 (experiments/wnba): tuned on 2017-2021, the seasons before the wager backtest. Per season of
+# possessions (about 37,000, a seventh of the NBA's) the penalty shrinks about 2.8x harder than the NBA's
+WNBA_LAMBDA = 2000.0
+WNBA_WINDOW = WINDOW
+WNBA_MIN_MINUTES = 75
+WNBA_POSS_PER_MIN = 2.0             # about 80 possessions per side in 40 minutes
+VALUE_SETTINGS = _settings()
+NBA_VALUES, WNBA_VALUES = VALUE_SETTINGS["nba"], VALUE_SETTINGS["wnba"]
 
 
 def fit_values(events: Events, before: int, season: int, cfg: APMConfig | None = None) -> pd.DataFrame:

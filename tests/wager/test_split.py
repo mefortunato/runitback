@@ -108,3 +108,28 @@ def test_the_split_pipeline_builds_what_build_builds(tmp_path, monkeypatch, n_se
     # (also when a plain build reuses a cached season)
     assert a["backtest_cache"] == b["backtest_cache"] and a["model"] == b["model"]
     assert _flat(b["backtest"]) == pytest.approx(_flat(a["backtest"]), rel=1e-7)
+
+
+def test_an_experiment_cell_trained_member_by_member_is_the_in_process_cell(tmp_path):
+    """wager_arm.py --member i (each in its own job) then --members gives the CSV run_experiments writes for
+    the cell: the same members, the same ensemble, the same walk-forward predictions."""
+    from runitback.wager.experiments import _run_job
+
+    games = make_games(seasons=(2021, 2022, 2023), persistence=0.7)
+    path = tmp_path / "games.csv"
+    games.to_csv(path, index=False)
+    config = {"max_epochs": 2, "patience": 3, "model": {"history": 6}, "fit": {"ensemble": 2, "seed": 1}}
+    # the job run_experiments runs for the cell (in a process of its pool, where the toy sport is unknown)
+    _run_job(str(path), "toy", "cell", config, 2023, str(tmp_path / "whole.csv"), 1)
+    whole = pd.read_csv(tmp_path / "whole.csv", low_memory=False)
+
+    assert split.arm_size(config, "toy") == 2
+    for i in range(2):
+        split.arm_member(str(path), "toy", config, 2023, i, tmp_path / "members")
+    with pytest.raises(ValueError):
+        split.arm_member(str(path), "toy", config, 2023, 2, tmp_path / "members")
+    apart = split.arm_season(str(path), "toy", config, 2023, tmp_path / "members")
+    # through the CSV, as run_experiments caches a cell
+    apart.to_csv(tmp_path / "apart.csv", index=False)
+    pd.testing.assert_frame_equal(whole, pd.read_csv(tmp_path / "apart.csv", low_memory=False), check_exact=True)
+    assert len(whole) > 0 and whole.season.eq(2023).all()

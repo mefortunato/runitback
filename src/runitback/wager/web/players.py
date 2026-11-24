@@ -5,7 +5,7 @@ latest weekly, leak-free fit of every player's value. That table also holds play
 playing, so each sport's adapter joins it with who played this season (and for which team), keeps
 the players with a minimum of playing time and ranks them within their position group.
 
-The NFL and the NBA have adapters; a sport is added to :data:`ADAPTERS` with a function from its
+The NFL, the NBA and the WNBA have adapters; a sport is added to :data:`ADAPTERS` with a function from its
 values directory and processed data directory to a :class:`Ranks`.
 """
 
@@ -71,19 +71,19 @@ NBA_GROUPS = [("G", "Guards"), ("F", "Forwards"), ("C", "Centers")]
 NBA_MIN_MINUTES = 100             # about four games of a starter
 
 
-def nba_ranks(values_dir: pathlib.Path, processed_dir: pathlib.Path) -> Ranks:
+def nba_ranks(values_dir: pathlib.Path, processed_dir: pathlib.Path, teams=None) -> Ranks:
     """The current NBA season's players by group (G / F / C), ranked by points per game as a starter
     over a replacement-level player: ``values_latest.csv``'s offense plus defense ``pts_as_starter``
     (``runitback nba player-values``). Players without a coefficient of their own (too few minutes in
     the fit's window) are replacement level and left out, as are those under ``NBA_MIN_MINUTES``
-    minutes this season."""
+    minutes this season. ``teams``: the league's franchises (default the NBA's; ``wnba_ranks``)."""
     from ...nba.player_values import franchise_games
 
     values = pd.read_csv(values_dir / "values_latest.csv")
     pg = pd.read_parquet(processed_dir / "player_games.parquet",
                          columns=["game_id", "season", "game_date", "team", "opponent", "player_id",
                                   "name", "group", "dnp", "minutes"])
-    pg = pg[pg.game_id.isin(franchise_games(pg))]
+    pg = pg[pg.game_id.isin(franchise_games(pg, teams))]
     season = int(pg.season.max())
     cur = pg[(pg.season == season) & ~pg.dnp & (pg.minutes > 0)].sort_values("game_date", kind="stable")
     played = cur.groupby("player_id").agg(team=("team", "last"), games=("game_id", "nunique"),
@@ -110,7 +110,17 @@ def nba_ranks(values_dir: pathlib.Path, processed_dir: pathlib.Path) -> Ranks:
                  [p for p in positions if p["players"]], through_label=f"{last:%b} {last.day}")
 
 
-ADAPTERS: dict[str, Callable[[pathlib.Path, pathlib.Path], Ranks]] = {"nfl": nfl_ranks, "nba": nba_ranks}
+def wnba_ranks(values_dir: pathlib.Path, processed_dir: pathlib.Path) -> Ranks:
+    """The WNBA's players page (W2): ``nba_ranks`` on ``runitback wnba player-values``, with the WNBA's
+    franchises (teams keyed by ESPN id)."""
+    from ...nba.data.players import WNBA_PLAYERS
+
+    return nba_ranks(values_dir, processed_dir, WNBA_PLAYERS.teams)
+
+
+ADAPTERS: dict[str, Callable[[pathlib.Path, pathlib.Path], Ranks]] = {
+    "nfl": nfl_ranks, "nba": nba_ranks, "wnba": wnba_ranks,
+}
 
 
 def player_ranks(sport: str, values_dir: str | pathlib.Path, processed_dir: str | pathlib.Path) -> dict | None:

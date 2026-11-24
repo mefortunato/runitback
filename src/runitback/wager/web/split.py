@@ -29,6 +29,7 @@ def fit_member(
     seed: int,
     out: str | pathlib.Path,
     max_epochs: int = 100,
+    patience: int = 10,
     **fit_kwargs,
 ) -> pathlib.Path:
     """Train the ensemble member with seed ``seed`` (the one an in-process fit with the same
@@ -42,6 +43,7 @@ def fit_member(
     def trainer():
         t = default_trainer(
             max_epochs=max_epochs,
+            patience=patience,
             enable_progress_bar=False,
             enable_model_summary=False,
         )
@@ -416,3 +418,69 @@ def web_combine(sport: str, games: str, output_dir: str = "webdata", cache: str 
         reuse_model_days=max_model_days,
         max_new_seasons=0,
     )
+
+
+# ------------------------------------------------------------------------- experiment arms (wager_arm.py)
+# An experiment's cell (one configuration of an experiments/<sport>/*.yaml on one season) trains its
+# ensemble's members one after another in one job (runitback.wager.experiments.run_experiments). These
+# split it as the build is split above: ``arm_member`` trains member ``i`` of the cell's fit in a job of its
+# own, ``arm_season`` assembles the members and replays the season. The fit is the one
+# ``runitback.wager.backtest.transformer_fitter`` makes inside ``walk_forward`` (the same model, trainer
+# settings, season split and fit arguments), so the predictions are the in-process cell's
+# (tests/wager/test_split.py).
+
+
+def arm_size(config: dict, sport: str) -> int:
+    """The number of members of an experiment configuration's ensemble (``fit.ensemble``, else the sport's)."""
+    return int((config.get("fit") or {}).get("ensemble") or ensemble_size(sport))
+
+
+def _arm_fit(games: Table, sport: str, config: dict, season: int) -> tuple[pd.DataFrame, dict]:
+    """``(history, fit_kwargs)`` of the fit ``transformer_fitter(sport, **config)`` makes for ``season`` in a
+    walk-forward backtest, without ``trainer``, ``ensemble`` and ``seed``."""
+    schema = get_sport(sport).schema
+    games = played(read_table(games), schema)
+    history = games[games[schema.season] < season]
+    split = split_seasons(history[schema.season].unique(), test=[])
+    kwargs = {k: v for k, v in (config.get("fit") or {}).items() if k not in ("ensemble", "seed")}
+    model = default_model(sport, kwargs.get("context"), kwargs.get("opponent_strength"), kwargs.get("elo_margin"),
+                          **(config.get("model") or {}))
+    return history, {"model": model, "train_seasons": split.train, "val_seasons": split.val,
+                     "test_seasons": split.test, **kwargs}
+
+
+def arm_member(games: Table, sport: str, config: dict, season: int, member: int, out: str | pathlib.Path
+               ) -> pathlib.Path:
+    """Train member ``member`` of an experiment cell's ensemble (seed ``fit.seed + member``, as the in-process
+    ensemble seeds it) and leave its best checkpoint at ``out/member<member>.ckpt``."""
+    n = arm_size(config, sport)
+    if not 0 <= member < n:
+        raise ValueError(f"member {member} of an ensemble of {n}")
+    seed = int((config.get("fit") or {}).get("seed") or 0)
+    history, kwargs = _arm_fit(games, sport, config, season)
+    out = pathlib.Path(out)
+    path = fit_member(history, sport, seed + member, out, config.get("max_epochs", 100),
+                      config.get("patience", 10), **kwargs)
+    target = out / f"member{member}.ckpt"
+    if path != target:
+        path.replace(target)
+    return target
+
+
+def arm_predictor(games: Table, sport: str, config: dict, season: int, checkpoints: str | pathlib.Path):
+    """The predictor of an experiment cell's fit for ``season``, assembled from the members in
+    ``checkpoints`` (what ``transformer_fitter(sport, **config)`` returns in-process)."""
+    history, kwargs = _arm_fit(games, sport, config, season)
+    return assemble(history, sport, _checkpoints(checkpoints, arm_size(config, sport)), print_metrics=False,
+                    **kwargs)["predictor"]
+
+
+def arm_season(games: Table, sport: str, config: dict, season: int, checkpoints: str | pathlib.Path
+               ) -> pd.DataFrame:
+    """The experiment cell's walk-forward results for ``season`` (``walk_forward``'s table, as
+    ``run_experiments`` caches it) with the model assembled from the members in ``checkpoints``."""
+    from ..backtest import walk_forward
+
+    table = read_table(games)
+    predictor = arm_predictor(table, sport, config, season, checkpoints)
+    return walk_forward(table, sport, None, [season], predictors={season: predictor})

@@ -45,7 +45,7 @@ import numpy as np
 import pandas as pd
 
 from ..vocab import canon_team
-from .players import position_group
+from .players import NBA_PLAYERS, PlayerLeague, position_group
 
 log = logging.getLogger(__name__)
 
@@ -145,7 +145,8 @@ def _scale_groups(exp: np.ndarray, key: np.ndarray, total: float = TEAM_MINUTES,
     return m
 
 
-def _finish(cands: pd.DataFrame, hist: pd.DataFrame, posted: dict | None = None) -> pd.DataFrame:
+def _finish(cands: pd.DataFrame, hist: pd.DataFrame, posted: dict | None = None, total: float = TEAM_MINUTES,
+            cap: float = MAX_MINUTES) -> pd.DataFrame:
     """Candidates (`game_id, team, player_id, game_date, status, ...`) -> projected minutes, starters
     (`posted`: (game_id, team) -> the posted five, which replace the projection) and rotation rank."""
     if cands.empty:
@@ -153,7 +154,7 @@ def _finish(cands: pd.DataFrame, hist: pd.DataFrame, posted: dict | None = None)
     d = history_before(hist, cands.reset_index(drop=True))
     av = d.status.eq("available").to_numpy()
     key = pd.factorize(pd.Series(list(zip(d.game_id, d.team))))[0]
-    d["proj_minutes"] = np.where(av, _scale_groups(np.where(av, d.exp_minutes, 0.0), key), 0.0)
+    d["proj_minutes"] = np.where(av, _scale_groups(np.where(av, d.exp_minutes, 0.0), key, total, cap), 0.0)
     d["_k"], d["_av"] = key, av
     s = d.sort_values(["_k", "_av", "start_share", "exp_minutes"], ascending=[True, False, False, False],
                       kind="stable")
@@ -175,12 +176,14 @@ def _finish(cands: pd.DataFrame, hist: pd.DataFrame, posted: dict | None = None)
 
 
 def projected_lineups(pg: pd.DataFrame, roster: bool = True, out_kinds: tuple[str, ...] = OUT_KINDS,
-                      games: set[str] | None = None) -> pd.DataFrame:
+                      games: set[str] | None = None, league: PlayerLeague | None = None) -> pd.DataFrame:
     """Projected lineups of every (game, team) in `pg` (player_games.parquet), or of `games` only.
 
     See the module docstring: candidates are the game's box-score roster (`roster=True`) or the
     team's last `TEAM_GAMES` games' rotation; players with a DNP `reason` of a kind in `out_kinds`
-    are ruled out; minutes and starters come only from games before the game's date."""
+    are ruled out; minutes and starters come only from games before the game's date. ``league``
+    (default the NBA's): the team's minutes to share out (WNBA: 200) and a player's cap."""
+    lg = league or NBA_PLAYERS
     pg = pg.assign(game_id=pg.game_id.astype(str))
     hist = player_history(pg)
     target = pg if games is None else pg[pg.game_id.isin(set(map(str, games)))]
@@ -211,7 +214,7 @@ def projected_lineups(pg: pd.DataFrame, roster: bool = True, out_kinds: tuple[st
     c["status"] = np.where(c.out_reason.notna(), "out", "available")
     c["group"] = c.player_id.map(group_of)
     c["source"] = source
-    return _finish(c, hist)
+    return _finish(c, hist, total=lg.team_minutes, cap=lg.max_minutes)
 
 
 # ------------------------------------------------------------------------------------- evaluation
@@ -269,9 +272,23 @@ def evaluate(proj: pd.DataFrame, pg: pd.DataFrame) -> pd.DataFrame:
 
 # ------------------------------------------------------------------------------- live (upcoming)
 
-def _espn(path: str, **params) -> dict:
+def _espn(path: str, league: PlayerLeague | None = None, **params) -> dict:
     from ...wager.espn import SITE, get_json
-    return get_json(SITE.format(sport="basketball", league="nba") + "/" + path, **params)
+    return get_json(SITE.format(sport="basketball", league=(league or NBA_PLAYERS).name) + "/" + path, **params)
+
+
+def _team(team: dict, league: PlayerLeague | None = None) -> str | None:
+    """An ESPN team object's key: the NBA's canonical abbreviation, the WNBA's by ESPN id."""
+    lg = league or NBA_PLAYERS
+    if lg.by_id is None:
+        return canon_team(team.get("abbreviation", ""))
+    return lg.team_key(team.get("id"), team.get("abbreviation"))
+
+
+def _season(start: pd.Timestamp, league: PlayerLeague | None = None) -> int:
+    """The season of a game starting at ``start`` when ESPN does not say: the NBA's is the year it ends in
+    (October on is next year's), the WNBA's the calendar year."""
+    return start.year if (league or NBA_PLAYERS).by_id is not None else start.year + (start.month >= 8)
 
 
 def _athlete_id(a: dict) -> int | None:
@@ -284,12 +301,12 @@ def _athlete_id(a: dict) -> int | None:
     return None
 
 
-def fetch_upcoming(dates: list[str]) -> pd.DataFrame:
+def fetch_upcoming(dates: list[str], league: PlayerLeague | None = None) -> pd.DataFrame:
     """ESPN's not-yet-started games on `dates` ("YYYYMMDD"): game_id, game_date (US Eastern),
     season, home, away, home_id, away_id."""
     rows = []
     for day in dates:
-        data = _espn("scoreboard", dates=day)
+        data = _espn("scoreboard", league, dates=day)
         season = (data.get("season") or {}).get("year")
         for e in data.get("events") or []:
             if ((e.get("status") or {}).get("type") or {}).get("state") != "pre":
@@ -297,25 +314,26 @@ def fetch_upcoming(dates: list[str]) -> pd.DataFrame:
             comp = (e.get("competitions") or [{}])[0]
             side = {c.get("homeAway"): c.get("team") or {} for c in comp.get("competitors") or []}
             start = pd.Timestamp(e["date"]).tz_convert("America/New_York")
+            home, away = _team(side["home"], league), _team(side["away"], league)
+            if home is None or away is None:      # All-Star and exhibition teams
+                continue
             rows.append(dict(game_id=str(e["id"]), game_date=start.strftime("%Y-%m-%d"),
-                             season=int(season or start.year + (start.month >= 8)),
-                             home=canon_team(side["home"].get("abbreviation", "")),
-                             away=canon_team(side["away"].get("abbreviation", "")),
+                             season=int(season or _season(start, league)), home=home, away=away,
                              home_id=str(side["home"].get("id")), away_id=str(side["away"].get("id"))))
     return pd.DataFrame(rows, columns=["game_id", "game_date", "season", "home", "away", "home_id", "away_id"])
 
 
-def parse_injuries(data: dict) -> pd.DataFrame:
+def parse_injuries(data: dict, league: PlayerLeague | None = None) -> pd.DataFrame:
     """ESPN `/injuries` -> team, player_id, status, date, comment."""
     rows = []
     for t in data.get("injuries") or []:
         for i in t.get("injuries") or []:
             a = i.get("athlete") or {}
-            team = (a.get("team") or {}).get("abbreviation")
+            team = _team(a.get("team") or {}, league) if (a.get("team") or {}).get("abbreviation") else None
             pid = _athlete_id(a)
             if pid is None or not team:
                 continue
-            rows.append((canon_team(team), pid, i.get("status"), i.get("date"), i.get("shortComment")))
+            rows.append((team, pid, i.get("status"), i.get("date"), i.get("shortComment")))
     return pd.DataFrame(rows, columns=["team", "player_id", "status", "date", "comment"])
 
 
@@ -325,11 +343,11 @@ def parse_roster(data: dict) -> list[tuple[int, str | None]]:
             if a.get("id")]
 
 
-def parse_posted_starters(data: dict) -> dict[str, list[int]]:
+def parse_posted_starters(data: dict, league: PlayerLeague | None = None) -> dict[str, list[int]]:
     """ESPN `/summary?event=<id>` -> team -> the five posted starters (empty until ESPN posts them)."""
     out = {}
     for t in (data.get("boxscore") or {}).get("players") or []:
-        team = canon_team((t.get("team") or {}).get("abbreviation", ""))
+        team = _team(t.get("team") or {}, league)
         ids = [int(a["athlete"]["id"]) for s in t.get("statistics") or [] for a in s.get("athletes") or []
                if a.get("starter") and (a.get("athlete") or {}).get("id")]
         if len(ids) == STARTERS:
@@ -354,50 +372,56 @@ def live_candidates(games: pd.DataFrame, rosters: dict[str, list[tuple[int, str 
                                        "out_reason", "status"])
 
 
-def live_lineups(pg: pd.DataFrame, dates: list[str] | None = None, days: int = 2) -> pd.DataFrame:
+def live_lineups(pg: pd.DataFrame, dates: list[str] | None = None, days: int = 2,
+                 league: PlayerLeague | None = None) -> pd.DataFrame:
     """Projected lineups of ESPN's upcoming games (today and the next `days - 1` days, or `dates`),
-    from the current rosters, the `/injuries` report and posted starters where ESPN has them."""
+    from the current rosters, the `/injuries` report and posted starters where ESPN has them.
+    ``league``: the NBA (default) or the WNBA (`WNBA_PLAYERS`: its ESPN feeds and team keys)."""
     if dates is None:
         today = pd.Timestamp.now(tz="America/New_York").normalize()
         dates = [(today + pd.Timedelta(days=k)).strftime("%Y%m%d") for k in range(days)]
-    games = fetch_upcoming(dates)
+    games = fetch_upcoming(dates, league)
     if games.empty:
         return pd.DataFrame(columns=COLUMNS)
-    injuries = parse_injuries(_espn("injuries"))
+    injuries = parse_injuries(_espn("injuries", league), league)
     rosters, posted = {}, {}
     for g in games.itertuples(index=False):
         for team, tid in ((g.home, g.home_id), (g.away, g.away_id)):
             if team not in rosters:
-                rosters[team] = parse_roster(_espn(f"teams/{tid}/roster"))
-        for team, ids in parse_posted_starters(_espn("summary", event=g.game_id)).items():
+                rosters[team] = parse_roster(_espn(f"teams/{tid}/roster", league))
+        for team, ids in parse_posted_starters(_espn("summary", league, event=g.game_id), league).items():
             posted[(g.game_id, team)] = ids
-    return project_live(pg, games, rosters, injuries, posted)
+    return project_live(pg, games, rosters, injuries, posted, league)
 
 
 def project_live(pg: pd.DataFrame, games: pd.DataFrame, rosters: dict, injuries: pd.DataFrame,
-                 posted: dict[tuple[str, str], list[int]] | None = None) -> pd.DataFrame:
+                 posted: dict[tuple[str, str], list[int]] | None = None,
+                 league: PlayerLeague | None = None) -> pd.DataFrame:
     """`live_lineups` without the network: the projection from already fetched ESPN data."""
     c = live_candidates(games, rosters, injuries)
     group_of = pg.dropna(subset=["group"]).sort_values("game_date").groupby("player_id").group.last()
     c["group"] = c.group.fillna(c.player_id.map(group_of))
     posted = posted or {}
     c["source"] = ["posted" if (g, t) in posted else "live" for g, t in zip(c.game_id, c.team)]
-    return _finish(c, player_history(pg), posted)
+    lg = league or NBA_PLAYERS
+    return _finish(c, player_history(pg), posted, total=lg.team_minutes, cap=lg.max_minutes)
 
 
 # ------------------------------------------------------------------------------------------ build
 
-def build_lineups(processed: Path, roster: bool = True, live: bool = False) -> dict:
+def build_lineups(processed: Path, roster: bool = True, live: bool = False,
+                  league: PlayerLeague | None = None) -> dict:
     """Write `projected_lineups.parquet` (every game in player_games.parquet) and, with `live`,
-    `projected_lineups_upcoming.parquet`; returns `evaluate`'s summary per season."""
+    `projected_lineups_upcoming.parquet`; returns `evaluate`'s summary per season. `live` is the
+    league's ESPN scoreboard, rosters, injuries and posted starters (`live_lineups`)."""
     pg = pd.read_parquet(processed / "player_games.parquet")
-    proj = projected_lineups(pg, roster=roster)
+    proj = projected_lineups(pg, roster=roster, league=league)
     proj.to_parquet(processed / "projected_lineups.parquet")
     ev = evaluate(proj, pg)
     log.info("projected lineups: %d rows, %d team-games\n%s", len(proj),
              proj[["game_id", "team"]].drop_duplicates().shape[0], ev.round(4).to_string())
     if live:
-        up = live_lineups(pg)
+        up = live_lineups(pg, league=league)
         up.to_parquet(processed / "projected_lineups_upcoming.parquet")
         log.info("upcoming: %d games", up.game_id.nunique())
     return {int(s): {k: (round(float(v), 4) if pd.notna(v) else None) for k, v in r.items()}
