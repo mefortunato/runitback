@@ -227,3 +227,41 @@ def test_build_stops_when_odds_were_refused(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="refused odds"):
         web_build.build(sports=["cbb"], output_dir=str(tmp_path))
     assert not (tmp_path / "cbb" / "games.csv").exists()
+
+
+def test_lines_follow_the_schedules_home_team_when_espn_swaps_sides():
+    """At a neutral site ESPN's live event (and its odds) can call the other
+    team home than sportsdataverse's schedule does (2026-27 WCBB: Arizona at
+    Vanderbilt showed Arizona -25.5 for Vanderbilt -25.5): the lines are
+    flipped to the schedule's home team."""
+    from runitback.wager import espn
+
+    def side(team_id, ml, price):
+        return {"team": {"$ref": f"http://x/teams/{team_id}?lang=en"},
+                "moneyLine": ml, "spreadOdds": price}  # fmt: skip
+
+    # ESPN: North Carolina (153) home and a 25.5-point favorite
+    odds = espn.parse_odds(
+        {
+            "items": [
+                {"provider": {"name": "DraftKings"}, "spread": -25.5,
+                 "overUnder": 145.5, "overOdds": -110, "underOdds": -105,
+                 "homeTeamOdds": side(153, -20000, -110),
+                 "awayTeamOdds": side(2306, 3500, -115)}
+            ]
+        }
+    )  # fmt: skip
+    assert odds["home_team_id"] == 153
+    built = college.build_games(SCHEDULE, BOX, {"5": odds}, TODAY)
+    # the schedule has Kansas State (2306) home
+    kstate, unc = row(built, 5, "Kansas St"), row(built, 5, "North Carolina")
+    assert kstate["spread_line"] == -25.5 and unc["spread_line"] == 25.5
+    assert (kstate["moneyline"], unc["moneyline"]) == (3500, -20000)
+    assert (kstate["spread_odds"], unc["spread_odds"]) == (-115, -110)
+    assert kstate["total_line"] == 145.5
+
+    # the same lines from Kansas State's side are left as they are
+    straight = {**odds, "home_team_id": 2306}
+    built = college.build_games(SCHEDULE, BOX, {"5": straight}, TODAY)
+    assert row(built, 5, "Kansas St")["spread_line"] == 25.5
+    assert row(built, 5, "Kansas St")["moneyline"] == -20000
